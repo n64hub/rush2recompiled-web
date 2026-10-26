@@ -797,6 +797,14 @@ int main(int argc, char** argv) {
 
     recompui::programconfig::set_program_name(rush2::program_name);
     recompui::programconfig::set_program_id(rush2::program_id);
+#ifdef __EMSCRIPTEN__
+    // The page draws without RT64's render to RAM, which draws every frame a second time at the N64's resolution and
+    // copies it into RDRAM, where the console's RDP leaves it, and holds each display list until the GPU has finished
+    // it. Nothing in the game reads a frame back: the menus, a race, its pause menu and QUIT draw the same without the
+    // copy, and with the copy a list late the CPU never wrote to a frame whose copy was pending. On a phone the copy
+    // held the title's demos to 7-9 game frames a second, against 16 without it (docs/BUILDING.md, The web page).
+    recompui::renderer::set_render_to_ram(false);
+#endif
 
     SDL_InitSubSystem(SDL_INIT_AUDIO);
     if (!reset_audio(48000)) {

@@ -178,6 +178,11 @@ What the page leaves out: online play (a browser gives a page no UDP sockets or 
 external texture upscaler (a page starts no programs), N64: Recompiled code mods (the live recompiler writes machine
 code, which a page can't load), and the file pickers' native dialogs (the page's own picker opens instead).
 
+The page also draws without RT64's render to RAM (`src/main.cpp`), which the desktop build keeps: the copy of every
+frame into RDRAM held each display list until the GPU had finished it, and nothing in the game reads a frame back (the
+menus, a race, its pause menu and QUIT draw the same without it). On a Galaxy S21 the title's demos ran at 7-9 game
+frames a second with the copy and 16 without it, and the first of them at the console's 30 for a while.
+
 The page builds the game's shaders from `web/rt64_shaders.txt`, recorded by `web/shader_plan.json` with
 N64Recomp-browser's `tools/record_shaders.mjs` (its header says how): section 0, built before the game starts, is the
 launcher, the boot, the title and the menus; then the title's demos, the races (one on each of the 7 tracks) and a
