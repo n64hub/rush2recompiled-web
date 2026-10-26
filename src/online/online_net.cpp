@@ -158,6 +158,7 @@ namespace {
     std::mutex thread_mutex;
     std::thread net_thread;
     std::atomic<bool> net_running = false;
+    std::atomic<bool> lobby_lost = false;  // take_lobby_lost
     ENetHost* enet_host = nullptr;
     ENetPeer* host_peer = nullptr;            // Client: the connection to the host.
     ENetPeer* slot_peers[max_players] = {};   // Host: each client's connection.
@@ -511,8 +512,10 @@ namespace {
                 }
             }
         }
-        // What each machine set up: the same track and the same car physics, or the race can't be run (a resync copies
-        // the cars' state, not the track or the cars' tables). The host's is the reference: it names who differs.
+        // What each machine set up: the same track, or the race can't be run (a resync copies the race's state, not the
+        // track). The host's is the reference: it names who differs. The cars never stop a race: a resync copies their
+        // physics data too (rush2::car2049::physics_online_sync), and the differing start hash below resyncs frame 0,
+        // so a car set up differently on a machine takes the host's; the cars' fingerprint is only logged.
         int reference_slot = -1;
         for (int i = 0; i < max_players; i++) {
             if (!needs_input(i)) {
@@ -530,15 +533,15 @@ namespace {
             if (!needs_input(i) || race_slots[i].machine == race_slots[reference_slot].machine) {
                 continue;
             }
+            if (loaded_cars[i] != loaded_cars[reference_slot]) {
+                rush2::online::session_log("[online] player %d set the cars up differently (cars %08X, host %08X): "
+                    "they take the host's at the first resync\n", i + 1, loaded_cars[i], loaded_cars[reference_slot]);
+            }
             std::string what;
             if (loaded_track[i] != loaded_track[reference_slot]) {
                 what = "loaded a different track than " + slots[reference_slot].name + "'s (for a custom track: other "
                     "files of it; for another game's track: another copy of that game's ROM). Everyone needs the same "
                     "track files.";
-            }
-            else if (loaded_cars[i] != loaded_cars[reference_slot]) {
-                what = "set the cars up with different physics than " + slots[reference_slot].name + "'s (another ROM, "
-                    "mod or car setting).";
             }
             if (!what.empty()) {
                 std::string reason = "The race couldn't start: " + slots[i].name + "'s game " + what;
@@ -617,9 +620,18 @@ namespace {
                 if (++failed_checks >= max_failed_checks) {
                     rush2::online::session_log("[online] %s's race can't be held in step (frame %u)\n",
                         slots[differs].name.c_str(), frame);
-                    end_race("The race couldn't be kept in step with " + slots[differs].name + "'s game, which seems "
-                        "to have set it up differently. What differed is in the online folder of each game's data "
-                        "folder.");
+                    // Every machine ends the race (Msg::LoadMismatch ends it with the reason): with only the host's
+                    // ended, the others waited for the next frame's inputs for ever.
+                    std::string reason = "The race couldn't be kept in step with " + slots[differs].name + "'s game, "
+                        "which seems to have set it up differently. What differed is in the online folder of each "
+                        "game's data folder.";
+                    Writer w;
+                    w.u8(uint8_t(Msg::LoadMismatch));
+                    w.str(reason);
+                    for (ENetPeer* p : slot_peers) {
+                        send_packet(p, channel_lobby, w.data);
+                    }
+                    end_race(reason);
                     hashes.clear();
                     return;
                 }
@@ -1004,8 +1016,11 @@ namespace {
                                 "forward UDP port " + std::to_string(host_port) + " to their computer.";
                         }
                     }
-                    else if (error_text.empty() || cur_state == State::Lobby) {
-                        error_text = "The host closed the lobby or the connection was lost.";
+                    else {
+                        if (error_text.empty() || cur_state == State::Lobby) {
+                            error_text = "The host closed the lobby or the connection was lost.";
+                        }
+                        lobby_lost = true;
                     }
                     reset_session();
                     net_running = false;
@@ -1254,6 +1269,7 @@ bool rush2::online::join(const std::string& text) {
         e = RosterEntry{};
     }
     error_text.clear();
+    lobby_lost = false;
     clear_race();
     cur_state = State::Connecting;
     connect_started = clock_type::now();
@@ -1319,6 +1335,10 @@ uint16_t rush2::online::lobby_port() {
 std::string rush2::online::last_error() {
     std::lock_guard lock{ state_mutex };
     return error_text;
+}
+
+bool rush2::online::take_lobby_lost() {
+    return lobby_lost.exchange(false);
 }
 
 std::string rush2::online::router_status() {

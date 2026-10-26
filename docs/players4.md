@@ -8,7 +8,11 @@ tools/players4/relocate.py.
 
 There is no fixed controller-to-player mapping. src/input.cpp gives each enabled controller the first free N64 port
 when it presses a button (the Controls tab only enables or disables them; the keyboard is one more controller). The game then makes whoever presses START a player: player 1 on the title screen
-(func_800A6B58, hooked so player 1 is the first port with a device), player 2 with func_80093E08, players 3 and 4 by
+(func_800A6B58, hooked: the port that pressed START, except for a START within 500 ms of the title screen
+(0xF, the Midway logo) first coming up, which was pressed for the race results, or one from a port with no device;
+then player 1 is the first port with a device. The game calls func_803B0270 every frame the screen is up, so
+`rush2_title_screen_setup` starts that window only on its first frame, when the set-up flag 0x803C905C is clear;
+restarting it every frame made every START over the Midway logo pick the first port, bug #32), player 2 with func_80093E08, players 3 and 4 by
 src/players4.cpp's `update_joining` on Select Player. Old players.json files (a pinned controller per player) are
 migrated at startup: only whether the keyboard is on carries over.
 
@@ -146,3 +150,15 @@ obstacle course (no sky model).
   views draw views 0 and 1's. `rush2_players4_sky_view` (hooked at `pvs_apply_8007C27C`, before each view is drawn)
   moves the node to the view's own camera x and z; the scene walker builds the node's matrix as it draws, so views 0
   and 1 are already done, and the next frame's update puts them back.
+
+## Arrays that share an address with a table
+
+The relocator moves every `lui`/load pair whose address falls in a moved range, so a table that happens to start inside
+a moved array is moved too, and its entries past the array's end read the new copy's zeros. Those sites are in
+`EXCLUDE` in tools/players4/relocate.py and keep their original address.
+
+- **Frame Scale cheat** (issue 34). The cheat byte 0x8010C43C indexes an f32 table at 0x800BFC80 (1 = 0.6, 2 = 1.2,
+  3 = 1.5; 0 means off and is never read) that `carselect_build_preview_car_8008813C` (0x800887A8/0x800887B0) and
+  `car_matrix_copy_and_apply_8009ABDC` (0x8009AC00/0x8009AC14) multiply into the car matrix's Y column. 0x800BFC80 is
+  inside the camera timer array 0x800BFC7C (one f32 per view), so relocated it read 0.0 for every option and drew the
+  car flat.

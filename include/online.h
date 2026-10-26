@@ -203,6 +203,9 @@ namespace rush2::online {
     uint16_t lobby_port();
     // Why the last host, join or session ended, for the UI; empty if nothing went wrong.
     std::string last_error();
+    // A joined lobby was lost (the host closed it or quit its game, or the connection dropped) since the last call,
+    // not left from the Online tab: true once, with the reason in last_error().
+    bool take_lobby_lost();
     // Status of the host's router port mapping (UPnP), for the UI: router_status() is the full explanation,
     // router_port() what it came to.
     std::string router_status();
@@ -294,6 +297,9 @@ namespace rush2::online {
         bool pedals(int player, float* gas, float* brake);
         // An online race is set up or running on this machine.
         bool in_race();
+        // Whether every machine of the race has the game's ROM (games_* bit), so a race car of that game (a computer
+        // car's random type) can be on every machine. True outside an online race.
+        bool race_has_game(uint8_t game);
         // In an online race: the car type player (car slot) `car` picked, which the race gives their car whatever its
         // profile says (src/rush2049/car2049.cpp, rush2_car49_select_get). False otherwise.
         bool car_type(int car, int* type);

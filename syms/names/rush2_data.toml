@@ -5645,12 +5645,12 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 
 [[var]]
 vram = 0x800D3E90
-name = "menu_race_option_s16"
+name = "race_computer_cars"
 type = "s16"
-desc = "Halfword from menu/boot defaults, read by options text and car-to-player assignment."
-area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+desc = "The race's computer car count (the track select's DRONES; src/ghost.cpp race_drones). Online races' car count is num_players (0x8010C3E2) + this, at most 8 (online_game.cpp race_cars): 0 with DRONES 0 and 7 by default (2 players: 9, capped at 8)."
+area = "race"
+status = "verified"
+ref = "docs/online.md#load-check"
 
 [[var]]
 vram = 0x800D3E92
@@ -7609,10 +7609,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800E79B8
 name = "race_car_count"
 type = "u16"
-desc = "Halfword used by physics tick, drone tick and race setup (likely number of cars in race; low confidence)."
+desc = "Halfword used by physics tick, drone tick and race setup. Not the race's car count at its first physics frame: it reads 0 there in an online race (docs/online.md#load-check); use num_players + race_computer_cars (0x800D3E90)."
 area = "race"
 status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+ref = "docs/online.md#load-check"
 
 [[var]]
 vram = 0x800E79BA
@@ -11225,12 +11225,12 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 
 [[var]]
 vram = 0x8010C43C
-name = "cheat_option_p"
+name = "cheat_frame_scale"
 type = "u8"
-desc = "Byte set by cheat menu and defaults; read by car matrix, car select preview and player-count menu text (low confidence)."
+desc = "Frame Scale cheat (0 off, 1-3): indexes the f32 table 0x800BFC80 (0.6, 1.2, 1.5) that scales the car matrix Y column in car_matrix_copy_and_apply_8009ABDC and the car select preview."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/players4.md#arrays-that-share-an-address-with-a-table"
 
 [[var]]
 vram = 0x8010C43E
@@ -15061,10 +15061,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x803C905C
 name = "title_setup_byte"
 type = "u8"
-desc = "Byte kept by title screen setup (low confidence)."
+desc = "Set by func_803B0270 (the title screen, front end screen 0xF) once its setup has run, cleared when it leaves; the game calls the function every frame the screen is up, so 1 marks every frame but the first. src/players4.cpp rush2_title_screen_setup starts the title START carry-over window only while it is 0."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/players4.md#controllers-and-joining"
 
 [[var]]
 vram = 0x803C9088
