@@ -9,7 +9,10 @@
   "RACE (0x8010C3E8). The No Race Timer cheat is on (0x800D9E88), so a race driven blind never runs out of time. A race",
   "is driven by the race layout's keys (src/controls.cpp: the gas ArrowUp, steering ArrowLeft and ArrowRight; Space, the",
   "menus' A, is the wings' key there), the gas held and a weave, its waits and holds on the game's clock (timer_game_time",
-  "0x80117488, seconds), with a shot about 5 s in and a need there that the car is doing 15 mph or more."
+  "0x80117488, seconds), with a shot about 5 s in and a need there that the car is doing 15 mph or more.",
+  "A new profile's first launch opens the setup screen (src/setup.cpp) once the ROM is stored, before the game: setup",
+  "presses Escape, the screen's Next and then its close, until players.json's setup section is no longer pending, which",
+  "keeps Enhanced's game rules, a new install's."
  ],
  "page": "Rush2Recompiled.html",
  "load": [
@@ -32,6 +35,20 @@
   [
    "wait",
    3000
+  ],
+  [
+   "pressUntil",
+   "Escape",
+   "Escape",
+   27,
+   150,
+   2000,
+   "(() => { const find = (d) => { for (const n of FS.readdir(d)) { if (n === '.' || n === '..') continue; const p = d + '/' + n; let st; try { st = FS.stat(p); } catch (e) { continue; } if (FS.isDir(st.mode)) { const f = find(p); if (f) return f; } else if (n === 'players.json') return p; } return null; }; const p = find('/home'); if (p === null) return false; const s = JSON.parse(FS.readFile(p, { encoding: 'utf8' })).setup; return s !== undefined && !s.pending; })()",
+   30000
+  ],
+  [
+   "wait",
+   1000
   ]
  ],
  "start": [
