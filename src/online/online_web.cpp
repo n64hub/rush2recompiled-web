@@ -42,6 +42,7 @@ int max_players_setting() { return 0; }
 std::string lobby_name() { return {}; }
 uint16_t lobby_port() { return 0; }
 std::string last_error() { return "Online play needs the desktop game: a browser can't open its connections."; }
+bool take_lobby_lost() { return false; }
 std::string router_status() { return {}; }
 RouterPort router_port() { return RouterPort::None; }
 std::vector<std::string> local_addresses() { return {}; }
