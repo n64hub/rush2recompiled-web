@@ -16,7 +16,9 @@
 #    web/patches/files.txt names, with what the web has changed in them since merged in by apply.cmake --since (only
 #    a change that meets Rush 2's own lines stops the build, for another merge by hand).
 #      rt64: what both add beside each other (Rush 2's present profiling mark beside the web's phase timer, its
-#      Variable frame rate's timeline beside the offscreen workloads, its car reflection and ambient occlusion shaders
+#      Variable frame rate's timeline kept per game frame where the web draws a frame's workloads together (the
+#      frame's rate its last workload's, its place on the timeline when that one came, the next frame there once it
+#      has ended), its car reflection and ambient occlusion shaders
 #      among the WGSL ones, its sampleTexture LOD arguments and coverage output beside the web's per-draw tiles and
 #      decal depth, the coverage output left out of a page's shaders, as RasterPS.hlsl says); in TextureSampler.hlsli the web's texel loads keep Rush 2's rule that a generated mipmap level
 #      and a region of a larger image are read by the tile, and that a filter neighbour past a region reads the
