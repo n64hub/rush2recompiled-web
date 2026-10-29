@@ -14,11 +14,14 @@
 #    project), but for the files where the two change the same lines: the web's change to those (web/patches/files.txt)
 #    is web/patches/<project>.patch instead, made on top of Rush 2's from the N64Recomp-browser commit
 #    web/patches/files.txt names, with what the web has changed in them since merged in by apply.cmake --since (only
-#    a change that meets Rush 2's own lines stops the build, for another merge by hand).
+#    a change that meets Rush 2's own lines stops the build, for another merge by hand; one that merges clean but no
+#    longer compiles beside them, as a function of the web's that Rush 2's lines call taking new arguments, is merged
+#    by hand the same way).
 #      rt64: what both add beside each other (Rush 2's present profiling mark beside the web's phase timer, its
 #      Variable frame rate's timeline kept per game frame where the web draws a frame's workloads together (the
 #      frame's rate its last workload's, its place on the timeline when that one came, the next frame there once it
-#      has ended), its car reflection and ambient occlusion shaders
+#      has ended or the queue is full, as the web's newerWorkloadQueued() has it), its car reflection and ambient
+#      occlusion shaders
 #      among the WGSL ones, its sampleTexture LOD arguments and coverage output beside the web's per-draw tiles and
 #      decal depth, the coverage output left out of a page's shaders, as RasterPS.hlsl says); in TextureSampler.hlsli the web's texel loads keep Rush 2's rule that a generated mipmap level
 #      and a region of a larger image are read by the tile, and that a filter neighbour past a region reads the
@@ -27,7 +30,8 @@
 #      Beside Rush 2's disk shader cache, RasterShader takes the web's WGSL cache as well as Rush 2's compiled blobs,
 #      RasterShaderCache has both's members, the shader threads are one on a page and Rush 2's at most 4 elsewhere, and
 #      the web's replacement batch lock is held in Rush 2's applyReplacementDirectories, where packs are swapped in.
-#      N64ModernRuntime: the VI thread's wait for the browser's frame inside Rush 2's not-turbo branch; in config.cpp
+#      N64ModernRuntime: the VI thread's wait for the browser's frame inside Rush 2's not-turbo branch, and its screen
+#      update, queued after the VI's swap on a page (ULTRAMODERN_SCREEN_UPDATE_AFTER_VI), left out in turbo; in config.cpp
 #      Rush 2's own parse of an option the file leaves out to its default, which does what the web's did.
 #      RecompFrontend: the page's file picker beside Rush 2's Windows one, and the page's no-op in Rush 2's open_folder().
 # 2. N64Recomp and RSPRecomp, built natively from the patched checkout: the page needs the code the web-patched
