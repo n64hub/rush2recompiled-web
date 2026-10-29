@@ -275,3 +275,15 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
  
          // If the game has started, handle sending VI and AI events.
          if (ultramodern::is_game_started()) {
+@@ -297,6 +483,11 @@ void sp_complete() {
+ }
+ 
+ void dp_complete() {
++    // Sent already if the renderer sent it before send_dl returned (ultramodern::renderer::rdp_done).
++    if (ultramodern::renderer::take_rdp_done()) {
++        return;
++    }
++
+     uint8_t* rdram = events_context.rdram;
+     std::lock_guard lock{ events_context.message_mutex };
+     ultramodern::enqueue_external_message(events_context.dp.mq, events_context.dp.msg, false, true);
