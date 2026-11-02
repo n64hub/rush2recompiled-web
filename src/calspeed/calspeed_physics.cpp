@@ -186,10 +186,12 @@ namespace {
     // Test aid, RUSH2_CSPHYS_SKIP=<letters>: California Speed's rules left out for converted cars, to find which one
     // a behavior comes from: r the pitch and roll rates' zeroing (p the pitch rate's alone: on a player's car its
     // pitch momentum flipped the car on San Francisco's landings, 3 times in 40 s against none), a the rear drive forces' averaging, h the road hold,
-    // u the hill push, t the lifted-wheel torque, d the drag's drive term.
+    // u the hill push, t the lifted-wheel torque, d the drag's drive term, l the lift by the wheels' mean offset past
+    // 0.35 ft (orient_end). With * in the letters they apply to every car, native ones too.
     bool skip(uint8_t* rdram, uint32_t car, char rule) {
         static const char* env = getenv("RUSH2_CSPHYS_SKIP");
-        return env != nullptr && strchr(env, rule) != nullptr && role(rdram, car) == Role::Converted;
+        return env != nullptr && strchr(env, rule) != nullptr &&
+               (role(rdram, car) == Role::Converted || strchr(env, '*') != nullptr);
     }
 
     // Test aid, RUSH2_CSPHYS_SLIDES=<file>: a player's car's physics steps kept for the last 2 s, written to
@@ -403,6 +405,42 @@ void rush2::calspeed::physics::ground_contact_begin(uint8_t* rdram, uint32_t car
                (int16_t)MEM_H(0, (int32_t)(car + 0x810)));
     }
     was[s] = crash;
+    // Test aid, RUSH2_CS_PLACE="x,y,z,dx,dz,speed,at": the player's car (physics car 0) put at (x, y, z) heading
+    // (dx, dz) level at speed ft/s once its clock passes `at`, then its position, attitude, velocity and wheels logged
+    // ([csplace]) each step for 8 s (docs/calspeed_research.md#wall-climbing-a-missed-wheel-reads-as-fully-compressed-fixed-2026-10-27).
+    static const char* place = getenv("RUSH2_CS_PLACE");
+    static bool placed = false;
+    static int logged = 0;
+    float p[7] = {};
+    if (place == nullptr || s != 0 || logged >= 480 ||
+        sscanf(place, "%f,%f,%f,%f,%f,%f,%f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5], &p[6]) != 7) {
+        return;
+    }
+    if (!placed) {
+        if (f32(rdram, car + car_clock) <= p[6]) return;
+        placed = true;
+        float len = std::sqrt(p[3] * p[3] + p[4] * p[4]), dx = p[3] / len, dz = p[4] / len;
+        float m[9] = { dz, 0.0f, -dx, 0.0f, 1.0f, 0.0f, dx, 0.0f, dz };
+        for (int k = 0; k < 9; k++) put_f32(rdram, car + car_matrix + 4 * k, m[k]);
+        float pos[3] = { p[0], p[1], p[2] }, v[3] = { 0.0f, 0.0f, p[5] }, zero[3] = {};
+        put3(rdram, car + car_position, pos);
+        put3(rdram, car + 0x7B0, pos);
+        put3(rdram, car + car_velocity, v);
+        put3(rdram, car + car_angular, zero);
+        return;
+    }
+    logged++;
+    printf("[csplace] t %.3f pos %.1f %.1f %.1f up %.2f %.2f %.2f v %.1f %.1f %.1f comp %.2f %.2f %.2f %.2f surf %d %d %d "
+           "%d hold %.2f %.2f %.2f %.2f\n", f32(rdram, car + car_clock), f32(rdram, car + car_position),
+           f32(rdram, car + car_position + 4), f32(rdram, car + car_position + 8), f32(rdram, car + car_matrix + 12),
+           f32(rdram, car + car_matrix + 16), f32(rdram, car + car_matrix + 20), f32(rdram, car + car_velocity),
+           f32(rdram, car + car_velocity + 4), f32(rdram, car + car_velocity + 8), f32(rdram, car + car_compression),
+           f32(rdram, car + car_compression + 4), f32(rdram, car + car_compression + 8),
+           f32(rdram, car + car_compression + 12), (int)MEM_W(0, (int32_t)(car + car_surface)),
+           (int)MEM_W(0, (int32_t)(car + car_surface + 4)), (int)MEM_W(0, (int32_t)(car + car_surface + 8)),
+           (int)MEM_W(0, (int32_t)(car + car_surface + 12)), cars[s].hold[0], cars[s].hold[1], cars[s].hold[2],
+           cars[s].hold[3]);
+    fflush(stdout);
 }
 
 // A wall hit on body point `point` (calspeed_walls.cpp, func_800B0A04 records wall types 4-9 at +0x862).
@@ -776,7 +814,7 @@ void rush2::calspeed::physics::orient_end(uint8_t* rdram, uint32_t car) {
     }
     float pos[3];
     get3(rdram, car + car_position, pos);
-    if (total > 0.0f && own_lift) {
+    if (total > 0.0f && own_lift && !skip(rdram, car, 'l')) {
         float lift = total * 0.25f;
         for (int i = 0; i < 4; i++) put_f32(rdram, car + car_rest + 4 * i, f32(rdram, car + car_rest + 4 * i) - lift);
         float up[3] = { 0.0f, lift, 0.0f }, w[3];

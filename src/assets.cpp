@@ -10,10 +10,10 @@
 // from a top. The game puts it between its framebuffers (base about 0x80170CC0) and 0x803DA800, about 2.3 MB, and
 // lowers the top to 0x803AA800 while the menu overlay is resident there. Rush 2049's tracks are up to 0.6 MB bigger
 // than Rush 2's, and the track select's dioramas of them are real miniatures of their geometry (about 3.75 MB), so the
-// heap is moved to 0x80420000-0x80AE0000: past the 4 MB of the original memory map and the scene node table moved to
-// 0x80400000 (include/scene_nodes.h; 3 MB of the heap was still free in the arcade Metro's race), below the 2D display lists at
+// heap is moved to 0x80420000-0x80ACA000: past the 4 MB of the original memory map and the scene node table moved to
+// 0x80400000 (include/scene_nodes.h; 3 MB of the heap was still free in the arcade Metro's race), below the world polygons at 0x80ACA000 (include/world_polygons.h), the 2D display lists at
 // 0x80AE0000 (src/hud.cpp) and the interpolation buffers at 0x80B00000, and within the RSP's 24-bit addresses. us.toml patches func_8009FB40 and func_800A62C0 to reset the
-// top to 0x80AE0000 instead of 0x803AA800/0x803DA800; the overlay no longer overlaps the
+// top to 0x80ACA000 instead of 0x803AA800/0x803DA800; the overlay no longer overlaps the
 // heap, so loading it doesn't need to lower the top.
 
 #include <atomic>
@@ -50,7 +50,9 @@ namespace {
     constexpr uint32_t heap_mark = 0x8010C444;
     constexpr uint32_t heap_top = 0x8010C470;
     constexpr uint32_t new_heap_base = 0x80420000; // 0x80400000-0x80420000: the scene node table (include/scene_nodes.h)
-    constexpr uint32_t new_heap_top = 0x80AE0000; // 0x80AE0000-0x80B00000: the 2D display lists (src/hud.cpp)
+    // 0x80ACA000-0x80AE0000: the world polygons (include/world_polygons.h); 0x80AE0000-0x80B00000: the 2D display lists
+    // (src/hud.cpp).
+    constexpr uint32_t new_heap_top = 0x80ACA000;
 
     struct Replacement {
         uint32_t rom;
@@ -177,19 +179,38 @@ bool rush2::assets::read_original(uint8_t* rdram, int index, std::vector<uint8_t
     return read_rom_asset(index, rom, out);
 }
 
-uint32_t rush2::assets::rom_offset(int index) {
+namespace {
     // The game inflates its main segment (code and data, raw deflate at ROM 0xAFD0C0) to 0x800539E0 at boot
-    // (tools/extract.py); the asset table 0x800C185C is in it. Inflated once.
-    constexpr uint32_t main_rom = 0xAFD0C0, main_vram = 0x800539E0, table_vram = 0x800C185C;
+    // (tools/extract.py). Before it, the first segment (ROM 0x1000, not compressed) is at 0x80000400.
+    constexpr uint32_t main_rom = 0xAFD0C0, main_vram = 0x800539E0;
+    constexpr uint32_t boot_rom = 0x1000, boot_vram = 0x80000400;
+
+    bool inflate_main(std::vector<uint8_t>& main) {
+        auto rom = recomp::get_rom();
+        return rom.size() > main_rom && rush2::assets::inflate_raw(rom.data() + main_rom, rom.size() - main_rom, main);
+    }
+}
+
+bool rush2::assets::boot_image(uint8_t* rdram) {
+    auto rom = recomp::get_rom();
+    std::vector<uint8_t> main;
+    if (rom.size() < boot_rom + (main_vram - boot_vram) || !inflate_main(main)) return false;
+    for (uint32_t i = 0; i < main_vram - boot_vram; i++) MEM_B(0, (int32_t)(boot_vram + i)) = rom[boot_rom + i];
+    for (size_t i = 0; i < main.size(); i++) MEM_B(0, (int32_t)(main_vram + i)) = main[i];
+    return true;
+}
+
+uint32_t rush2::assets::rom_offset(int index) {
+    // The asset table 0x800C185C is in the main segment. Inflated once.
+    constexpr uint32_t table_vram = 0x800C185C;
     constexpr int table_entries = 0x71;
     static std::mutex main_mutex;
     static std::vector<uint8_t> table;
     if (index < 0 || index >= table_entries) return 0;
     std::lock_guard lock{ main_mutex };
     if (table.empty()) {
-        auto rom = recomp::get_rom();
         std::vector<uint8_t> main;
-        if (rom.size() <= main_rom || !inflate_raw(rom.data() + main_rom, rom.size() - main_rom, main)) return 0;
+        if (!inflate_main(main)) return 0;
         size_t at = table_vram - main_vram;
         if (main.size() < at + table_entries * 4) return 0;
         table.assign(main.begin() + at, main.begin() + at + table_entries * 4);

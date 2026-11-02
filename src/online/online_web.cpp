@@ -93,7 +93,7 @@ RaceSettings race_settings() { return {}; }
 std::vector<RosterEntry> race_roster() { return {}; }
 void report_state_hash(uint32_t, uint32_t) {}
 void report_loaded(uint32_t, uint32_t, uint32_t) {}
-void race_finished() {}
+void race_finished(uint32_t) {}
 std::string race_status() { return {}; }
 void update() {}
 

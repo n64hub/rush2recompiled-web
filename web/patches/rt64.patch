@@ -1,3 +1,376 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6527f6c..4ab86fb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,7 +11,17 @@ endif()
+ option(RT64_STATIC "Build RT64 as a static library" OFF)
+ 
+ 
++option(RT64_WGSL "Compile the shaders to WGSL for WebGPU, in place of DXIL, SPIR-V and Metal (always on with Emscripten)" OFF)
+ option(RT64_SDL_WINDOW_VULKAN "Build RT64 to expect an SDL Window outside of Windows" OFF)
++option(RT64_PER_DRAW_TEXTURES "Bind textures per draw on every device, as devices without descriptor indexing (WebGPU) need; to test that path" OFF)
++option(RT64_PACKED_RSP_INPUTS "Gather the RSP compute shaders' inputs into one buffer on every device, as WebGPU's 8 storage buffers per stage need; to test that path" OFF)
++option(RT64_FLIPPED_RECT_HIGH_RES "Sample a high-res replacement on a rect drawn backwards on the texel the RDP picks, not one native pixel behind it (always on with Emscripten)" OFF)
++option(RT64_UNEVEN_FRAME_RATES "Interpolate a game whose last frames took an uneven number of VIs (the slowest at most twice the fastest) at the rate of the fastest, not leave it uninterpolated (always on with Emscripten)" OFF)
++option(RT64_GAME_FRAME_WORKLOADS "The workloads a game frame is drawn in (one per RSP task the game ends with a full sync) are interpolated as one frame, not each as a frame of its own, so a game that draws a frame in several tasks interpolates (always on with Emscripten)" OFF)
++option(RT64_FREE_DISCARDED_TARGETS "Free the render targets of a framebuffer whose RAM the CPU overwrote once nothing draws to it again for a few seconds, so a game that moves its framebuffers (one per level) does not keep every one on the GPU (always on with Emscripten)" OFF)
++option(RT64_INTERPOLATE_CAMERA_EYE "Interpolate a camera's eye between two game frames on the line between its two places, not by lerping the view's translation, which is the eye in the view's own axes (always on with Emscripten)" OFF)
++option(RT64_SKIP_COLLAPSED_MATCHES "Never pair a transform that collapses what it draws (a zero determinant: a scale of 0, or a matrix of zeros) with one that does not, from one game frame to the next, so that an object the game hides is not interpolated between its last matrix and none (always on with Emscripten)" OFF)
++option(RT64_SCISSOR_INSIDE_FRAMEBUFFER "Count an extended scissor reaching past the framebuffer's left or right edge only to that edge in the area a framebuffer pair drew in, so that what covers the frame's whole width (a projection RT64 keeps at its aspect, a fill it widens) is the same on a frame that draws under one (always on with Emscripten)" OFF)
+ 
+ if (NOT ${RT64_STATIC})
+     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+@@ -65,13 +75,37 @@ else()
+     endif()
+ endif()
+ 
++# WebGPU: dxc (on the host) compiles to SPIR-V with -D WEBGPU, naga turns that into WGSL, and plume's PlumeWGSL.cmake
++# moves the push constants into the uniform buffer plume's WebGPU backend gives them. WEBGPU is what the shaders check
++# (shaders/WebGPU.hlsli).
++if (EMSCRIPTEN)
++    set (RT64_WGSL ON)
++    if (CMAKE_HOST_WIN32)
++        set (DXC "${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc.exe")
++    elseif (CMAKE_HOST_APPLE)
++        set (DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/arm64/dxc-macos")
++    else()
++        set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc-linux")
++    endif()
++endif()
++if (RT64_WGSL)
++    find_program(RT64_NAGA_EXECUTABLE naga)
++    if (NOT RT64_NAGA_EXECUTABLE)
++        message(FATAL_ERROR "naga not found: install naga-cli (cargo install naga-cli) or set RT64_NAGA_EXECUTABLE.")
++    endif()
++    set (RT64_PLUME_WGSL "${PROJECT_SOURCE_DIR}/src/contrib/plume/examples/cmake/modules/PlumeWGSL.cmake")
++endif()
++
+ set(ZSTD_LEGACY_SUPPORT OFF)
+ set(ZSTD_BUILD_STATIC ON)
+ set(ZSTD_BUILD_SHARED OFF)
+ 
+ add_subdirectory(src/tools/file_to_c)
+ add_subdirectory(src/contrib/re-spirv)
+-add_subdirectory(src/contrib/nativefiledialog-extended)
++# A browser has no native file dialogs.
++if (NOT EMSCRIPTEN)
++    add_subdirectory(src/contrib/nativefiledialog-extended)
++endif()
+ add_subdirectory(src/contrib/zstd/build/cmake)
+ 
+ if (CMAKE_SYSTEM_NAME MATCHES "Linux" AND RT64_SDL_WINDOW_VULKAN)
+@@ -104,6 +138,21 @@ set(ANDROID_ABI arm64-v8a)
+ 
+ # For DXC
+ set (DXC_COMMON_OPTS "-I${PROJECT_SOURCE_DIR}/src")
++# WebGPU has no descriptor indexing, so its shaders always bind textures per draw (TextureSampler.hlsli).
++if (RT64_PER_DRAW_TEXTURES OR RT64_WGSL)
++    list(APPEND DXC_COMMON_OPTS "-D" "PER_DRAW_TEXTURES")
++endif()
++# WebGPU guarantees 8 storage buffers per shader stage, so the RSP compute shaders read their inputs from one
++# (RSPPackedInputs, rt64_rsp_processor.h).
++if (RT64_PACKED_RSP_INPUTS OR RT64_WGSL)
++    set (RT64_PACKED_RSP_INPUTS ON)
++    list(APPEND DXC_COMMON_OPTS "-D" "PACKED_RSP_INPUTS")
++endif()
++# A high-res replacement on a rect drawn backwards (a negative dsdx or dtdy) sampled on the texel the RDP picks
++# (RasterPS.hlsl): a fix for any game with a texture pack, behind an option since it changes what upstream draws.
++if (RT64_FLIPPED_RECT_HIGH_RES OR RT64_WGSL)
++    list(APPEND DXC_COMMON_OPTS "-D" "FLIPPED_RECT_HIGH_RES")
++endif()
+ set (DXC_DXIL_OPTS "-Wno-ignored-attributes")
+ set (DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
+ set (DXC_LB_OPTS "${DXC_COMMON_OPTS}" "-D" "LIBRARY" "-T" "lib_6_3")
+@@ -113,10 +162,25 @@ set (DXC_CS_OPTS "${DXC_COMMON_OPTS}" "-E" "CSMain" "-T cs_6_3")
+ set (DXC_GS_OPTS "${DXC_COMMON_OPTS}" "-E" "GSMain" "-T gs_6_3")
+ set (DXC_RT_OPTS "${DXC_COMMON_OPTS}" "-D" "RT_SHADER" "-T" "lib_6_3" "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
+ 
++# A shader's .hlsli and shared headers are in the depfile dxc writes with -MF, so a change to one rebuilds every shader
++# that includes it. -MF only preprocesses, so the compile is a second command. Other generators (Visual Studio, Xcode)
++# rebuild a shader only when its own file changes.
++function(add_dxc_command OUTPUT FILENAME)
++    if (CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
++        add_custom_command(OUTPUT ${OUTPUT}
++            COMMAND ${DXC} ${ARGN} ${FILENAME} /Fo ${OUTPUT} -MF ${OUTPUT}.d
++            COMMAND ${DXC} ${ARGN} ${FILENAME} /Fo ${OUTPUT}
++            DEPENDS ${FILENAME}
++            DEPFILE ${OUTPUT}.d)
++    else()
++        add_custom_command(OUTPUT ${OUTPUT}
++            COMMAND ${DXC} ${ARGN} ${FILENAME} /Fo ${OUTPUT}
++            DEPENDS ${FILENAME})
++    endif()
++endfunction()
++
+ function(build_shader_spirv_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
+-    add_custom_command(OUTPUT ${OUTNAME}.spv
+-        COMMAND ${DXC} ${DXC_SPV_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.spv
+-        DEPENDS ${FILENAME})
++    add_dxc_command(${OUTNAME}.spv ${FILENAME} ${DXC_SPV_OPTS} ${ARGN})
+     add_custom_command(OUTPUT ${OUTNAME}.spirv.c
+         COMMAND file_to_c ${OUTNAME}.spv ${TARGET_NAME}BlobSPIRV ${OUTNAME}.spirv.c ${OUTNAME}.spirv.h
+         DEPENDS ${OUTNAME}.spv file_to_c
+@@ -124,10 +188,20 @@ function(build_shader_spirv_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
+     target_sources(${TARGETOBJ} PRIVATE ${OUTNAME}.spirv.c)
+ endfunction()
+ 
++function(build_shader_wgsl_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
++    # WebGPU's clip space is D3D's, so the vertex shaders keep their y.
++    set(OPTIONS ${ARGN})
++    list(REMOVE_ITEM OPTIONS "-fvk-invert-y")
++    add_dxc_command(${OUTNAME}.wgsl.spv ${FILENAME} ${DXC_SPV_OPTS} -D WEBGPU ${OPTIONS})
++    add_custom_command(OUTPUT ${OUTNAME}.wgsl ${OUTNAME}.wgsl.c ${OUTNAME}.wgsl.h
++        COMMAND ${CMAKE_COMMAND} -DNAGA=${RT64_NAGA_EXECUTABLE} -DINPUT=${OUTNAME}.wgsl.spv -DOUTPUT=${OUTNAME}.wgsl
++            -DVAR_NAME=${TARGET_NAME}BlobWGSL -DOUTPUT_C=${OUTNAME}.wgsl.c -DOUTPUT_H=${OUTNAME}.wgsl.h -P ${RT64_PLUME_WGSL}
++        DEPENDS ${OUTNAME}.wgsl.spv ${RT64_PLUME_WGSL})
++    target_sources(${TARGETOBJ} PRIVATE ${OUTNAME}.wgsl.c)
++endfunction()
++
+ function(build_shader_dxil_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
+-    add_custom_command(OUTPUT ${OUTNAME}.dxil
+-        COMMAND ${DXC} ${DXC_DXIL_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.dxil
+-        DEPENDS ${FILENAME})
++    add_dxc_command(${OUTNAME}.dxil ${FILENAME} ${DXC_DXIL_OPTS} ${ARGN})
+     add_custom_command(OUTPUT ${OUTNAME}.dxil.c
+         COMMAND file_to_c ${OUTNAME}.dxil ${TARGET_NAME}BlobDXIL ${OUTNAME}.dxil.c ${OUTNAME}.dxil.h
+         DEPENDS ${OUTNAME}.dxil file_to_c
+@@ -136,9 +210,7 @@ function(build_shader_dxil_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
+ endfunction()
+ 
+ function(build_shader_msl_impl TARGETOBJ FILENAME TARGET_NAME OUTNAME)
+-    add_custom_command(OUTPUT ${OUTNAME}.spv
+-            COMMAND ${DXC} ${DXC_SPV_OPTS} ${ARGN} ${FILENAME} /Fo ${OUTNAME}.spv
+-            DEPENDS ${FILENAME})
++    add_dxc_command(${OUTNAME}.spv ${FILENAME} ${DXC_SPV_OPTS} ${ARGN})
+     add_custom_command(OUTPUT ${OUTNAME}.metal
+             COMMAND spirv_cross_msl ${OUTNAME}.spv ${OUTNAME}.metal
+             DEPENDS ${OUTNAME}.spv spirv_cross_msl)
+@@ -170,6 +242,10 @@ function(build_shader TARGETOBJ SHADERNAME OPTIONS)
+     cmake_path(GET OUTNAME STEM TARGET_NAME)
+     cmake_path(GET OUTNAME PARENT_PATH OUTPUT_DIR)
+     file(MAKE_DIRECTORY ${OUTPUT_DIR})
++    if (RT64_WGSL)
++        build_shader_wgsl_impl(${TARGETOBJ} ${FILENAME} ${TARGET_NAME} ${OUTNAME} ${OPTIONS} ${EXTRA_ARGS})
++        return()
++    endif()
+     # Compile DXIL shader binaries if building on Windows
+     if (WIN32)
+         build_shader_dxil_impl(${TARGETOBJ} ${FILENAME} ${TARGET_NAME} ${OUTNAME} ${OPTIONS} ${EXTRA_ARGS})
+@@ -215,6 +291,10 @@ function(build_shader_spirv TARGETOBJ SHADERNAME OPTIONS)
+     cmake_path(GET OUTNAME STEM TARGET_NAME)
+     cmake_path(GET OUTNAME PARENT_PATH OUTPUT_DIR)
+     file(MAKE_DIRECTORY ${OUTPUT_DIR})
++    if (RT64_WGSL)
++        build_shader_wgsl_impl(${TARGETOBJ} ${FILENAME} ${TARGET_NAME} ${OUTNAME} ${OPTIONS} ${EXTRA_ARGS})
++        return()
++    endif()
+     build_shader_spirv_impl(${TARGETOBJ} ${FILENAME} ${TARGET_NAME} ${OUTNAME} ${OPTIONS} ${EXTRA_ARGS})
+ endfunction()
+ 
+@@ -289,6 +369,11 @@ if (WIN32)
+     set(SDL2_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3/include")
+     set(SDL2_LIBRARIES "SDL2" "SDL2main")
+     link_directories("${PROJECT_SOURCE_DIR}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3/lib/x64")
++elseif (EMSCRIPTEN)
++    # Emscripten's own port of SDL2.
++    add_compile_options("-sUSE_SDL=2")
++    set(SDL2_LIBRARIES "-sUSE_SDL=2")
++    set(SDL2_INCLUDE_DIRS "${EMSCRIPTEN_SYSROOT}/include/SDL2")
+ else()
+     find_package(SDL2 REQUIRED)
+ endif()
+@@ -439,9 +524,40 @@ endif()
+ set_target_properties(rt64 PROPERTIES OUTPUT_NAME "rt64")
+ set_target_properties(rt64 PROPERTIES PREFIX "")
+ 
++if (RT64_PER_DRAW_TEXTURES)
++    target_compile_definitions(rt64 PUBLIC RT64_PER_DRAW_TEXTURES=1)
++endif()
++
++if (RT64_PACKED_RSP_INPUTS)
++    target_compile_definitions(rt64 PUBLIC RT64_PACKED_RSP_INPUTS=1)
++endif()
++if (RT64_WGSL)
++    target_compile_definitions(rt64 PUBLIC RT64_WGSL=1)
++endif()
++if (RT64_GAME_FRAME_WORKLOADS OR RT64_WGSL)
++    target_compile_definitions(rt64 PUBLIC RT64_GAME_FRAME_WORKLOADS=1)
++endif()
++if (RT64_FREE_DISCARDED_TARGETS OR RT64_WGSL)
++    target_compile_definitions(rt64 PRIVATE RT64_FREE_DISCARDED_TARGETS=1)
++endif()
++if (RT64_UNEVEN_FRAME_RATES OR RT64_WGSL)
++    target_compile_definitions(rt64 PUBLIC RT64_UNEVEN_FRAME_RATES=1)
++endif()
++if (RT64_INTERPOLATE_CAMERA_EYE OR RT64_WGSL)
++    target_compile_definitions(rt64 PRIVATE RT64_INTERPOLATE_CAMERA_EYE=1)
++endif()
++if (RT64_SKIP_COLLAPSED_MATCHES OR RT64_WGSL)
++    target_compile_definitions(rt64 PRIVATE RT64_SKIP_COLLAPSED_MATCHES=1)
++endif()
++if (RT64_SCISSOR_INSIDE_FRAMEBUFFER OR RT64_WGSL)
++    target_compile_definitions(rt64 PRIVATE RT64_SCISSOR_INSIDE_FRAMEBUFFER=1)
++endif()
++
+ # Add common libraries.
+ target_link_libraries(rt64 re-spirv)
+-target_link_libraries(rt64 nfd)
++if (NOT EMSCRIPTEN)
++    target_link_libraries(rt64 nfd)
++endif()
+ target_link_libraries(rt64 libzstd_static)
+ target_link_libraries(rt64 plume)
+ 
+@@ -504,11 +620,147 @@ build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/
+ build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantMS.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D MULTISAMPLING")
+ build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlat.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR")
+ build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatMS.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D MULTISAMPLING")
+-build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantMSNoCvg.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D MULTISAMPLING" "-D NO_COVERAGE")
+-build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatMSNoCvg.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D MULTISAMPLING" "-D NO_COVERAGE")
++if (NOT RT64_WGSL)
++    # Rush 2's blended draws without the coverage output (RasterPS.hlsl, NO_COVERAGE). A WGSL build has none: its
++    # RasterPS writes no coverage at all.
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantMSNoCvg.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D MULTISAMPLING" "-D NO_COVERAGE")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatMSNoCvg.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D MULTISAMPLING" "-D NO_COVERAGE")
++endif()
++if (RT64_WGSL)
++    # Dual-source blending is optional in WebGPU, so RasterPS also comes with it, for the devices that have it; the
++    # variants above write one output (RasterPS.hlsl).
++    build_pixel_shader(  rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSDynamicDualSource.hlsl" "-D DYNAMIC_RENDER_PARAMS" "-D DUAL_SOURCE_BLENDING")
++    build_pixel_shader(  rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSDynamicMSDualSource.hlsl" "-D DYNAMIC_RENDER_PARAMS" "-D MULTISAMPLING" "-D DUAL_SOURCE_BLENDING")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantDualSource.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D DUAL_SOURCE_BLENDING")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantMSDualSource.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D MULTISAMPLING" "-D DUAL_SOURCE_BLENDING")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatDualSource.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D DUAL_SOURCE_BLENDING")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatMSDualSource.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D MULTISAMPLING" "-D DUAL_SOURCE_BLENDING")
++    # The RasterPS the browser specializes at run time with override values (ShaderCacheWGSL, rt64_raster_shader.h)
++    # keeps the ubershader's loops (SPEC_CONSTANT_LOOPS): nothing strips it of dead code before the browser parses all of
++    # it, and Chrome parses a module on its GPU main thread, where every present waits behind it. The unrolled ones
++    # above are what the prebuilt shaders are specialized from (spirv-opt), which removes what a shader doesn't use.
++    # Unrolled it is 670 KB of WGSL, which Chrome 155 parsed in 683 ms and built pipelines from in 1.0-1.6 s each; with
++    # the loops 250 KB, 149 ms and 0.29-0.46 s (a test page, six of GoldenEye's shaders, RTX 2070).
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatLoops.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D SPEC_CONSTANT_LOOPS")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatLoopsMS.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D SPEC_CONSTANT_LOOPS" "-D MULTISAMPLING")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatLoopsDualSource.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D SPEC_CONSTANT_LOOPS" "-D DUAL_SOURCE_BLENDING")
++    build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatLoopsMSDualSource.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D SPEC_CONSTANT_LOOPS" "-D MULTISAMPLING" "-D DUAL_SOURCE_BLENDING")
++endif()
+ build_vertex_shader( rt64 "src/shaders/RasterVS.hlsl" "src/shaders/RasterVSDynamic.hlsl" "-D DYNAMIC_RENDER_PARAMS")
+ build_vertex_shader_spec_constants( rt64 "src/shaders/RasterVS.hlsl" "src/shaders/RasterVSSpecConstant.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS")
+ build_vertex_shader_spec_constants( rt64 "src/shaders/RasterVS.hlsl" "src/shaders/RasterVSSpecConstantFlat.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR")
++# A Vulkan device without descriptor indexing (an old GPU, lavapipe before Mesa 23) gets the framebuffer renderer's
++# per-draw texture sets at run time (perDrawTextures() in rt64_descriptor_sets.h), so the SPIR-V of every shader that
++# uses those sets is built for them too, as <name>PerDraw, and picked by the same test. A WGSL build has only those.
++if (NOT RT64_WGSL)
++    set(PER_DRAW "-D PER_DRAW_TEXTURES")
++    build_shader_spirv(rt64 "src/shaders/RasterPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/RasterPSDynamicPerDraw.hlsl" "-D DYNAMIC_RENDER_PARAMS" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/RasterPSDynamicMSPerDraw.hlsl" "-D DYNAMIC_RENDER_PARAMS" "-D MULTISAMPLING" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/RasterPSSpecConstantPerDraw.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/RasterPSSpecConstantMSPerDraw.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D MULTISAMPLING" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/RasterPSSpecConstantFlatPerDraw.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/RasterPSSpecConstantFlatMSPerDraw.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D MULTISAMPLING" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterVS.hlsl" "${DXC_VS_OPTS}" "src/shaders/RasterVSDynamicPerDraw.hlsl" "-D DYNAMIC_RENDER_PARAMS" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterVS.hlsl" "${DXC_VS_OPTS}" "src/shaders/RasterVSSpecConstantPerDraw.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/RasterVS.hlsl" "${DXC_VS_OPTS}" "src/shaders/RasterVSSpecConstantFlatPerDraw.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/PostBlendDitherNoisePS.hlsl" "${DXC_PS_OPTS}" "src/shaders/PostBlendDitherNoiseAddPSPerDraw.hlsl" "-D ADD_MODE" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/PostBlendDitherNoisePS.hlsl" "${DXC_PS_OPTS}" "src/shaders/PostBlendDitherNoiseSubPSPerDraw.hlsl" "-D SUB_MODE" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/PostBlendDitherNoisePS.hlsl" "${DXC_PS_OPTS}" "src/shaders/PostBlendDitherNoiseSubNegativePSPerDraw.hlsl" "-D SUB_MODE" "-D NEGATIVE_MODE" ${PER_DRAW})
++    build_shader_spirv(rt64 "src/shaders/DebugPS.hlsl" "${DXC_PS_OPTS}" "src/shaders/DebugPSPerDraw.hlsl" ${PER_DRAW})
++endif()
++
++# Prebuilt shaders for WebGPU. A game that sets RT64_PREBUILT_SHADER_LIST to a list of the shader descriptions it uses
++# (one per line, five hex words: other mode L and H, color combiner L and H, flags, as its page prints them when opened
++# with ?record-shaders) gets each one specialized here: spirv-opt (SPIRV-Tools) sets the spec constant SPIR-V's
++# constants to the description, freezes them and optimizes what is left, naga turns that into WGSL, and
++# shader_specializer puts the lot into rt64 compressed. RasterShaderCache builds them in every browser
++# (startPrebuild()), with the game waiting: those above the list's first line reading "section <name>" (all of them
++# without one) before it gets past its first frame, and each section after that when the game first draws with its
++# shaders, a level at a time. They are made without MSAA, with RasterPS both with dual-source blending (.ps.wgsl) and
++# without (.ps-single.wgsl).
++# -O runs twice: once leaves much of what the constants decided (a small RasterPS 42 KB of WGSL against 15). Without
++# --strip-debug naga names every value after dxc's debug names. re-spirv, which RT64 specializes with on Vulkan, can't
++# take a loop the shader keeps, which the WebGPU pixel shaders have (TextureSampler.hlsli, RasterPS.hlsl), and on
++# shaders without one spirv-opt alone comes within 1% of re-spirv followed by spirv-opt -O. Against re-spirv alone it
++# makes a RasterPS about 45% smaller and descriptions that differ only in what RasterPS ignores the same, kept once
++# (GoldenEye's 340: 624 different stages to 210, 103 MB of WGSL to 16), and Chrome builds them in about 60% of the time.
++# pack moves the variables naga makes of SPIR-V's phis out of their functions, which Chrome parses about four times
++# faster, on the thread that takes the page's presents (shader_specializer.cpp, privatizePhis()).
++if (RT64_WGSL AND RT64_PREBUILT_SHADER_LIST)
++    find_program(RT64_SPIRV_OPT_EXECUTABLE spirv-opt)
++    if (NOT RT64_SPIRV_OPT_EXECUTABLE)
++        message(FATAL_ERROR "spirv-opt not found: the prebuilt shaders need it. Install SPIRV-Tools or set RT64_SPIRV_OPT_EXECUTABLE.")
++    endif()
++    add_subdirectory(src/tools/shader_specializer)
++    # A decal's pixel shader writes its depth bounds instead of reading the depth buffer (RasterPS.hlsl,
++    # DECAL_DEPTH_BOUNDS), so that it draws in the pass that writes depth: SPIR-V only, for these.
++    foreach(PREBUILT_DECAL_VARIANT "" "Flat" "DualSource" "FlatDualSource")
++        set(PREBUILT_DECAL_DEFINES "-D" "SPEC_CONSTANT_RENDER_PARAMS" "-D" "DECAL_DEPTH_BOUNDS")
++        if (PREBUILT_DECAL_VARIANT MATCHES "Flat")
++            list(APPEND PREBUILT_DECAL_DEFINES "-D" "VERTEX_FLAT_COLOR")
++        endif()
++        if (PREBUILT_DECAL_VARIANT MATCHES "DualSource")
++            list(APPEND PREBUILT_DECAL_DEFINES "-D" "DUAL_SOURCE_BLENDING")
++        endif()
++        add_dxc_command(${CMAKE_BINARY_DIR}/src/shaders/RasterPSSpecConstant${PREBUILT_DECAL_VARIANT}Decal.hlsl.wgsl.spv
++            ${PROJECT_SOURCE_DIR}/src/shaders/RasterPS.hlsl ${DXC_SPV_OPTS} -D WEBGPU ${DXC_PS_OPTS} ${PREBUILT_DECAL_DEFINES})
++    endforeach()
++    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${RT64_PREBUILT_SHADER_LIST})
++    file(STRINGS ${RT64_PREBUILT_SHADER_LIST} PREBUILT_LINES REGEX "^[0-9a-fA-F]+( +[0-9a-fA-F]+)( +[0-9a-fA-F]+)( +[0-9a-fA-F]+)( +[0-9a-fA-F]+)")
++    set(PREBUILT_DIR "${CMAKE_BINARY_DIR}/rt64_prebuilt_shaders")
++    set(PREBUILT_SPIRV "${CMAKE_BINARY_DIR}/src/shaders")
++    file(MAKE_DIRECTORY ${PREBUILT_DIR})
++    set(PREBUILT_OUTPUTS)
++    foreach(PREBUILT_LINE ${PREBUILT_LINES})
++        string(REGEX MATCHALL "[0-9a-fA-F]+" PREBUILT_WORDS "${PREBUILT_LINE}")
++        list(GET PREBUILT_WORDS 4 PREBUILT_FLAGS)
++        string(JOIN "_" PREBUILT_KEY ${PREBUILT_WORDS})
++        # The spec constants' ids are RT64's: other mode L and H, color combiner L and H, flags.
++        set(PREBUILT_SPEC_CONSTANTS)
++        set(PREBUILT_ID 0)
++        foreach(PREBUILT_WORD ${PREBUILT_WORDS})
++            math(EXPR PREBUILT_VALUE "0x${PREBUILT_WORD}" OUTPUT_FORMAT DECIMAL)
++            list(APPEND PREBUILT_SPEC_CONSTANTS "${PREBUILT_ID}:${PREBUILT_VALUE}")
++            math(EXPR PREBUILT_ID "${PREBUILT_ID} + 1")
++        endforeach()
++        string(JOIN " " PREBUILT_SPEC_CONSTANTS ${PREBUILT_SPEC_CONSTANTS})
++        # The flags' fourth bit is smoothShade, and other mode L's bits 10 and 11 both set are a decal (ZMODE_DEC).
++        math(EXPR PREBUILT_SMOOTH "(0x${PREBUILT_FLAGS} >> 3) & 1")
++        list(GET PREBUILT_WORDS 0 PREBUILT_OTHER_MODE_L)
++        math(EXPR PREBUILT_ZMODE "(0x${PREBUILT_OTHER_MODE_L} >> 10) & 3")
++        set(PREBUILT_PS_DECAL "")
++        if (PREBUILT_ZMODE EQUAL 3)
++            set(PREBUILT_PS_DECAL "Decal")
++        endif()
++        if (PREBUILT_SMOOTH)
++            set(PREBUILT_SPIRV_vs "${PREBUILT_SPIRV}/RasterVSSpecConstant.hlsl.wgsl.spv")
++            set(PREBUILT_SPIRV_ps "${PREBUILT_SPIRV}/RasterPSSpecConstantDualSource${PREBUILT_PS_DECAL}.hlsl.wgsl.spv")
++            set(PREBUILT_SPIRV_ps-single "${PREBUILT_SPIRV}/RasterPSSpecConstant${PREBUILT_PS_DECAL}.hlsl.wgsl.spv")
++        else()
++            set(PREBUILT_SPIRV_vs "${PREBUILT_SPIRV}/RasterVSSpecConstantFlat.hlsl.wgsl.spv")
++            set(PREBUILT_SPIRV_ps "${PREBUILT_SPIRV}/RasterPSSpecConstantFlatDualSource${PREBUILT_PS_DECAL}.hlsl.wgsl.spv")
++            set(PREBUILT_SPIRV_ps-single "${PREBUILT_SPIRV}/RasterPSSpecConstantFlat${PREBUILT_PS_DECAL}.hlsl.wgsl.spv")
++        endif()
++        set(PREBUILT_OUT "${PREBUILT_DIR}/${PREBUILT_KEY}")
++        set(PREBUILT_COMMANDS)
++        foreach(PREBUILT_STAGE vs ps ps-single)
++            list(APPEND PREBUILT_COMMANDS
++                COMMAND ${RT64_SPIRV_OPT_EXECUTABLE} --set-spec-const-default-value "${PREBUILT_SPEC_CONSTANTS}" --freeze-spec-const
++                    --fold-spec-const-op-composite --strip-debug -O -O ${PREBUILT_SPIRV_${PREBUILT_STAGE}} -o ${PREBUILT_OUT}.${PREBUILT_STAGE}.spv
++                COMMAND ${RT64_NAGA_EXECUTABLE} --input-kind spv --keep-coordinate-space ${PREBUILT_OUT}.${PREBUILT_STAGE}.spv ${PREBUILT_OUT}.${PREBUILT_STAGE}.wgsl)
++        endforeach()
++        add_custom_command(OUTPUT ${PREBUILT_OUT}.vs.wgsl ${PREBUILT_OUT}.ps.wgsl ${PREBUILT_OUT}.ps-single.wgsl
++            ${PREBUILT_COMMANDS}
++            DEPENDS ${PREBUILT_SPIRV_vs} ${PREBUILT_SPIRV_ps} ${PREBUILT_SPIRV_ps-single}
++            VERBATIM)
++        list(APPEND PREBUILT_OUTPUTS ${PREBUILT_OUT}.vs.wgsl ${PREBUILT_OUT}.ps.wgsl ${PREBUILT_OUT}.ps-single.wgsl)
++    endforeach()
++    add_custom_command(OUTPUT ${PREBUILT_DIR}/rt64_prebuilt_shaders.c
++        COMMAND shader_specializer pack ${RT64_PREBUILT_SHADER_LIST} ${PREBUILT_DIR} ${PREBUILT_DIR}/rt64_prebuilt_shaders.c "${PROJECT_SOURCE_DIR}/src/render/rt64_prebuilt_shaders.h"
++        DEPENDS shader_specializer ${RT64_PREBUILT_SHADER_LIST} ${PREBUILT_OUTPUTS})
++    target_sources(rt64 PRIVATE ${PREBUILT_DIR}/rt64_prebuilt_shaders.c)
++    target_compile_definitions(rt64 PRIVATE RT64_PREBUILT_SHADERS)
++endif()
+ build_compute_shader(rt64 "src/shaders/FbChangesClearCS.hlsl")
+ build_pixel_shader(  rt64 "src/shaders/FbChangesDrawColorPS.hlsl")
+ build_pixel_shader(  rt64 "src/shaders/FbChangesDrawDepthPS.hlsl")
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
 index 3c40137..bf82b07 100644
 --- a/src/hle/rt64_application.cpp
@@ -1665,10 +2038,10 @@ index 35ab5c9..cc5884a 100644
  
                  processCursor = -1;
 diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.cpp
-index 9ecd2d1..802c3e0 100644
+index 3fb62bb..930f474 100644
 --- a/src/render/rt64_raster_shader.cpp
 +++ b/src/render/rt64_raster_shader.cpp
-@@ -7,18 +7,46 @@
+@@ -7,20 +7,48 @@
  #include "xxHash/xxh3.h"
  
  #include "shaders/RenderParams.hlsli.rw.h"
@@ -1678,6 +2051,8 @@ index 9ecd2d1..802c3e0 100644
 -#include "shaders/RasterPSSpecConstantMS.hlsl.spirv.h"
 -#include "shaders/RasterPSSpecConstantFlat.hlsl.spirv.h"
 -#include "shaders/RasterPSSpecConstantFlatMS.hlsl.spirv.h"
+-#include "shaders/RasterPSSpecConstantMSNoCvg.hlsl.spirv.h"
+-#include "shaders/RasterPSSpecConstantFlatMSNoCvg.hlsl.spirv.h"
 -#include "shaders/RasterVSDynamic.hlsl.spirv.h"
 -#include "shaders/RasterVSSpecConstant.hlsl.spirv.h"
 -#include "shaders/RasterVSSpecConstantFlat.hlsl.spirv.h"
@@ -1705,6 +2080,8 @@ index 9ecd2d1..802c3e0 100644
 +#   include "shaders/RasterPSSpecConstantMS.hlsl.spirv.h"
 +#   include "shaders/RasterPSSpecConstantFlat.hlsl.spirv.h"
 +#   include "shaders/RasterPSSpecConstantFlatMS.hlsl.spirv.h"
++#   include "shaders/RasterPSSpecConstantMSNoCvg.hlsl.spirv.h"
++#   include "shaders/RasterPSSpecConstantFlatMSNoCvg.hlsl.spirv.h"
 +#   include "shaders/RasterVSDynamic.hlsl.spirv.h"
 +#   include "shaders/RasterVSSpecConstant.hlsl.spirv.h"
 +#   include "shaders/RasterVSSpecConstantFlat.hlsl.spirv.h"
@@ -1727,7 +2104,7 @@ index 9ecd2d1..802c3e0 100644
  #ifdef _WIN32
  #   include "shaders/RasterPSLibrary.hlsl.dxil.h"
  #   include "shaders/RasterPSLibraryMS.hlsl.dxil.h"
-@@ -67,25 +95,70 @@ namespace RT64 {
+@@ -71,15 +99,32 @@ namespace RT64 {
  
      // OptimizerCacheSPIRV
  
@@ -1738,6 +2115,8 @@ index 9ecd2d1..802c3e0 100644
 -        rasterPSMS.parse(RasterPSSpecConstantMSBlobSPIRV, std::size(RasterPSSpecConstantMSBlobSPIRV));
 -        rasterPSFlat.parse(RasterPSSpecConstantFlatBlobSPIRV, std::size(RasterPSSpecConstantFlatBlobSPIRV));
 -        rasterPSFlatMS.parse(RasterPSSpecConstantFlatMSBlobSPIRV, std::size(RasterPSSpecConstantFlatMSBlobSPIRV));
+-        rasterPSMSNoCvg.parse(RasterPSSpecConstantMSNoCvgBlobSPIRV, std::size(RasterPSSpecConstantMSNoCvgBlobSPIRV));
+-        rasterPSFlatMSNoCvg.parse(RasterPSSpecConstantFlatMSNoCvgBlobSPIRV, std::size(RasterPSSpecConstantFlatMSNoCvgBlobSPIRV));
 +    void OptimizerCacheSPIRV::initialize(const RenderDeviceCapabilities &capabilities) {
 +#   if defined(RT64_WGSL)
 +        assert(false && "A WGSL build has no SPIR-V shaders.");
@@ -1752,12 +2131,25 @@ index 9ecd2d1..802c3e0 100644
 +        parse(rasterPSMS, RT64_TEXTURE_SETS_SPIRV(RasterPSSpecConstantMS, capabilities));
 +        parse(rasterPSFlat, RT64_TEXTURE_SETS_SPIRV(RasterPSSpecConstantFlat, capabilities));
 +        parse(rasterPSFlatMS, RT64_TEXTURE_SETS_SPIRV(RasterPSSpecConstantFlatMS, capabilities));
++        // Rush 2's blended draws leave out the coverage output (RasterPS.hlsl, NO_COVERAGE). Those shaders have no
++        // per-draw texture sets build, so a device that takes per-draw sets draws them with the coverage output, as
++        // before.
++        if (perDrawTextures(capabilities)) {
++            parse(rasterPSMSNoCvg, RT64_TEXTURE_SETS_SPIRV(RasterPSSpecConstantMS, capabilities));
++            parse(rasterPSFlatMSNoCvg, RT64_TEXTURE_SETS_SPIRV(RasterPSSpecConstantFlatMS, capabilities));
++        }
++        else {
++            parse(rasterPSMSNoCvg, SPIRVBlob{ RasterPSSpecConstantMSNoCvgBlobSPIRV, sizeof(RasterPSSpecConstantMSNoCvgBlobSPIRV) });
++            parse(rasterPSFlatMSNoCvg, SPIRVBlob{ RasterPSSpecConstantFlatMSNoCvgBlobSPIRV, sizeof(RasterPSSpecConstantFlatMSNoCvgBlobSPIRV) });
++        }
++
          assert(!rasterVS.empty());
          assert(!rasterVSFlat.empty());
          assert(!rasterPS.empty());
-         assert(!rasterPSMS.empty());
-         assert(!rasterPSFlat.empty());
+@@ -88,12 +133,50 @@ namespace RT64 {
          assert(!rasterPSFlatMS.empty());
+         assert(!rasterPSMSNoCvg.empty());
+         assert(!rasterPSFlatMSNoCvg.empty());
 +#   endif
 +    }
 +
@@ -1806,8 +2198,8 @@ index 9ecd2d1..802c3e0 100644
      {
          assert(device != nullptr);
  
-@@ -95,10 +168,25 @@ namespace RT64 {
-         const bool useMSAA = (multisampling.sampleCount > 1);
+@@ -105,10 +188,25 @@ namespace RT64 {
+         const bool noCoverage = usesBlendedPipeline(desc);
          std::unique_ptr<RenderShader> vertexShader;
          std::unique_ptr<RenderShader> pixelShader;
 -#ifdef __APPLE__
@@ -1834,7 +2226,7 @@ index 9ecd2d1..802c3e0 100644
              // Choose the pre-compiled shader permutations.
              const respv::Shader *VS = nullptr;
              const respv::Shader *PS = nullptr;
-@@ -229,13 +317,54 @@ namespace RT64 {
+@@ -251,13 +349,54 @@ namespace RT64 {
  #       endif
          }
          
@@ -1889,10 +2281,10 @@ index 9ecd2d1..802c3e0 100644
 +    // What of a description goes into its pipeline besides its shaders.
 +    void RasterShader::setPipelineState(const ShaderDescription &desc, PipelineCreation &creation) {
 +        const bool copyMode = (desc.otherMode.cycleType() == G_CYC_COPY);
-         creation.alphaBlend = !copyMode && interop::Blender::usesAlphaBlend(desc.otherMode);
+         creation.alphaBlend = usesBlendedPipeline(desc);
          creation.culling = !copyMode && desc.flags.culling;
          creation.zCmp = !copyMode && desc.otherMode.zCmp() && (desc.otherMode.zMode() != ZMODE_DEC);
-@@ -243,11 +372,14 @@ namespace RT64 {
+@@ -265,11 +404,14 @@ namespace RT64 {
          creation.cvgAdd = (desc.otherMode.cvgDst() == CVG_DST_WRAP) || (desc.otherMode.cvgDst() == CVG_DST_SAVE);
          creation.NoN = desc.flags.NoN;
          creation.usesHDR = desc.flags.usesHDR;
@@ -1912,7 +2304,7 @@ index 9ecd2d1..802c3e0 100644
      }
  
      RasterShader::~RasterShader() { }
-@@ -273,11 +405,13 @@ namespace RT64 {
+@@ -299,12 +441,14 @@ namespace RT64 {
              }
          }
  #   endif
@@ -1921,12 +2313,13 @@ index 9ecd2d1..802c3e0 100644
              XXH3_64bits_update(state, RasterVSSpecConstantBlobSPIRV, sizeof(RasterVSSpecConstantBlobSPIRV));
              XXH3_64bits_update(state, RasterPSSpecConstantBlobSPIRV, sizeof(RasterPSSpecConstantBlobSPIRV));
              XXH3_64bits_update(state, RasterPSSpecConstantMSBlobSPIRV, sizeof(RasterPSSpecConstantMSBlobSPIRV));
+             XXH3_64bits_update(state, RasterPSSpecConstantMSNoCvgBlobSPIRV, sizeof(RasterPSSpecConstantMSNoCvgBlobSPIRV));
          }
 +#   endif
          const uint64_t key = XXH3_64bits_digest(state);
          XXH3_freeState(state);
          return key;
-@@ -361,7 +495,7 @@ namespace RT64 {
+@@ -398,7 +542,7 @@ namespace RT64 {
          pipelineDesc.depthEnabled = c.zCmp || c.zUpd;
          pipelineDesc.depthFunction = c.zCmp ? RenderComparisonFunction::LESS : RenderComparisonFunction::ALWAYS;
          pipelineDesc.depthWriteEnabled = c.zUpd;
@@ -1935,7 +2328,7 @@ index 9ecd2d1..802c3e0 100644
          pipelineDesc.multisampling = c.multisampling;
          pipelineDesc.inputSlots = RasterInputSlots;
          pipelineDesc.inputSlotsCount = uint32_t(std::size(RasterInputSlots));
-@@ -373,13 +507,16 @@ namespace RT64 {
+@@ -410,13 +554,16 @@ namespace RT64 {
          pipelineDesc.pixelShader = c.pixelShader;
          pipelineDesc.specConstants = c.specConstants.data();
          pipelineDesc.specConstantsCount = uint32_t(c.specConstants.size());
@@ -1954,7 +2347,7 @@ index 9ecd2d1..802c3e0 100644
              targetBlend.blendOp = RenderBlendOperation::ADD;
          }
  
-@@ -389,6 +526,38 @@ namespace RT64 {
+@@ -426,6 +573,38 @@ namespace RT64 {
              targetBlend.dstBlendAlpha = RenderBlend::ONE;
          }
  
@@ -1993,7 +2386,7 @@ index 9ecd2d1..802c3e0 100644
          return c.device->createGraphicsPipeline(pipelineDesc);
      }
      
-@@ -467,12 +636,33 @@ namespace RT64 {
+@@ -504,12 +683,33 @@ namespace RT64 {
              PSBlobSize = uint32_t(useMSAA ? std::size(RasterPSDynamicMSBlobDXIL) : std::size(RasterPSDynamicBlobDXIL));
              break;
  #   endif
@@ -2015,7 +2408,7 @@ index 9ecd2d1..802c3e0 100644
 +                PSBlob = dualSource ? RasterPSDynamicDualSourceBlobWGSL : RasterPSDynamicBlobWGSL;
 +                PSBlobSize = uint32_t(dualSource ? sizeof(RasterPSDynamicDualSourceBlobWGSL) : sizeof(RasterPSDynamicBlobWGSL));
 +            }
-+            break;
+             break;
 +        }
 +#   else
 +        case RenderShaderFormat::SPIRV: {
@@ -2026,13 +2419,13 @@ index 9ecd2d1..802c3e0 100644
 +            PSBlob = PS.data;
 +            VSBlobSize = uint32_t(VS.size);
 +            PSBlobSize = uint32_t(PS.size);
-             break;
++            break;
 +        }
 +#   endif
  #   ifdef __APPLE__
          case RenderShaderFormat::METAL:
              VSBlob = RasterVSDynamicBlobMSL;
-@@ -490,14 +680,12 @@ namespace RT64 {
+@@ -527,14 +727,12 @@ namespace RT64 {
          pixelShader = device->createShader(PSBlob, PSBlobSize, "PSMain", shaderFormat);
  
          FramebufferRendererDescriptorCommonSet descriptorCommonSet(shaderLibrary->samplerLibrary, device->getCapabilities().raytracing);
@@ -2048,7 +2441,7 @@ index 9ecd2d1..802c3e0 100644
          layoutBuilder.addDescriptorSet(descriptorFramebufferSet);
          layoutBuilder.end();
          pipelineLayout = layoutBuilder.create(device);
-@@ -547,11 +735,24 @@ namespace RT64 {
+@@ -584,11 +782,24 @@ namespace RT64 {
              postBlendSubNegativePixelShader = device->createShader(PostBlendDitherNoiseSubNegativePSBlobDXIL, std::size(PostBlendDitherNoiseSubNegativePSBlobDXIL), "PSMain", shaderFormat);
              break;
  #   endif
@@ -2077,7 +2470,7 @@ index 9ecd2d1..802c3e0 100644
  #   ifdef __APPLE__
          case RenderShaderFormat::METAL:
              postBlendAddPixelShader = device->createShader(PostBlendDitherNoiseAddPSBlobMSL, std::size(PostBlendDitherNoiseAddPSBlobMSL), "PSMain", shaderFormat);
-@@ -569,7 +770,7 @@ namespace RT64 {
+@@ -606,7 +817,7 @@ namespace RT64 {
          postBlendDesc.renderTargetFormat[0] = RenderTarget::colorBufferFormat(shaderLibrary->usesHDR);
          postBlendDesc.renderTargetCount = 1;
          postBlendDesc.cullMode = RenderCullMode::NONE;
@@ -2087,7 +2480,7 @@ index 9ecd2d1..802c3e0 100644
          postBlendDesc.inputSlots = RasterInputSlots;
          postBlendDesc.inputSlotsCount = uint32_t(std::size(RasterInputSlots));
 diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
-index 938f6a7..1f2ec63 100644
+index 8ced9e5..5ea2137 100644
 --- a/src/render/rt64_raster_shader.h
 +++ b/src/render/rt64_raster_shader.h
 @@ -10,6 +10,7 @@
@@ -2098,9 +2491,9 @@ index 938f6a7..1f2ec63 100644
  
  #include "re-spirv/re-spirv.h"
  
-@@ -37,7 +38,25 @@ namespace RT64 {
-         respv::Shader rasterPSFlat;
-         respv::Shader rasterPSFlatMS;
+@@ -39,7 +40,25 @@ namespace RT64 {
+         respv::Shader rasterPSMSNoCvg;
+         respv::Shader rasterPSFlatMSNoCvg;
  
 -        void initialize();
 +        void initialize(const RenderDeviceCapabilities &capabilities);
@@ -2125,7 +2518,7 @@ index 938f6a7..1f2ec63 100644
      };
  
      struct PipelineCreation {
-@@ -54,6 +73,8 @@ namespace RT64 {
+@@ -56,6 +75,8 @@ namespace RT64 {
          bool usesHDR;
          std::vector<RenderSpecConstant> specConstants;
          RenderMultisampling multisampling;
@@ -2134,7 +2527,7 @@ index 938f6a7..1f2ec63 100644
      };
  
      struct RasterShaderText {
-@@ -75,16 +96,30 @@ namespace RT64 {
+@@ -77,16 +98,30 @@ namespace RT64 {
          RenderDevice *device;
          std::unique_ptr<RenderPipeline> pipeline;
  
@@ -2164,15 +2557,15 @@ index 938f6a7..1f2ec63 100644
 +        static void setPipelineState(const ShaderDescription &desc, PipelineCreation &creation);
 +        static uint32_t pipelineStateKey(const ShaderDescription &desc);
          static RasterShaderText generateShaderText(const ShaderDescription &desc, bool multisampling);
+         static bool usesBlendedPipeline(const ShaderDescription &desc);
          static std::unique_ptr<RenderPipeline> createPipeline(const PipelineCreation &c);
-         static RenderMultisampling generateMultisamplingPattern(uint32_t sampleCount, bool sampleLocationsSupported);
 diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_shader_cache.cpp
-index e08e4ce..b508445 100644
+index 7e3f4a1..fae98bd 100644
 --- a/src/render/rt64_raster_shader_cache.cpp
 +++ b/src/render/rt64_raster_shader_cache.cpp
-@@ -8,6 +8,52 @@
- 
- #include <cstdio>
+@@ -19,6 +19,52 @@
+ #   include <unistd.h>
+ #endif
  
 +#if defined(__EMSCRIPTEN__)
 +#   include <emscripten/emscripten.h>
@@ -2223,7 +2616,7 @@ index e08e4ce..b508445 100644
  #define ENABLE_OPTIMIZED_SHADER_GENERATION
  
  namespace RT64 {
-@@ -81,7 +127,7 @@ namespace RT64 {
+@@ -148,7 +194,7 @@ namespace RT64 {
              // when the game hasn't asked for anything: what it is drawing with comes first.
              if (fromDiskQueue) {
                  const RenderPipelineLayout *uberPipelineLayout = shaderCache->shaderUber->pipelineLayout.get();
@@ -2232,7 +2625,7 @@ index e08e4ce..b508445 100644
                  {
                      const std::unique_lock<std::mutex> lock(shaderCache->GPUShadersMutex);
                      shaderCache->GPUShaders[diskJob.desc.hash()] = std::move(newShader);
-@@ -101,7 +147,7 @@ namespace RT64 {
+@@ -168,7 +214,7 @@ namespace RT64 {
                  const RenderPipelineLayout *uberPipelineLayout = shaderCache->shaderUber->pipelineLayout.get();
                  const RenderMultisampling multisampling = shaderCache->multisampling;
                  RasterShaderBlobs compiled;
@@ -2241,7 +2634,7 @@ index e08e4ce..b508445 100644
  
                  {
                      const std::unique_lock<std::mutex> lock(shaderCache->GPUShadersMutex);
-@@ -137,6 +183,15 @@ namespace RT64 {
+@@ -204,6 +250,15 @@ namespace RT64 {
      RasterShaderCache::~RasterShaderCache() {
          stopDiskLoader();
          compilationThreads.clear();
@@ -2254,10 +2647,10 @@ index e08e4ce..b508445 100644
 +        for (std::thread &thread : prebuildThreads) {
 +            thread.join();
 +        }
+         releaseDiskLock();
      }
  
-     void RasterShaderCache::setup(RenderDevice *device, RenderShaderFormat shaderFormat, const ShaderLibrary *shaderLibrary, const RenderMultisampling &multisampling) {
-@@ -149,9 +204,476 @@ namespace RT64 {
+@@ -217,9 +272,476 @@ namespace RT64 {
          shaderUber = std::make_unique<RasterShaderUber>(device, shaderFormat, multisampling, shaderLibrary, ubershaderThreadCount);
          usesHDR = shaderLibrary->usesHDR;
  
@@ -2735,7 +3128,7 @@ index e08e4ce..b508445 100644
          }
  
          // Rush 2 recomp: read the disk shader cache for this format and multisampling and build its shaders.
-@@ -329,6 +851,12 @@ namespace RT64 {
+@@ -436,6 +958,12 @@ namespace RT64 {
      }
  
      void RasterShaderCache::submit(const ShaderDescription &desc) {
@@ -2748,7 +3141,7 @@ index e08e4ce..b508445 100644
          {
              std::unique_lock<std::mutex> queueLock(submissionMutex);
  
-@@ -342,6 +870,28 @@ namespace RT64 {
+@@ -449,6 +977,28 @@ namespace RT64 {
              found = true;
          }
  
@@ -2777,7 +3170,7 @@ index e08e4ce..b508445 100644
          // Push a new shader compilation to the queue.
          {
              const std::unique_lock<std::mutex> queueLock(descQueueMutex);
-@@ -351,6 +901,42 @@ namespace RT64 {
+@@ -458,6 +1008,42 @@ namespace RT64 {
          descQueueChanged.notify_all();
      }
      
@@ -2820,7 +3213,7 @@ index e08e4ce..b508445 100644
      void RasterShaderCache::waitForAll() {
          stopDiskLoader();
          {
-@@ -384,6 +970,18 @@ namespace RT64 {
+@@ -491,6 +1077,18 @@ namespace RT64 {
          const std::unique_lock<std::mutex> lock(GPUShadersMutex);
          auto shaderIt = GPUShaders.find(shaderHash);
          if (shaderIt == GPUShaders.end()) {
@@ -2840,7 +3233,7 @@ index e08e4ce..b508445 100644
          }
  
 diff --git a/src/render/rt64_raster_shader_cache.h b/src/render/rt64_raster_shader_cache.h
-index 794f565..4572ea2 100644
+index 2e33dae..4326213 100644
 --- a/src/render/rt64_raster_shader_cache.h
 +++ b/src/render/rt64_raster_shader_cache.h
 @@ -4,17 +4,26 @@
@@ -2887,7 +3280,7 @@ index 794f565..4572ea2 100644
          std::mutex GPUShadersMutex;
          std::list<std::unique_ptr<CompilationThread>> compilationThreads;
          uint32_t threadCount;
-@@ -69,11 +79,62 @@ namespace RT64 {
+@@ -74,11 +84,62 @@ namespace RT64 {
          std::chrono::steady_clock::time_point diskStart;
          static void setDiskCacheDirectory(const std::filesystem::path &directory);
  
@@ -3623,7 +4016,7 @@ index 315d140..4faabc2 100644
          if ((p == nullptr) || !p->valid) {
              return false;
 diff --git a/src/shaders/RasterPS.hlsl b/src/shaders/RasterPS.hlsl
-index 5f2454e..b051a1d 100644
+index d107485..d54b19d 100644
 --- a/src/shaders/RasterPS.hlsl
 +++ b/src/shaders/RasterPS.hlsl
 @@ -5,6 +5,7 @@
@@ -3901,7 +4294,7 @@ index 5f2454e..b051a1d 100644
      return DynamicRenderParams[instanceIndex];
  }
  #elif defined(SPEC_CONSTANT_RENDER_PARAMS)
-@@ -335,14 +464,29 @@ void PSMain(
+@@ -335,19 +464,32 @@ void PSMain(
  #if defined(DYNAMIC_RENDER_PARAMS) || defined(VERTEX_FLAT_COLOR)
      , nointerpolation in float4 vertexFlatColor : COLOR1
  #endif
@@ -3917,9 +4310,14 @@ index 5f2454e..b051a1d 100644
      , [[vk::location(0)]] [[vk::index(0)]] out float4 pixelColor : SV_TARGET0
      , [[vk::location(0)]] [[vk::index(1)]] out float4 pixelAlpha : SV_TARGET1
 +#endif
-+#if !defined(WEBGPU)
+ // The coverage only matters with more than one sample, and never for a blended draw (NO_COVERAGE), where the cutout
+ // in RasterPS doesn't apply. Intel's Gen9 drivers drop random pixels when a shader writes it alongside the second
+-// output of dual source blending, which speckles every translucent draw.
+-#if defined(MULTISAMPLING) && !defined(NO_COVERAGE)
++// output of dual source blending, which speckles every translucent draw. A page has none (below).
++#if !defined(WEBGPU) && defined(MULTISAMPLING) && !defined(NO_COVERAGE)
      , out uint pixelCoverage : SV_Coverage
-+#endif
+ #endif
 +#if defined(DECAL_DEPTH_BOUNDS)
 +    , out float pixelDepth : SV_Depth
 +#endif
@@ -3931,7 +4329,7 @@ index 5f2454e..b051a1d 100644
  #if !defined(DYNAMIC_RENDER_PARAMS)
  #if !defined(VERTEX_FLAT_COLOR)
      float4 vertexFlatColor = 0.0f;
-@@ -358,7 +502,17 @@ void PSMain(
+@@ -363,8 +505,16 @@ void PSMain(
      }
  
      pixelColor = resultColor;
@@ -3940,16 +4338,15 @@ index 5f2454e..b051a1d 100644
 +#endif
 +#if !defined(WEBGPU) || defined(DUAL_SOURCE_BLENDING)
      pixelAlpha = resultAlpha;
+-#if defined(MULTISAMPLING) && !defined(NO_COVERAGE)
 +#endif
 +    // naga takes no SampleMask output (its SPIR-V front end gives the variable an initializer of another type), so a
 +    // page has no coverage output: with one sample, as a page draws, RasterPSs coverage is all of the pixels samples
 +    // or a discard, the same without it.
-+#if !defined(WEBGPU)
++#if !defined(WEBGPU) && defined(MULTISAMPLING) && !defined(NO_COVERAGE)
      pixelCoverage = resultCoverage;
-+#endif
- }
  #endif
-\ No newline at end of file
+ }
 diff --git a/src/shaders/TextureSampler.hlsli b/src/shaders/TextureSampler.hlsli
 index 069d113..e3ddf51 100644
 --- a/src/shaders/TextureSampler.hlsli

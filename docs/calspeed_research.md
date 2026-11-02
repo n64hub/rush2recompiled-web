@@ -42,6 +42,47 @@ All in the main data, Rush 2's layouts (`src/calspeed/calspeed_convert.cpp`):
 | 0x80094CB4 | RGB per track: fog colour |
 | 0x800C4C80 | u8 per track: visibility region count |
 | 0x800C0680 | 16-byte region masks, the tracks' tables back to back |
+| 0x800BF86C | ptr per track: animated texture list (below) |
+
+### Animated textures
+
+California Speed animates track textures with its copy of Rush 2's palette-cycle/scroll update (R2
+`func_8008A9C8`, docs/rush2049_research/texanim.md section 3) with its own kind numbers:
+
+- Set-up 0x800B979C (Rush 2's 0x8008AF48): list per track from 0x800BF86C indexed by the track id at 0x800E779C
+  (default list 0x800BF844 when called with 0). Records are 0x14 bytes: +0 texture name, +4 s16 first/position, +6 s16
+  last/limit, +8 s8 step, +9 kind, +A s8 period, +C s16 timer, +10 data. Data = the texture's load list (texture
+  lookup 0x800CA2A8, record +0x18) for kind >= 10, else the palette's colors (palette lookup 0x800CA3F8, +0x14).
+- Update 0x800B989C (Rush 2's 0x8008A9C8), each frame: timer -= the frame's vblanks (0x8001FF64); when it is <= 0,
+  timer = period and the kind runs (jump table 0x800DC218, 14 kinds):
+  - 0: rotate palette entries first..last up (the last moves to first). 1: nothing. 2: rotate down.
+  - 3 / 4: set entries first..first+14 to the 15 colors at 0x800BF450 (dark red) / 0x800BF430 (bright red), then
+    switch to the other kind: a blink.
+  - 5: swap first..last with the run gap = last - first + step + 1 on. 6: rotate three runs gap apart.
+  - 7-9: traffic light patterns (fixed colors, kind chain, timer 500), in no track's list.
+  - 10: s, position -= step. 11: t, +=. 12: t, -=. 13: s, +=. The position wraps into [0, limit) and goes to
+    0x8008A960 (Rush 2's 0x8008A804) unshifted as the tile origin of every G_SETTILESIZE of the load list (halved per
+    smaller mipmap tile).
+
+`tools/calspeed/texanim.py` lists every track's records. [V]
+
+Yosemite's waterfalls (`YH2OFALC`, 64 x 32) scroll in t by 6 a frame (1.5 texels), wrapping at 128 (the texture's 32
+texels; kind 12, step -6, period 1); Fuji, California and San Andreas use the same texture. Also animated: water
+(WATER is a palette rotation; WATER72/WATER8 scroll) on Monterey, Highway 1, Santa Cruz, San Diego, Mojave, Fuji and
+California; lava (Mt. Shasta, California); Silicon Valley's LEDs (LED1/LED2 blink in turn) and spray-paint messages;
+arrows (ARWS); Mojave's UFO lights and GLOW; San Andreas's LIGHT2. San Francisco, Clover, Los Angeles and Oval have
+none. [V]
+
+**Port:** `tex_anims` in `src/calspeed/calspeed_convert.cpp` reads the track's list and the two blink color sets
+(`ConvertedTrack::tex_anims`, cached with the track), and `src/rush2049/track2049_texanim.cpp` runs them on the
+loaded geometry with the Rush 2049 tracks' animations. Scrolls become 2049 scrolls with the same motion (position and
+limit x 4, speed = 2 x the move, rate = (period + 1) / 2 frames, since 2049 moves `speed` per vblank and shifts the
+position right by 2). Palette cycles run kinds 0 and 2-6 as above on the palette's colors in the loaded geometry
+(`TexPalette`); kinds 1 and 7-9 are left out. Both run in 30 fps frames of 2 vblanks, as the 2049 animations do.
+A record whose texture has no load list (flag 0x08000000: Silicon Valley's ARWS) is left out; in California Speed
+it would write into texels. The log line `[2049] Animated textures: ... palette cycles` says they started; setup
+checks every patch site against the converted data first. [V: Yosemite 1 scroll, Silicon Valley 3 scrolls and 2
+palette cycles, Monterey 2 scrolls and 1 palette cycle, in game]
 
 ## 3. Conversion for the host slot
 
@@ -76,6 +117,29 @@ All in the main data, Rush 2's layouts (`src/calspeed/calspeed_convert.cpp`):
 - **Fall floor:** Rush 2 puts a car back below y -190 (`race_stuck_wrongway_update_8008CDA4`); Silicon Valley's roads
   go down to -306, and its cars were put back every 7.5 s onto road still under the floor. On California Speed's tracks
   the floor is 300 ft below the racing line's lowest point (`rush2_calspeed_fall_floor`). [V: sim]
+
+### Visibility regions
+
+California Speed's visibility (`func_800BFF98`, Rush 2's `pvs_apply_8007C27C`) picks the camera's region with
+`func_800BFD6C`, which is Rush 2's `pvs_choose_camera_region_8007C06C` with one more test: the camera must be inside
+the top-level record's box on all three axes (`bottom <= dy <= top`); Rush 2 tests the bottom and not the top. The
+score is the same (`sqrt(dx^2 + dz^2)`, plus `dy - bottom` when `dy` is over 0.75 x top; least wins), the region is
+the record's place in the top-level chain, and -1 (no box holds the camera) draws everything (its table at
+0x800C4C90). Both carry the same debug walk of the records' children under bit 0x2000 of a global (California Speed
+0x80134838, `func_800BFCD0`). With Rush 2's rule, a camera over a low section's box can take that section's region:
+at the original Draw Distance Santa Cruz's bridge took region 55, whose mask hides 116 of the track's 117 sections,
+and only the sky and the extended scenery's sea were drawn (GitHub issue 36). On California Speed's tracks
+`rush2_track49_pvs` (src/rush2049/track2049.cpp, `calspeed_camera_region`) chooses the region with California Speed's
+rule from the camera position recorded at the start of `pvs_apply_8007C27C` (`rush2::track1::pvs_camera_position`).
+The longer Draw Distances widen whichever mask is chosen (src/draw_distance.cpp).
+
+`python tools/calspeed/pvs_check.py [TRACK...] [--runs]` compares the two rules along each track's AI lanes offline.
+Points where Rush 2's region hides the camera's own section, Rush 2's rule against California Speed's: Monterey 264
+/ 0, San Francisco 146 / 27, Santa Cruz 657 / 30, San Diego 492 / 43, Los Angeles 2 / 0, Mt. Shasta 4 / 0, Mojave 12 /
+65, Oval 45 / 0, California 22 / 0, San Andreas 18 / 0 (the ones left under California Speed's rule are sections
+their own region hides, the distant stand-ins of src/draw_distance.cpp). `--runs` lists the lanes' bad stretches with
+a spot and heading for `RUSH2_CS_PLACE`. [V: Santa Cruz at (-13199, -697, 2073), original Draw Distance: sea and sky
+only with Rush 2's rule, the bridge and buildings with California Speed's]
 
 ### Extended scenery
 
@@ -944,7 +1008,8 @@ body rates and torque every 20 ms, then anomalies by route point) is the trace t
 California Speed's ground contact `func_800A58A4` (Rush 2 `car_ground_contact_800703EC`) counts the wheels whose
 probe found road; a wheel that found none keeps its last compression, travel and polygon when 3 or more did, and is put
 1000 ft under the road (clamped to -3) only when fewer did. Rush 2 puts every missed wheel at -3 (its `0x800CA27C`
-"no polygon" matrix), so one wheel probing past a polygon edge became an instant full unload of that corner (a kick).
+"no polygon" matrix) only above world y 197; below it a missed wheel reads +3 (see "Wall climbing" under CS Physics, fixed),
+so one wheel probing past a polygon edge became an instant full unload or full load of that corner (a kick).
 Ported as `rush2_calspeed_ground_contact_enter`/`_leave` (hooks at the entry of `car_ground_contact_800703EC` and at
 0x80070680 before its wheel-speed clamp; src/calspeed/calspeed_walls.cpp): the four wheels' +0x5BC/+0x5CC/+0x5DC/
 +0x5EC, type +0x5FC, halves +0x60C/+0x614/+0x61C, polygon matrix +0x2F0 and contact point +0x230 are saved on entry
@@ -1013,12 +1078,68 @@ drawn mesh matches them within 0.03 ft). Where the road dips, the coarse triangl
 of SF's 854 spline polygons 124 sag more than 0.25 ft, 46 more than 0.5 ft and 15 more than 1 ft (worst 1.36 ft), at
 the climb at x 2300-2550, z 1000-1980 (segments 67-83) and the hills at x 2370-2520, z -4520..-1800 (segments
 363-429, polygons 7120-7288). On crests the cubic stands up to about 0.2 ft above the face instead. Smooth
-collision's `spline_on_face` now holds a California Speed wheel on the higher of the cubic and the flat face (the
+collision's `spline_on_face` held (until 2026-10-27, see "Spline lift" below) a California Speed wheel on the higher of the cubic and the flat face (the
 face's height measured along the cubic's normal), so the car never rides under the road it shows; crests keep the
 cubic. Custom tracks' ROAD_SPLINES roads are left on the cubic, as their drawn road may follow it. Checked
 (tmp/ledge_join/ride.py, tmp/cs_tunnel/run.py "sag climb" "sag hills"): over sags of 0.8-1.1 ft the car's body rides
 0.27-0.36 ft over the drawn road (0.43 on flat road; on the cubic it would be about 0.7 ft under it), and through the
 hills 0.51 ft over the face, 1.26 ft over the cubic.
+
+Spline lift (2026-10-27, replaces the higher-of-the-two rule): the user found every California Speed track with
+spline roads bumpy around turns, Clover worst. The higher of cubic and face switched the wheel between the two at
+every triangle, so it rode the faces' creases wherever a face stood above the cubic. Each spline segment is one quad
+(two triangles) about 92 ft long, and on turns the faces stand up to 2.4 ft above the cubic (Clover: 112 of its 310
+spline polygons more than 0.5 ft, 60 more than 1 ft; Mojave, Highway 1, Monterey, Yosemite next). The drawn road is
+the same triangles (stock track glb against the collision: median 0.05 ft apart, 1.1-1.6 drawn triangles per
+collision triangle), so driving on the drawn mesh is the faces again. The road's vertical kicks at 120 ft/s along
+lines on the spline road (second difference over 2 ft): faces 16-43 g peaks, higher of the two 14-23 g, cubic 1.7-5 g
+(San Francisco's cubic itself 10 g). `spline_lift` in src/smooth_collision.cpp keeps the cubic and raises it by a
+lift that changes smoothly: `build_lifts` takes, per segment and quarter of its width, the most the faces stand above
+the cubic (9 x 9 samples a triangle), gives each segment end a node per u -0.5, 0 .. 1.5 holding the most of the
+cells either side, and blends the nodes with smoothstep along and across. A segment's polygons span u -0.5 to 1.5
+(its half-width parameter +0x54 covers the middle half: 55% of Clover's spline road lies outside u 0-1); the first
+build banded u 0-1 only. In the last 0.1 of u each side (u below -0.4, above 1.4, about 3 ft; from -0.25 it brought the faces' creases back where Clover's computer cars drive the inside of its turns) the wheel goes over
+to the polygon's own face, which meets the flat floor beside the road: there the lifted cubic stood up to 0.8 ft off
+it, a step whenever a car cut a corner (Clover segments 52-55). A segment end joining road with no spline gets
+no lift, since a step there would be a bump; the car sinks into the drawn road near those joins (up to about 1.1 ft,
+on about 1% of the spline road). Prototype and numbers: tmp/cs_bumpy/lift.py (Clover: peaks 4.6 g against 22.8,
+hover over the drawn road median 0.32 ft, 95% 1.16, most 3 ft). In game the table matches the prototype (Clover 155
+of 162 segments, most 2.37 ft) and takes 0.3 ms to build. `RUSH2_SPLINE_FACE=1` runs the old rule (`spline_on_face`)
+for comparisons.
+
+Crease fillets (2026-10-27): the user found the lift alone "a little better". A trace of a computer car's wheels
+(`RUSH2_SMOOTH_TRACE=<car address>`: every probe's road point, polygon flags and height; tools/calspeed/road_trace.py)
+showed the rest on Clover's flat floor polygons (41% of its driving line): about 128 ft across, meeting at
+creases of 3-7 degrees, under the 20 degree fold, so smooth collision turned the wheel's frame smoothly but its height
+still changed slope in one step (at California Speed's 300 ft/s a 3 degree crease is a 15 ft/s jump in the wheel's
+vertical speed). Kicks over 10 g on 10% of flat steps, against 0.4% on Silicon Valley (no spline road, finer floor)
+under the same physics, and Full Rush 2 physics on Clover 8%: the road, not CS Physics. `crease_fillet` rounds each
+crease with the quadratic fillet between the two planes, the plane across found by position (a 64 ft cell index of
+the floor), since the road isn't watertight (vertices 1/32 ft apart, T-junctions): bending the triangles toward
+per-vertex normals (Phong tessellation) was tried and left steps of up to 1 ft along such edges, worse than before.
+Reach 15 ft (10, 20, 25, 30 were worse offline: tmp/cs_bumpy/fillet.py on the traced path). In game: flat-road kicks
+over 10 g 10.0% -> 2.4%, the wheels' height swing 0.098 -> 0.068 ft, its 3.8 Hz peak gone. California Speed's
+tracks only (custom tracks keep the flat height). `RUSH2_SMOOTH_FILLET=0` turns them off for comparisons. Also tried:
+smoothing each wheel's road height over distance (a tire envelope): no effect below the 5 ft a car covers per physics
+step, and at 16 ft only 4.4% -> 3.0% of kicks with the road a few tenths off.
+
+The bump every few seconds (2026-10-27, after the fillets): the user still felt "a subtle bump up and down every few
+seconds on most of" Clover in a player's car (Partial). Placing the car on Clover's longest straight
+(`RUSH2_CS_PLACE=-1265,31.6,269,-0.999,0.053,150,2`, flat polygons, x -1270 to -1790) showed it: at polygon edges where
+the road's slope changes by only 0.2-0.35 degrees the rear suspension went from 0.37 to 0.05 ft over half a second
+and back. Not the levelling rate (0.15-2 rad/s the same), not the fillets; with smooth collision off it was gone. The
+corner normals were plain means of every floor face under the fold: at (-1488, 5, 245) the road's corner shared two
+16-17 degree shoulder faces, which tilted its normal 8.3 degrees; the wheel's frame tilted with it, and under
+throttle the drive force along that frame lifted the rear. Two changes: (1) every smooth-collision track's corner
+normals weight each neighbor by the 4th power of (cos angle - cos fold) / (1 - cos fold) (coplanar 1, a 10 degree
+tunnel facet 0.31, a 17 degree shoulder 0.006; squared still left 1.3 degrees there and 0.2 ft dips);
+`RUSH2_SMOOTH_WEIGHT=0` brings back equal weights. San Francisco's subway tunnel rides the same either way. (2) On
+California Speed's tracks the wheel's frame is the filleted surface's own normal (the face's slope plus the
+fillets'), and the height is taken to that surface: the blended corner normals lean across a whole 128 ft polygon
+while the fillets bend only 15 ft of it, so mid-polygon the frame leaned off the flat road under it. After both, on the
+straight the rear never drops below 0.29 ft; on Clover's spot near (-262, -18, 222) the rear's swing went 0.088 ->
+0.025 ft. The trace now prints each wheel's compression (+0x5CC) too. Computer cars (California Speed's stiffer
+springs) never showed the dips, which is why the computer-car traces looked clean.
 
 Trap met on the way: `MEM_W(offset, base)` adds the offset to the (int32) base before widening to the 64-bit address,
 so an offset held in a `uint32_t` constant makes the sum unsigned 32-bit and the access lands 4 GB away (reads zero,
@@ -1196,6 +1317,50 @@ a player's car, and the user's swerves came from steering the computer cars neve
 Tire load cap: Rush 2 caps a wheel's load at the car's weight (`car_wheel_force_loop_8006ABB0` at 0x8006AD30; the
 uncapped load stays at 0x34($sp)) before the converted car's / 2.28, so its tires topped out at 0.44 of its weight a
 wheel (0.25 at rest). A converted car's is capped at weight x 2.28 instead (2026-10-21), Rush 2's cap after the scale.
+
+#### Wall climbing: a missed wheel reads as fully compressed (fixed 2026-10-27)
+
+Report: with CS Physics, cars drive up walls (video: Yosemite, a left-hander whose outside is the 320 ft type 5 wall,
+polygons 329-334, x -2006..-1755, z 394..588, y -904..-580, its foot on road polygons 1016-1022 at y -904..-936).
+Reproduced in a sim (Partial, car 0 put on the road there at 235 ft/s, 25 degrees into the wall): the car climbs from
+y -904 to past +160 in 3 s. Cause, from the per-step log:
+
+- Rush 2's wheel probe `collision_poly_extract_8006F704` has no "air" result. When no polygon holds the wheel's point
+  (0x8006FBD0) it stores surface type 1, material 1, the identity frame `0x800CA27C` and a height of the wheel's
+  world y - 200 (0x8006FBFC-0x8006FC10). `car_ground_contact_800703EC` takes compression = offset +0x5CC - height
+  (0x8007058C), clamps it to +-3, and sets type 8 only when it is below 0. So a missed wheel is airborne (-3, type 8)
+  only above world y 197; below that it is fully compressed (+3) and stays type 1 (dirt). Every California Speed track
+  is 89-100% below y 197 (Yosemite -1000..444), and so are Rush 2's own (82-100%), so this is stock Rush 2 behavior
+  that its closed tracks rarely reach.
+- California Speed's ground contact `func_800A58A4` handles a miss itself (its probe returns 0): -1000 clamped to -3
+  with fewer than 3 hits, last step's values with 3. The port assumes Rush 2's miss is already -3/type 8 (the comment
+  in src/calspeed/calspeed_walls.cpp and the section above), so on these tracks `keep_missed_wheels` never fires (it
+  looks for type 8 and -3) and a car with 2 wheels past a wall's plane gets +3 on both instead of -3.
+- Against the wall the two wall-side wheels poke past the wall's plane (0.3 ft behind it), where no floor polygon holds
+  them: +3 each, so Rush 2's springs at full compression push along the car's up axis, the road hold factor of a
+  wheel past 0.5 ft (0.82 - compression = -2.18) turns the hold into about 8 g along the car's up axis, and the tires
+  get full load on "dirt" (the dust in the video). Rolled against the wall, the car's up axis points up and out, so
+  it rides up the face. Smooth collision's crack fill is not the cause (RUSH2_SMOOTH_COLLISION=0 climbs the same).
+
+Also found while comparing `func_800B0A04` with `apply_hit` (src/calspeed/calspeed_walls.cpp): California Speed's push
+out of a wall is 2.5 x 1/dt x (1 - |forward . normal|) (`lui 0x4020` at 0x800B0D20); the port used 8.
+
+Fix (src/calspeed/calspeed_walls.cpp, both CS Physics modes): the probe's miss path notes the wheel
+(`rush2_calspeed_probe_miss`, the hook at 0x8006FBD0 after smooth collision's gap fill), and after the wheel loop
+California Speed's rule is applied to those wheels: with 3 hits the missed wheel keeps last step's values (unless it
+was already off the road), otherwise it is off the road as Rush 2 has a wheel with no road under it (compression -3,
+travel 1000, offset 0, type and material 8, travel speed from the change clamped to 40). The wall push is 2.5. Full
+Rush 2 is unchanged (stock Rush 2 behavior).
+
+Test aids: `RUSH2_CS_PLACE="x,y,z,dx,dz,speed,at"` puts the player's car (physics car 0) at a spot, heading (dx, dz)
+at speed ft/s, once its clock passes `at`, and logs it each step for 8 s ([csplace]; src/calspeed/calspeed_physics.cpp).
+`RUSH2_CS_OLD_MISS=1` runs the port as it was before the fix. The report's spot:
+`tools/test_race.py 74 --games calspeed_physics_mode=Partial --env RUSH2_CS_PLACE=-1874,-904,470,0.502,-0.863,235,1`.
+Results there (highest y reached from the start at -904): before the fix +160 (Partial) and +248 (with
+RUSH2_CS_OLD_MISS); fixed, -904 in Partial and Full CS at 25 degrees and 160 mph, and in Partial at 10 and 45 degrees
+and at 45 degrees and 20 mph (the car slides along the wall, or stops against it, and drives on). Computer-car sims
+(`sim_wrecks.py --hold on`, San Francisco, Santa Cruz, Yosemite), old against fixed: wrecks 1/1, 0/0, 0/0, rollovers
+0 in all, slides 2/5, 6/1, 5/2, every car finished.
 
 ### Brake lights turn California Speed grays red
 

@@ -23,7 +23,8 @@
 #      has ended or the queue is full, as the web's newerWorkloadQueued() has it), its car reflection and ambient
 #      occlusion shaders
 #      among the WGSL ones, its sampleTexture LOD arguments and coverage output beside the web's per-draw tiles and
-#      decal depth, the coverage output left out of a page's shaders, as RasterPS.hlsl says); in TextureSampler.hlsli the web's texel loads keep Rush 2's rule that a generated mipmap level
+#      decal depth, the coverage output left out of a page's shaders, as RasterPS.hlsl says, and in CMakeLists.txt Rush 2's
+#      shaders without it for blended draws (NO_COVERAGE) built only where the build isn't WGSL's); in TextureSampler.hlsli the web's texel loads keep Rush 2's rule that a generated mipmap level
 #      and a region of a larger image are read by the tile, and that a filter neighbour past a region reads the
 #      image's own next texel, and Rush 2's generated mipmaps and region texels are read through the web's draw texture
 #      slots (sampleTileTextureGrad(), loadTileTexture()), not the desktop's texture array.

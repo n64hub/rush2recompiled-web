@@ -190,6 +190,10 @@ namespace rush2 {
         // is back to no player, and whoever presses START next becomes player 1 (src/players4.cpp).
         void set_at_title(bool at_title);
         bool get_n64_input(int port, uint16_t* buttons, float* x, float* y);
+        // The ports get the race layout now (racing, the countdown or the race intro, not paused), not the menus'.
+        bool in_race_layout();
+        // The game's RDRAM, or null before the game set it.
+        uint8_t* get_rdram();
         // Scripted presses (--input-script) of GAS (A) or BRAKE (B) count as fully pressed pedals.
         void press_pedals(int port, uint16_t buttons);
         // How far GAS and BRAKE were pressed (0-1) in the input get_n64_input last gave for a port.
@@ -218,6 +222,9 @@ namespace rush2 {
         // True once after a race ends, a pause or a change out of Directional: the impact hook's previous tick is stale.
         bool take_rumble_impact_reset(int port);
         void set_rumble(int port, bool on);
+        // A short tick on the port's controller motors for the on-screen touch controls (include/touch_controls.h),
+        // `level` 0 to 1, laid over whatever rumble is playing. Scaled by the port's rumble strength.
+        void touch_tick(int port, float level);
         void update_rumble();
 
         // Remembers rdram so input reads can tell races from menus. Called from a game thread hook every frame.

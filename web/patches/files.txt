@@ -5,6 +5,7 @@
 # and move the commit below to the one merged from. A file the web patch applies to but names what the port renamed
 # (ui_mod_menu.cpp) is listed too.
 # merged from N64Recomp-browser a54586882247fffd45a66646f0fbccd4f0c86b86
+rt64 CMakeLists.txt
 rt64 src/hle/rt64_application.cpp
 rt64 src/hle/rt64_present_queue.cpp
 rt64 src/hle/rt64_workload_queue.cpp
