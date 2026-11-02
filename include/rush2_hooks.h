@@ -416,6 +416,7 @@ void rush2_calspeed_wheel_support(uint8_t* rdram, recomp_context* ctx);
 int rush2_calspeed_wall_collision(uint8_t* rdram, recomp_context* ctx);
 void rush2_calspeed_ground_contact_enter(uint8_t* rdram, recomp_context* ctx);
 void rush2_calspeed_ground_contact_leave(uint8_t* rdram, recomp_context* ctx);
+void rush2_calspeed_probe_miss(uint8_t* rdram, recomp_context* ctx);
 void rush2_csphys_init_begin(uint8_t* rdram, recomp_context* ctx);
 void rush2_csphys_init_end(uint8_t* rdram, recomp_context* ctx);
 void rush2_csphys_probe(uint8_t* rdram, recomp_context* ctx);
@@ -495,7 +496,7 @@ void rush2_breakable_groups_s3(uint8_t* rdram, recomp_context* ctx);
 void rush2_breakable_groups_s6(uint8_t* rdram, recomp_context* ctx);
 void rush2_breakable_groups_t8(uint8_t* rdram, recomp_context* ctx);
 void rush2_breakable_groups_a2(uint8_t* rdram, recomp_context* ctx);
-void rush2_fix_finish_place(uint8_t* rdram, recomp_context* ctx);
+int rush2_fix_finish_place(uint8_t* rdram, recomp_context* ctx);
 void rush2_fix_drone_glide_node(uint8_t* rdram, recomp_context* ctx);
 void rush2_fix_drone_glide_hide(uint8_t* rdram, recomp_context* ctx);
 void rush2_stunt_respawn_gear(uint8_t* rdram, recomp_context* ctx);
@@ -553,6 +554,8 @@ int rush2_online_wheels_shown(uint8_t* rdram, uint32_t physics_car, int view, in
 uint32_t rush2_online_arrow_views(uint8_t* rdram, int car, uint32_t flags);
 int rush2_online_arrow_view(uint8_t* rdram, int view);
 int rush2_online_hud_views(uint8_t* rdram, int views);
+int rush2_online_hud_car(uint8_t* rdram, int view);
+uint16_t rush2_online_race_over_presses(uint8_t* rdram, uint16_t presses);
 void rush2_online_hud_time_digits(uint8_t* rdram, int player);
 uint32_t rush2_online_view_record(uint8_t* rdram, int view, uint32_t record);
 

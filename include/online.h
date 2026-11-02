@@ -281,8 +281,9 @@ namespace rush2::online {
     // hash is its starting state (state_hash: a difference resyncs), track and cars what it set up (the track's
     // collision data, the cars' physics tables: a difference can't be repaired, and the race doesn't start).
     void report_loaded(uint32_t hash, uint32_t track, uint32_t cars);
-    // The race is over on this machine: back to the lobby.
-    void race_finished();
+    // The race is over on this machine: back to the lobby. end_frame: the game ended it itself before that lockstep
+    // frame (the other machines hear of it: Msg::RaceOver, Msg::Finished); UINT32_MAX when it ended under the game.
+    void race_finished(uint32_t end_frame = UINT32_MAX);
     // A message for the race's overlay ("Waiting for ..."), empty for none.
     std::string race_status();
 
@@ -297,6 +298,9 @@ namespace rush2::online {
         bool pedals(int player, float* gas, float* brake);
         // An online race is set up or running on this machine.
         bool in_race();
+        // The race's cars (players, then computer cars) as the game counted them at the race start (s16 0x8010C158),
+        // the same on every machine; the physics car slots after them hold whatever this machine raced last.
+        int race_car_count(uint8_t* rdram);
         // Whether every machine of the race has the game's ROM (games_* bit), so a race car of that game (a computer
         // car's random type) can be on every machine. True outside an online race.
         bool race_has_game(uint8_t game);
@@ -345,6 +349,10 @@ namespace rush2::online {
         void lobby_frame(uint8_t* rdram);
         // The race is over on this machine (its post-race next): the lobby takes it back to the track select.
         void race_over();
+        // Back at the track select after a race: this machine's menu players (records 0 and 1's ports, the player
+        // and view counts, their ports on) as leaving the race left them, which the title screen's setup undid when
+        // the post-race ended without its last START (online_game.cpp, MenuPlayers).
+        void restore_menu_players(uint8_t* rdram);
         // In a race: what it waits for ("Waiting for ...", race_status), shown on the lobby overlay; empty for nothing.
         void race_notice(const std::string& text);
         // Creates the lobby overlay (on the UI thread, at startup).

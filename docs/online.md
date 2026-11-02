@@ -286,14 +286,31 @@ are kept (`lent_physics`) and put back by `return_mod_slots`, so the machine's o
 cars' fingerprint is only logged: each machine's session log lists every car's type, row and physics hash at the load,
 and the host's names a player whose cars differed.
 
-The fingerprint and the sync part cover only the race's cars: the players (num_players 0x8010C3E2) and the computer
-cars (s16 0x800D3E90), at most 8 (`race_cars`). A user's race ended with the old "set the cars up with different
+The fingerprint and the sync part cover only the race's cars (`rush2::online::game::race_car_count`): the count
+`race_assign_cars_to_players_800A580C` stores at s16 0x8010C158 at the race start, before the first physics frame. It is
+the players (num_players 0x8010C3E2) and the computer cars (s16 0x800D3E90, the track select's DRONES), but no more
+than 4 computer cars with 2 or more players, and 8 cars in all: every slot past it is marked "no car" (kind 9 at car
+table entry +8). A user's race ended with the old "set the cars up with different
 physics" error with the same ROMs, mods and settings on both machines: the fingerprint covered all 8 physics car slots,
 and a race with fewer cars leaves the rest holding what each machine raced last. Reproduced with two quick races
 (`RUSH2_ONLINE_DRONES=0`, the host idling 45 s on the title so its attract demo filled slots 2-7, the joiner fresh): the
 host's slots 2-7 held the demo's cars, the joiner's type 0, and the race ended with the user's message. With the count
 the same run loads alike (2 players, 0 computer cars), 51 checks in sync. (`race_car_count` 0x800E79B8 is 0 at the
-load: not the count.) Two other ways the cars could differ were closed too:
+load: not the count.)
+
+The count used to be num_players + DRONES, at most 8, without the cap. A 2-player race with DRONES 7 (the default) has
+6 cars, but counted 8: slots 6 and 7, each machine's leftovers, failed the load check ("player 2 set the cars up
+differently") and went into the hash. The frame 0 resync then kept their descriptor, wheel surface (+0x380-0x38C) and
+gear map (+0x3FC) addresses as each machine's own (Resyncs), so every check after it failed on those 10 words and the
+race was given up on after 15 resyncs. Nothing moved those cars (no race car is in those slots), which is why the rest
+of them stayed equal after the resync. Reproduced on track 5 with `RUSH2_ONLINE_DRONES=7` on both, the host idling 50 s on
+the title (its attract demo filling slots 6 and 7, then `54:START`) and `RUSH2_ONLINE_BREAK=stale` on the joiner (its
+own leftovers there): with the old count, "set the cars up differently", resyncs at frames 0, 2, 32 ... 392 each
+keeping "car 6/7 physics +0x000 ... (an address: kept)", and the give-up at frame 420, as the user's logs; with the
+game's count, the same cars on both, one resync at frame 0 (the leftovers are in the raw state; nothing kept) and
+none after.
+
+Two other ways the cars could differ were closed too:
 
 - The setup from a car select that only just came up (`Phase::WaitMenus` in online_game.cpp: a player walked back in
   as the host started) runs `carselect_build_list_803B81F0` for player 0, whose unlock filter (`limit_tires`,
@@ -441,6 +458,28 @@ digits go to 0x80240720 + player * 8, where view i's time widget reads player i'
 
 players4's HUD clones for players 3 and 4 and its finish overlay count this machine's players online
 (`shown_players`, `rush2::online::game::local_race_players`).
+
+#### Elements that pick a car by view
+
+More elements take their view's player number as a car number, skipping the record: on a joiner they showed car 0,
+the host's (a player's report: "it would only show my position to my friend, and if my friend went the wrong way it
+also sent me his notification"). Their parameters keep the view, which places them, hides them (against the view
+count) and indexes their per-view arrays; a hook after each one's view checks turns the view into this machine's
+player's car where it indexes a car (`rush2_online_hud_car`: view i is car `local_player + i`):
+
+| Element | Hook | What it reads by car |
+|---|---|---|
+| race position `hud_widget_cb_race_position_800BA608` | 0x800BA6A4, $a2 | car state +0xEA (finished), +0xE9 (place), `race_query_by_index_8008CC48` |
+| WRONG WAY `hud_widget_cb_lap_banner_800BA868` | 0x800BA8B4, $t0 | car state +0x34C (the wrong-way angle), +0xEA; its flags (0x8010C3DC, 0x80125AAA, moved by players4) stay per view |
+| radar's center `hud_widget_cb_radar_dots_800B8CC8` | 0x800B8E54, $t6 | the viewing car's position (its own dot is found through the rotated records, so it already matched) |
+| finish place `hud_widget_cb_finish_place_800B5A90` | 0x800B5B08, $v1 and $t9 | car state +0xEA, +0xE9; the shown byte (0x800BF318, moved) stays per view |
+| checkpoint split `hud_widget_cb_lap_time_800B9978` | 0x800B99A4 ($t9) and 0x800B9A80 ($t1) | the split's start time 0x800D35E8 and digits 0x800D39B8 (moved), which `race_checkpoint_time_display_8008EFF4` writes per car |
+| IT badge `hud_widget_cb_it_badge_800B9CC0` | 0x800B9D0C, $t9 | record +0x21 (the race player's record) |
+
+Reproduced with two quick races on track 0 (`RUSH2_TEST_FINISH=25`, no bots): with `RUSH2_ONLINE_BREAK=hudview` on
+the joiner (the old car = view) its position box showed 6/6 like the host's; without it, its own place (the host 6/6,
+the joiner 5/6) and its own finish place (1st and 2nd). WRONG WAY goes through the same change but hasn't been seen in
+a run (a scripted joiner never turned around).
 
 The rumble is each machine's own players'. `physics_car_tick_80075880` writes a human car's rumble level to its
 record's port (0x800D50E8 + port, at 0x80075AF8 and 0x80075C08), which `rumble_update_80063E4C` plays on that port's
@@ -593,6 +632,64 @@ which online are 5 (no port; the function ignores ports of 4 and up). After any 
 track select the race left for took no buttons (the softlock after QUIT). Leaving the race (`finish_race_locally`,
 `end_race`) sets the menus' records' ports back on (`enable_menu_ports`).
 
+The lock after a stunt match (a player's report: "after the stunt match with online players all controls are locked
+and can't navigate the menu", 2026-10-30) was the title screen's. `postrace_records_update_800A952C`'s first call
+(0x800A9584-0x800A95A8) marks the post-race started (0x800C25EC) and done (0x800C25F0 = 1); only a race with something
+to record clears done and ends on its last step, a START (0x800AA880, `menu_title_start_pressed_800A6B58`), which
+gives the players their ports back (from 0x800BF314 after a circuit, which sets 0x800E7D18 at 0x800A962C; the port that
+pressed it otherwise) and makes 0x800C25E8 the next screen's choice. A stunt match with no qualifying score has nothing
+to record: the next frame leaves the post-race at once (0x800AA020: one player, game state 0) without that START, and
+the front end opens the title screen, whose setup (`menu_car_select_run_803AE55C` at 0x803AE5F4) makes it one player,
+sets records 0 and 1 to port 5 and turns every port off. Offline the player's START on the title puts them back; online
+the lobby takes the front end past the title to the track select (0x800FAE6C = 2), so no port was on and every
+machine's menus took no buttons. Reproduced through the lobby's menus (Stunt as JUST PLAY, `RUSH2_ONLINE_CLOCK=300:20`
+on both, `RUSH2_RAM_WATCH=0x80125AC4:4,0x800C2140:4`): the ports went off two frames after the race over, record 0's
+port to 5, and the host's DR and B did nothing at the track select. Now leaving the race keeps the menu players it
+set up (records 0 and 1's ports, the player and view counts, `save_menu_players`) and the lobby puts them back when the
+front end reaches the track select (`restore_menu_players`): the ports come back on two frames later, the host's DR
+changes the track and A takes both to the car select, where the joiner's DR changes its car.
+
+The race over screen (state 5) goes on to the post-race after 4 seconds or at once on START, and its START is read from
+the menus' presses (0x8010C43E at 0x800AF0C4: this machine's controllers). One machine's START left it the race frames
+before the others (`RUSH2_ONLINE_BREAK=localstart` on a stunt match's joiner: it left at frame 1269, the host at 1374).
+Online the hook at 0x800AF0C8 (`rush2_online_race_over_presses`) gives it every race player's presses of the lockstep
+frame instead, the same on every machine (`racestart`, the joiner holding START through the lockstep: both left at
+1270).
+
+When machines do leave on different frames, the one still racing must not wait for the inputs of one that left
+(protocol 10). A client that leaves sends the host Msg::Finished with its last frame, and the host stops waiting for
+that player's input from then on (`gone_from`, `needs_input(slot, frame)`); a host that leaves first sends every client
+Msg::RaceOver with its frame, and a client waiting for a frame from it on stops with "The race ended on the host's game
+first." (`host_end_frame`) and goes back to the lobby as after a race given up on. In the `localstart` run above the
+host logged "player 2's race ended before frame 1269" and finished its own race over screen.
+
+The views' cars (0x80240380, moved from 0x800E7B9C) stay as raced through the post-race, like the car table, and get
+the menus' values back once the front end is up (`menu_view_cars`, at the frame `return_mod_slots` runs). Behind the
+post-race the race scene keeps running: `postrace_records_update_800A952C` calls `race_run_full_800A63A0`, whose camera
+update (`cam_update_all_players_8009D9F4`) runs `cam_update_dispatch_8009D02C` for the car each view follows, and that
+writes the car's view camera at 0x800E79D0 + car state +0x347 x 0x40. Leaving the race used to put the menus' view cars
+back at once, so a joiner's view 0 followed car 0, the host's, which has no view on the joiner (+0x347 = -1): its camera
+went to 0x800E7990-0x800E79CF, and its y position's top half landed on `race_car_count` (0x800E79B8, 4 -> 0x41F8 on Los
+Angeles). The physics thread, still ticking the cars (`physics_tick_drones_80075C3C`), then took car numbers from past
+the end of its list and crashed in `car_auto_shift_800711F4` on a car pointer far outside the eight (a player's report,
+2026-10-31: "it crashes the connected player after every race ... at the What's your name? screen"; the host never
+crashed, its view 0 following its own car). Reproduced through the lobby's menus as JUST PLAY on both (track 5,
+`RUSH2_TEST_FINISH=15`, `RUSH2_RAM_WATCH=0x800E79B8:2` on the joiner; a cdb `ba w2` on rdram + 0xE79B8, set from
+`race_start_timer_800AE670`'s $rcx, named the writer): the joiner crashed on the post-race's first frame; now its
+post-race shows its own car and both go back to the track select.
+
+The drawing hooks keep this machine's mapping through the post-race too (`drawing_race`: in the race, or on the
+post-race, game state 6, after a race over and not a QUIT). They used to stop with the lockstep at game state 6, while
+the race scene still runs behind it: the other players' car bodies (`rush2_online_body_kind`, placed only by those
+hooks) stayed where the race ended while their shadows went on with the cars (a player's report, 2026-10-31: "lots of
+shadows where other players' cars should be on the postgame race"); their wheels went back to hidden
+(`rush2_online_wheels_shown`); and the HUD's view-numbered elements (`rush2_online_hud_car`) read car 0's state again,
+so a joiner could see the host's WRONG WAY arrows ("I briefly saw another player's turn around arrow"). The post-race has
+two views at most, so a machine's players 3 and 4's cars are placed there as cars without a view. Checked with a 1+1
+quick race (track 5, `RUSH2_TEST_FINISH=20`) and a read-only RDRAM watch of the host: the joiner's car's body stays
+within 3 ft of its physics position through the post-race (it froze before). `RUSH2_ONLINE_BREAK=postrace` draws the
+post-race the old way.
+
 A race that ends early (the host leaves, a desync) leaves as the pause menu's Quit does (`race_end_to_menu_800AAC64`
 with 0x800C1A9C = 0; 1 restarts the race), to screen 0xF with 0x800BF31C = 0 as Quit leaves it. It used to set
 0x800BF31C = 1, starting the front end over from the boot logos (screen 0xE): that runs the power-on save load again
@@ -619,11 +716,13 @@ without them.
 | `RUSH2_ONLINE_TEST=menus:host` / `menus:join:ADDRESS` | Only host or join, for going through the menus (with `--input-script`). |
 | `RUSH2_ONLINE_NAME`, `RUSH2_ONLINE_TRACK`, `RUSH2_ONLINE_RACE_TYPE` | Name; a quick race's track select id and race type. |
 | `RUSH2_ONLINE_LOCAL=N`, `RUSH2_ONLINE_CARS=T,T,...` | A quick race's players on this machine (split screen; `host:N` counts every machine's players) and their car types. |
-| `RUSH2_TEST_FINISH=S` | Finishes the players' cars S seconds of game clock into the race (src/players4.cpp), for the race end. |
+| `RUSH2_TEST_FINISH=S` | Finishes the players' cars S seconds of game clock into the race (src/players4.cpp), for the race end. It also sets each player's lap count (0x802407F0 + player) to the race's laps, which the post-race needs before it records a time (`postrace_records_update_800A952C` at 0x800A9840); without that it ended at once with nothing to record. |
 | `RUSH2_ONLINE_FAKE=K` | The host fills K more slots with players who aren't there (no input). |
 | `RUSH2_ONLINE_BOT=SEED`, `RUSH2_ONLINE_BOT_IDLE=F` | Drive (and fire, in a battle) from the frame number (repeatable runs), each of the machine's players with its own seed, after F frames. |
 | `RUSH2_ONLINE_SEED` | A fixed race seed. |
 | `RUSH2_ONLINE_HASHLOG` | Log the state hash every 30 frames. |
+| `RUSH2_ONLINE_BREAK=hudview` / `localstart` / `racestart` / `postrace` | This machine runs a fixed bug's old way, to reproduce it: the HUD's view-numbered elements show the car of that number (a joiner sees the host's place, The HUD online) / the race over screen goes on at this machine's own START, pressed at once (Race end) / or the fixed way: its player holds START on the race over screen, through the lockstep / the post-race draws the other players' cars and the view-numbered HUD the old way (Race end). |
+| `RUSH2_ONLINE_CLOCK=F:S` | At race frame F (after the start countdown, which counts down in the same float) the time left, 0x8010C204, becomes S seconds: a stunt match's end in a minute. Set it on every machine, or the others take the host's state in a resync. |
 | `RUSH2_ONLINE_BREAK=load` / `track` / `cars` / `stale` / `noload` / `nudge:F` / `F` | This machine fails a check: a different starting state (a resync at frame 0), a different track fingerprint (the race doesn't start: Load check), car 0's descriptor drag x1.5 (a car set up differently: frame 0 resyncs and it takes the host's, Load check), the slots after the race's cars holding an earlier race's car on its descriptor copy (frame 0 resyncs and they take the host's, Resyncs), never loading (dropped after the load timeout), its race seed changed at frame F (a real difference, which a resync repairs), a different state hash from frame F on (resyncs can't fix it: the race is given up on). |
 | `RUSH2_ONLINE_DRONES=N` | The race's computer car count (the track select's DRONES, menu settings +1), set on every machine: a race with empty car slots. |
 | `RUSH2_TEST_GUEST_UNLOCKS=ID,...` | The guest (JUST PLAY) owns these unlock items for the run (src/unlocks.cpp ids: `engine_4`-`engine_9`, `tires_slicks`, `tires_pro`), never saved: a host racing bought parts. |
@@ -642,7 +741,7 @@ Several instances on one machine: `tools/online_test.py OUT --times T,... --inst
 starts them from the one build, a few seconds apart, the host first, screenshots each window at the given times
 without taking focus, and closes them after. `--hold name:START-END:KEY` holds a keyboard key on one window through the
 real keyboard path. `--key name:T:KEY,...` taps keys on a window (ESC, F15 and the arrows drive the recomp menu, as in
-tools/menu_shot.py) and `--close name:T` closes one and prints how long it takes to exit. `tools/gen_disasm.py` writes `analysis/out_disasm/r2.asm`
+tools/menu_shot.py) and `--close name:T` closes one and prints how long it takes to exit. `--kill name:T` ends one at once, as a crashed game would (the others drop its players mid-race after the connection timeout). `tools/online_matrix.py OUT 8x1 1+3+4 3+3+2 ... [--track N]` stress tests ways of splitting a lobby's players over machines (the host first): a bot quick race per split, checking every machine's load state, hashes, resyncs, drops, race end frame and early exits (crashes); run it from PowerShell so a crash leaves a dump. online_test.py runs muted (build/sound.json's volume is 0 while it runs). `tools/gen_disasm.py` writes `analysis/out_disasm/r2.asm`
 for the players4 tools. docs/menus.md has the input scripts that go through every menu and the pause menu's QUIT.
 The instances play on build/saves, the real save: back it up before a run that reaches Select Player, check it with
 `tools/pak_check.py` after, and run one lobby at a time.

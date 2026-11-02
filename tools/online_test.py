@@ -10,6 +10,7 @@ Each --instance is "name|environment variables (space separated NAME=VALUE)|inpu
 --input-script takes it, may be empty). Instances start in order, --stagger seconds apart (default 3), all from the
 same exe (RUSH2_EXE, default build/Rush2Recompiled.exe) in its folder. Times count from the first launch. Writes
 OUT_DIR/<name>.log (the game's console) and OUT_DIR/<name>_<time>.png, then closes the instances it started (by PID).
+The run is muted: the exe folder's sound.json has main_volume 0 while it runs, and its content is put back after.
 --hold "name:START-END:KEY" holds a key on that instance's window from START to END seconds (posted key messages,
 repeated like a held key, so they reach the game's keyboard input without focus): the real keyboard path the
 --input-script presses skip (port assignment, bindings, control profile). Keys: UP DOWN LEFT RIGHT ENTER SPACE E Q
@@ -17,6 +18,8 @@ ESC F15 BACK TAB (ESC opens the recomp menu, F15 moves its focus to the tab bar;
 --key "name:T:KEY[,KEY...]" taps the keys on that instance's window at T seconds (0.7 s apart).
 --close "name:T" asks that instance's window to close at T seconds (WM_CLOSE; in a race the game asks first, so follow
 with --key "name:T+1:LEFT,ENTER") and prints how long it takes to exit, for a slow or crashing close.
+--kill "name:T" terminates that instance at T seconds (its own PID), as if its game crashed: the other machines see a
+player vanish mid-race and drop them after the connection timeout.
 """
 import argparse, os, subprocess, sys, time
 
@@ -31,6 +34,7 @@ ap.add_argument('--stagger', type=float, default=3.0)
 ap.add_argument('--hold', action='append', default=[])
 ap.add_argument('--key', action='append', default=[])
 ap.add_argument('--close', action='append', default=[])
+ap.add_argument('--kill', action='append', default=[])
 ap.add_argument('--log-focus', action='store_true', help='print whenever the foreground window changes owner')
 args = ap.parse_args()
 
@@ -38,6 +42,15 @@ os.makedirs(args.out, exist_ok=True)
 exe = os.path.abspath(os.environ.get('RUSH2_EXE', os.path.join(shots.REPO, 'build', 'Rush2Recompiled.exe')))
 times = [float(t) for t in args.times.split(',')]
 procs = []
+# Every run is silent (CLAUDE.md): the instances play on the exe folder's sound.json, so its main_volume is 0 for the
+# run and the file's exact content goes back after.
+sound_path = os.path.join(os.path.dirname(exe), 'sound.json')
+sound_text = open(sound_path, newline='').read() if os.path.exists(sound_path) else None
+if sound_text is not None:
+    import re
+    with open(sound_path, 'w', newline='') as f:
+        f.write(re.sub(r'("main_volume":\s*)[0-9.]+', r'\g<1>0', sound_text))
+    assert '"main_volume": 0' in open(sound_path).read(), 'could not mute ' + sound_path
 start = time.time()
 try:
     for i, spec in enumerate(args.instance):
@@ -88,6 +101,9 @@ try:
     for c in args.close:
         name, t = c.split(':')
         events.append((float(t), name, None))
+    for c in args.kill:
+        name, t = c.split(':')
+        events.append((float(t), name, 'KILL'))
     events.sort(key=lambda e: e[0])
     closing = {}  # name -> time the close was sent
 
@@ -96,6 +112,11 @@ try:
         while events and events[0][0] <= now:
             _, name, key = events.pop(0)
             p = dict(procs).get(name)
+            if key == 'KILL':
+                if p is not None and p.poll() is None:
+                    p.kill()
+                    print('%.1f s: killed %s' % (now, name))
+                continue
             hwnd = shots.find_window(p.pid) if p is not None and p.poll() is None else None
             if hwnd is None:
                 continue
@@ -166,3 +187,6 @@ finally:
             p.wait(10)
         except Exception:
             p.kill()
+    if sound_text is not None:
+        with open(sound_path, 'w', newline='') as f:
+            f.write(sound_text)
