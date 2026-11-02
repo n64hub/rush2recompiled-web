@@ -1,10 +1,13 @@
 // On-screen touch controls (include/touch_controls.h).
 //
 // Touches come from an SDL event filter: it sees each finger event as SDL queues it, on the thread that pumps the
-// window's events (the main thread). Each finger holds what it first landed on: a button (sliding onto another button
-// moves it there, so a thumb can roll from GAS to BRAKE or around the D-pad) or, in the race layout, the steering stick,
-// which floats: it centers where the finger lands anywhere in the left half of the screen below the top quarter. What
-// the fingers hold is read by src/controls.cpp, merged into port 1's race or menu input.
+// window's events (the main thread), and passes what it keeps to the filter that was in before it (a page's pointer
+// lock). On a page, the page's own on-screen controller steps aside while these controls have the touchscreen
+// (Module.gameTouchControls, N64Recomp-browser's docs/porting.md). Each finger holds what it first landed on: a button
+// (sliding onto another button moves it there, so a thumb can roll from GAS to BRAKE or around the D-pad) or, in the
+// race layout, the steering stick, which floats: it centers where the finger lands anywhere in the left half of the
+// screen below the top quarter. What the fingers hold is read by src/controls.cpp, merged into port 1's race or menu
+// input.
 //
 // SDL also turns the first finger into mouse events (SDL_TOUCH_MOUSEID). Those are always dropped: while the game has
 // the touchscreen they'd switch this settings UI to the mouse and show the cursor under the thumb, and with one of its
@@ -37,6 +40,9 @@
 #else
 #include "SDL2/SDL.h"
 #include <dlfcn.h>
+#endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten/em_asm.h>
 #endif
 
 #include "recompui/recompui.h"
@@ -553,7 +559,12 @@ namespace {
         return true;
     }
 
-    int SDLCALL event_filter(void*, SDL_Event* e) {
+    // The filter that was in before this one (a page's pointer lock, RecompFrontend's, which chains RT64's): SDL keeps
+    // one, so this one passes it every event it keeps.
+    SDL_EventFilter next_filter = nullptr;
+    void* next_filter_userdata = nullptr;
+
+    int own_filter(SDL_Event* e) {
         switch (e->type) {
             case SDL_FINGERDOWN:
             case SDL_FINGERMOTION:
@@ -582,6 +593,10 @@ namespace {
                 break;
         }
         return 1;
+    }
+
+    int SDLCALL event_filter(void*, SDL_Event* e) {
+        return own_filter(e) && (next_filter == nullptr || next_filter(next_filter_userdata, e));
     }
 
     // Steam's Game Mode: gamescope sends touches to a game as fingers only in its Passthrough touch mode, which it takes
@@ -982,6 +997,10 @@ void rush2::touch::update() {
     static bool filter_installed = false;
     if (!filter_installed) {
         filter_installed = true;
+        if (!SDL_GetEventFilter(&next_filter, &next_filter_userdata)) {
+            next_filter = nullptr;
+            next_filter_userdata = nullptr;
+        }
         SDL_SetEventFilter(event_filter, nullptr);
         start_test_touch();
 #ifdef __linux__
@@ -991,6 +1010,16 @@ void rush2::touch::update() {
 #endif
     }
     native_touch_wanted = mode.load() != Mode::Off && SDL_GetKeyboardFocus() != nullptr;
+#ifdef __EMSCRIPTEN__
+    // A page's own on-screen controller (N64Recomp-browser's site/touch_pad.js, on a phone) stays hidden while these
+    // controls have the touchscreen, so the two never show one over the other.
+    static int page_told = -1;
+    int own = mode.load() != Mode::Off;
+    if (own != page_told) {
+        page_told = own;
+        MAIN_THREAD_ASYNC_EM_ASM({ Module.gameTouchControls = !!$0; }, own);
+    }
+#endif
     if (!ultramodern::is_game_started()) {
         return;
     }
