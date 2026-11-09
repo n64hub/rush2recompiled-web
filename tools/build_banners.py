@@ -13,16 +13,19 @@ in the renderer: rush2::upscale::add_exact_image), so the quantizing only shows 
 
   python tools/build_banners.py [--preview DIR]     (--preview also saves every banner as DIR/<game>_trackN.png)
   python tools/build_banners.py --arcade             (only the arcade tracks' pictures, below)
+  python tools/build_banners.py --ps1                (only the PS1 SF Rush logos: assets/sfrush_ps1/chinatown_logo.png and the cars' <id>_name.png,
+                                                     its name in SF Rush's lettering; src/sfrush_ps1, docs/sfrush_ps1.md)
 
 --arcade writes the pictures the game's Rush 2049 arcade track mod ships (assets/arcade2049/, src/arcade2049,
 docs/arcade2049.md):
-  - <id>_logo.png for the arcade versions of the six race tracks: each the N64 track's own banner with " A" after it.
-    A name drawn with the font is drawn again as "<NAME> A"; a picture banner (tools/rush2049/banners/trackN_*.png) is
-    kept, narrowed by the columns the "A" of "<NAME> A" takes (as many columns dropped evenly), with that "A" put
-    after it.
+  - <id>_logo.png for the arcade versions of the six race tracks: each the N64 track's own banner (a picture banner,
+    tools/rush2049/banners/trackN_*.png, or the name drawn with the font as the N64 one is). They share its track select
+    entry as its ARCADE version (the version button names it), so they carry no mark of their own.
   - alcatraz_logo.png: the plain name in Rush 2049's lettering (banner_font.render_fit: a wider canvas, not smaller
     letters).
   - <id>_preview.png: each tools/arcade2049/previews/<id>.png (in-game screenshots) cut round (round_preview).
+and the SF Rush arcade track mod's (assets/sfrush_arcade/, docs/sfrush_arcade.md): <id>_logo.png for its versions of
+SF Rush tracks 1-7, each the N64 track's banner (no previews: the track select shows the course's own diorama).
 
 Writes include/track1_banners.h and include/track2049_banners.h.
 """
@@ -133,36 +136,29 @@ def build(src, header, namespace, tracks, names_header, style, extra, preview):
 
 
 ARCADE_IDS = ["marina_arcade", "haight_arcade", "civic_arcade", "metro_arcade", "mission_arcade", "presidio_arcade"]
+# The SF Rush arcade (Rush The Rock) versions of N64 SF Rush tracks 1-7 (include/arcade2049.h sfrush_tracks).
+SFRUSH_ARCADE_IDS = ["golden_gate_arcade", "embarcadero_arcade", "market_arcade", "downtown_arcade",
+                     "the_heights_arcade", "sunset_arcade", "the_rock_arcade"]
+
+
+def n64_banner(src, names_header, style, t):
+    """N64 track t's banner as build() makes it: its picture, else its name in the game's lettering."""
+    src_dir = os.path.join(ROOT, src)
+    art = [n for n in os.listdir(src_dir) if re.fullmatch(rf"track{t}_\w+\.png", n)]
+    if art:
+        return Image.open(os.path.join(src_dir, art[0])).convert("RGBA")
+    return banner_font.render(track_names(names_header)[t - 1], style, (W, H)).convert("RGBA")
 
 
 def arcade_logos():
-    src_dir = os.path.join(ROOT, "tools", "rush2049", "banners")
-    names = track_names("include/track2049.h")
     for t, track_id in enumerate(ARCADE_IDS, 1):
-        name = names[t - 1]
-        text = banner_font.render(name + " A", "2049", (W, H))
-        art = [n for n in os.listdir(src_dir) if re.fullmatch(rf"track{t}_\w+\.png", n)]
-        if art:
-            # The "A": the columns of "<NAME> A" after the last fully clear column before its right end.
-            px = text.load()
-            right = text.getbbox()[2]
-            a0 = right - 1
-            while a0 > 0 and any(px[a0 - 1, y][3] for y in range(H)):
-                a0 -= 1
-            a_w = right - a0
-            gap = 2
-            pic = Image.open(os.path.join(src_dir, art[0])).convert("RGBA")
-            keep_w = W - a_w - gap - 1
-            # Drop columns evenly (no resampling: the picture is pixel art).
-            cols = [round(i * (W - 1) / (keep_w - 1)) for i in range(keep_w)]
-            im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            for x, c in enumerate(cols):
-                im.paste(pic.crop((c, 0, c + 1, H)), (x, 0))
-            im.alpha_composite(text.crop((a0, 0, right, H)), (keep_w + gap, 0))
-        else:
-            im = text
         out = os.path.join(ROOT, "assets", "arcade2049", track_id + "_logo.png")
-        im.save(out)
+        n64_banner("tools/rush2049/banners", "include/track2049.h", "rush2049", t).save(out)
+        print("Wrote", os.path.relpath(out, ROOT))
+    os.makedirs(os.path.join(ROOT, "assets", "sfrush_arcade"), exist_ok=True)
+    for t, track_id in enumerate(SFRUSH_ARCADE_IDS, 1):
+        out = os.path.join(ROOT, "assets", "sfrush_arcade", track_id + "_logo.png")
+        n64_banner("tools/rush1/banners", "include/track1.h", "sfrush", t).save(out)
         print("Wrote", os.path.relpath(out, ROOT))
     out = os.path.join(ROOT, "assets", "arcade2049", "alcatraz_logo.png")
     banner_font.render_fit("Alcatraz", "rush2049").convert("RGBA").save(out)
@@ -189,7 +185,23 @@ def round_preview(path):
     return im
 
 
+def ps1_logos():
+    os.makedirs(os.path.join(ROOT, "assets", "sfrush_ps1"), exist_ok=True)
+    out = os.path.join(ROOT, "assets", "sfrush_ps1", "chinatown_logo.png")
+    banner_font.render_fit("Chinatown", "sfrush").convert("RGBA").save(out)
+    print("Wrote", os.path.relpath(out, ROOT))
+    # The PS1 cars' car select name logos (128 x 32, as Rush 2's), by their new car ids (src/sfrush_ps1/ps1_cars.cpp).
+    for car_id, name in (("PS1STARSKY", "STARSKY"), ("PS1JEEP", "JEEP"), ("PS1JETCAR", "JET CAR"), ("PS1MINI", "MINI"),
+                         ("PS1BUS", "CITY BUS"), ("PS1POLICE", "POLICE"), ("PS1UFO", "UFO")):
+        out = os.path.join(ROOT, "assets", "sfrush_ps1", car_id + "_name.png")
+        banner_font.render(name, "sfrush", (128, 32)).convert("RGBA").save(out)
+        print("Wrote", os.path.relpath(out, ROOT))
+
+
 if __name__ == "__main__":
+    if "--ps1" in sys.argv:
+        ps1_logos()
+        sys.exit(0)
     if "--arcade" in sys.argv:
         arcade_logos()
         sys.exit(0)

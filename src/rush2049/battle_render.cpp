@@ -62,6 +62,7 @@ namespace {
     uint32_t side_cursor = side_start;
 
     constexpr uint32_t cameras = 0x800E79D0;         // Per view, 0x40: +0x24 position
+    constexpr uint32_t game_state = 0x8010C0D0;      // 0-2 the menus, track select and car select; 3 and up a race
     constexpr uint32_t main_dl_head = 0x80022FD8;
     constexpr uint32_t lighting_cache = 0x800E7DE1;  // func_8007AA48: nonzero while G_LIGHTING is on.
     constexpr uint32_t palette_cache = 0x80111954;   // func_80078190: palette last loaded into TMEM, 0 for none.
@@ -100,6 +101,7 @@ namespace {
         float m[9] = {}, pos[3] = {};
         uint32_t rgba = 0xFFFFFFFF;
         int view = -1;
+        int hidden_view = -1;   // a view it isn't drawn in (hide_in_view), -1 none
         bool attached = false;
         bool billboard = false;
         float push = 0.0f;
@@ -111,6 +113,7 @@ namespace {
     Item items[rush2::battle_render::max_slots];
     std::map<std::string, uint32_t> models;   // Name (15 characters at most) -> display list address
     std::map<std::string, uint32_t> own_models;   // add_model's
+    std::map<std::string, uint32_t> mine_models;  // team_mine_model's, made on first use (0: couldn't be)
     std::map<std::string, std::array<float, 3>> centers;   // model_center's, worked out on first use
     std::shared_ptr<const rush2::rom2049::Source> loaded_rom;
     bool loaded = false;
@@ -288,6 +291,8 @@ bool rush2::battle_render::ready(uint8_t* rdram) {
         loaded_rom = rom;
         models.clear();
         centers.clear();
+        for (const auto& [name, at] : mine_models) own_models.erase(name);
+        mine_models.clear();
         loaded = true;
         for (const ModelFile& f : model_files) loaded = load_file(rdram, *rom, f) && loaded;
     }
@@ -337,9 +342,39 @@ bool rush2::battle_render::image(uint8_t* rdram, const char* name, uint32_t* add
             int width = (file[rec + 16] << 8) | file[rec + 17], height = (file[rec + 18] << 8) | file[rec + 19];
             int palette = (int16_t)((file[rec + 22] << 8) | file[rec + 23]);
             size_t texels = imag.offset + be32(file, rec + 24);
-            // A Dreamcast source's image: RGBA texels behind a load list.
+            // A Dreamcast source's image: RGBA texels behind a load list. The converter shrinks file 63's textures to
+            // the N64 file's size (HEALTHBG to 4 x 8), so the disc's full-size image is used, halved until it fits.
             std::vector<std::array<uint8_t, 4>> rgba;
-            if (palette < 0 && rush2::rom2049::list_image(file, imag.offset, (uint32_t)rec, rgba, width, height)) {
+            bool full = false;
+            if (palette < 0) {
+                for (const rush2::rom2049::SourceTexture& t : loaded_rom->file_textures(image_file)) {
+                    std::vector<uint8_t> pixels;
+                    int fw = 0, fh = 0;
+                    if (t.name != name || !loaded_rom->source_image(t, pixels, fw, fh) || fw <= 0 || fh <= 0) continue;
+                    while (fw * fh * 2 > (int)(image_end - cursor) && fw > 1 && fh > 1) {
+                        std::vector<uint8_t> half((size_t)(fw / 2) * (fh / 2) * 4);
+                        for (int y = 0; y < fh / 2; y++) {
+                            for (int x = 0; x < fw / 2; x++) {
+                                for (int c = 0; c < 4; c++) {
+                                    int sum = 0;
+                                    for (int k = 0; k < 4; k++) sum += pixels[((size_t)(y * 2 + k / 2) * fw + x * 2 + k % 2) * 4 + c];
+                                    half[((size_t)y * (fw / 2) + x) * 4 + c] = (uint8_t)((sum + 2) / 4);
+                                }
+                            }
+                        }
+                        pixels = std::move(half);
+                        fw /= 2;
+                        fh /= 2;
+                    }
+                    rgba.resize((size_t)fw * fh);
+                    for (size_t p = 0; p < rgba.size(); p++) rgba[p] = { pixels[p * 4], pixels[p * 4 + 1], pixels[p * 4 + 2], pixels[p * 4 + 3] };
+                    width = fw;
+                    height = fh;
+                    full = true;
+                    break;
+                }
+            }
+            if (palette < 0 && (full || rush2::rom2049::list_image(file, imag.offset, (uint32_t)rec, rgba, width, height))) {
                 uint32_t bytes = (uint32_t)(width * height * 2);
                 if (cursor + bytes > image_end) break;
                 for (int t = 0; t < width * height; t++) {
@@ -377,9 +412,9 @@ bool rush2::battle_render::image(uint8_t* rdram, const char* name, uint32_t* add
 }
 
 namespace {
-    // Grows box (min x, y, z, max x, y, z) by the vertices display list dl loads, and those of the lists it calls.
+    // Adds the vertices display list dl loads, and those of the lists it calls, to out (model units, 1/16 ft).
     // After the load the lists' addresses are physical (rebase_dl); vertices are s16 x, y, z first of 16 bytes.
-    void dl_bounds(uint8_t* rdram, uint32_t dl, float box[6], int depth) {
+    void dl_vertices(uint8_t* rdram, uint32_t dl, std::vector<std::array<float, 3>>& out, int depth) {
         if (depth > 8) return;
         for (int n = 0; n < 4096; n++, dl += 8) {
             uint32_t w0 = (uint32_t)MEM_W(0, (int32_t)dl), w1 = (uint32_t)MEM_W(0, (int32_t)(dl + 4));
@@ -387,15 +422,13 @@ namespace {
             if (op == 0x01) {
                 int count = (int)((w0 >> 12) & 0xFF);
                 for (int v = 0; v < count; v++) {
-                    for (int k = 0; k < 3; k++) {
-                        float c = (float)(int16_t)MEM_H(0, (int32_t)(target + (uint32_t)v * 16 + (uint32_t)k * 2));
-                        box[k] = std::min(box[k], c);
-                        box[3 + k] = std::max(box[3 + k], c);
-                    }
+                    std::array<float, 3> p;
+                    for (int k = 0; k < 3; k++) p[k] = (float)(int16_t)MEM_H(0, (int32_t)(target + (uint32_t)v * 16 + (uint32_t)k * 2));
+                    out.push_back(p);
                 }
             }
             else if (op == 0xDE) {
-                dl_bounds(rdram, target, box, depth + 1);
+                dl_vertices(rdram, target, out, depth + 1);
                 if (((w0 >> 16) & 0xFF) != 0) return;   // a branch: no return
             }
             else if (op == 0xDF) {
@@ -412,8 +445,15 @@ bool rush2::battle_render::model_center(uint8_t* rdram, const char* name, float 
     if (c == centers.end()) {
         auto m = models.find(key);
         if (m == models.end()) return false;
+        std::vector<std::array<float, 3>> points;
+        dl_vertices(rdram, m->second, points, 0);
         float box[6] = { 1e9f, 1e9f, 1e9f, -1e9f, -1e9f, -1e9f };
-        dl_bounds(rdram, m->second, box, 0);
+        for (const auto& p : points) {
+            for (int k = 0; k < 3; k++) {
+                box[k] = std::min(box[k], p[k]);
+                box[3 + k] = std::max(box[3 + k], p[k]);
+            }
+        }
         std::array<float, 3> mid = { 0.0f, 0.0f, 0.0f };
         if (box[0] <= box[3]) {
             for (int k = 0; k < 3; k++) mid[k] = (box[k] + box[3 + k]) * 0.5f / 16.0f;   // vertices are 1/16 ft
@@ -422,6 +462,99 @@ bool rush2::battle_render::model_center(uint8_t* rdram, const char* name, float 
     }
     for (int k = 0; k < 3; k++) out[k] = c->second[k];
     return true;
+}
+
+bool rush2::battle_render::model_vertices(uint8_t* rdram, const char* name, std::vector<std::array<float, 3>>& out) {
+    std::lock_guard lock{ mutex };
+    out.clear();
+    auto m = models.find(std::string(name).substr(0, 15));
+    if (m == models.end()) return false;
+    dl_vertices(rdram, m->second, out, 0);
+    for (auto& p : out) {
+        for (float& v : p) v /= 16.0f;   // vertices are 1/16 ft
+    }
+    return !out.empty();
+}
+
+// Rush 2049's dropped mine (func_8038E088's caller, 0x8038E3F4 in the battle overlay): two nodes, WPR_MINEBASE (the
+// open bowl, with its own texture load) and a child WPR_MINECAP (the dome, which loads no texture of its own) given the
+// texture MINE_CAP_B, _R, _Y or _G by the owner's team (0x8038E45C: the texture handles at 0x80399AF8, read through
+// the team's color index, 0x8012E67C). Drawn here as one list: the base, the team's cap texture, the cap. The cap's
+// texture load is a copy of MINE_CAP's own (TXLD) with its image and palette swapped for the team's, all four being
+// 32 x 32 CI8 with a 256-color palette.
+std::string rush2::battle_render::team_mine_model(uint8_t* rdram, int team) {
+    static const char* const caps[4] = { "MINE_CAP_B", "MINE_CAP_R", "MINE_CAP_Y", "MINE_CAP_G" };
+    std::lock_guard lock{ mutex };
+    std::string name = "WPR_MINE_" + std::to_string(team & 3);
+    if (mine_models.count(name)) return mine_models[name] != 0 ? name : std::string();
+    mine_models[name] = 0;
+    auto base = models.find("WPR_MINEBASE"), cap = models.find("WPR_MINECAP");
+    if (!loaded || loaded_rom == nullptr || base == models.end() || cap == models.end()) return {};
+    std::vector<uint8_t> file;
+    Layout layout;
+    const ModelFile& f = model_files[0];   // file 76
+    if (!loaded_rom->read_file(f.file, file) || !parse_layout(file, layout)) return {};
+    Chunk txhd, plhd;
+    for (size_t o = be32(file, 0); o + 12 <= file.size(); o += 12) {
+        if (memcmp(&file[o], "TXHD", 4) == 0) txhd = { be32(file, o + 4), be32(file, o + 8) };
+        else if (memcmp(&file[o], "PLHD", 4) == 0) plhd = { be32(file, o + 4), be32(file, o + 8) };
+    }
+    // A texture's image and palette, IMAG relative; false unless it is image data (flag 0x08000000) with a palette.
+    auto image_of = [&](const char* tex, uint32_t& texels, uint32_t& colors) {
+        for (uint32_t i = 0; i < txhd.size; i++) {
+            size_t rec = txhd.offset + (size_t)i * 0x24;
+            if (rec + 0x24 > file.size() || strncmp((const char*)&file[rec], tex, 16) != 0) continue;
+            int palette = (int16_t)((file[rec + 22] << 8) | file[rec + 23]);
+            size_t pal_rec = plhd.offset + (size_t)palette * 0x18;
+            if (!(be32(file, rec + 28) & 0x08000000) || palette < 0 || (uint32_t)palette >= plhd.size || pal_rec + 0x18 > file.size()) return false;
+            texels = be32(file, rec + 24);
+            colors = be32(file, pal_rec + 20);
+            return true;
+        }
+        return false;
+    };
+    uint32_t plain_texels, plain_colors, team_texels, team_colors;
+    if (!image_of("MINE_CAP", plain_texels, plain_colors) || !image_of(caps[team & 3], team_texels, team_colors)) return {};
+    // MINE_CAP's load list: the TXLD list whose image is MINE_CAP's (the lists run back to back, each to its G_ENDDL).
+    uint32_t list = 0, list_size = 0;
+    for (uint32_t start = layout.txld.offset, o = start; o + 8 <= layout.txld.offset + layout.txld.size && o + 8 <= file.size(); o += 8) {
+        uint32_t op = file[o];
+        if (op == 0xFD && list == 0 && (be32(file, o + 4) & 0xFFFFFF) == plain_texels) list = start;
+        if (op == 0xDF) {
+            if (list != 0) {
+                list_size = o + 8 - list;
+                break;
+            }
+            start = o + 8;
+        }
+    }
+    if (list == 0 || list_size == 0) return {};
+    uint32_t imag = (f.address & 0x1FFFFFFF) + layout.imag.offset;
+    // The lists live in the last 0x400 bytes of the file's room (side_alloc's space is reused once it wraps).
+    uint32_t at = f.address + f.max_size - 0x400 + uint32_t(team & 3) * 0x100;
+    if (list_size + 3 * 8 > 0x100 || file.size() > f.max_size - 0x400) return {};
+    uint32_t w = at;
+    auto put = [&](uint32_t w0, uint32_t w1) {
+        MEM_W(0, (int32_t)w) = (int32_t)w0;
+        MEM_W(4, (int32_t)w) = (int32_t)w1;
+        w += 8;
+    };
+    put(G_DL_CALL, base->second & 0x1FFFFFFF);
+    for (uint32_t o = list; o < list + list_size - 8; o += 8) {
+        uint32_t w0 = be32(file, o), w1 = be32(file, o + 4);
+        if ((w0 >> 24) == 0xFD) {
+            uint32_t rel = w1 & 0xFFFFFF;
+            if (rel == plain_texels) rel = team_texels;
+            else if (rel == plain_colors) rel = team_colors;
+            w1 = (w1 & 0x0F000000) | ((imag + rel) & 0xFFFFFF);
+        }
+        put(w0, w1);
+    }
+    put(G_DL_CALL, cap->second & 0x1FFFFFFF);
+    put(G_ENDDL_W0, 0);
+    mine_models[name] = at;
+    own_models[name] = at;
+    return name;
 }
 
 std::string rush2::battle_render::find_model(const char* prefix) {
@@ -474,6 +607,11 @@ void rush2::battle_render::hide(int slot) {
     if (slot >= 0 && slot < max_slots) items[slot].on = false;
 }
 
+void rush2::battle_render::hide_in_view(int slot, int view) {
+    std::lock_guard lock{ mutex };
+    if (slot >= 0 && slot < max_slots) items[slot].hidden_view = view;
+}
+
 void rush2::battle_render::clear() {
     std::lock_guard lock{ mutex };
     for (Item& it : items) it.on = false;
@@ -482,12 +620,18 @@ void rush2::battle_render::clear() {
 // func_8007C624's exit: the placed models of the view just drawn.
 extern "C" void rush2_battle_render_view(uint8_t* rdram, recomp_context* ctx) {
     std::lock_guard lock{ mutex };
+    // The menus draw 3D views too (the title's logo). Their users place these models from a race's ticks, which stop
+    // when it ends, so a race left for the menus (the attract demo going back to the title) would keep its last ones.
+    if ((int32_t)MEM_W(0, (int32_t)game_state) < 3) {
+        for (Item& it : items) it.on = false;
+        return;
+    }
     uint32_t view = 0, gen = 0, root = 0, projection = 0, lookat = 0;
     rush2_interp_get_generation(&view, &gen);
     if (!loaded || !rush2_interp_view_matrices(view, &root, &projection, &lookat)) return;
     int count = 0, attached = 0;
     for (const Item& it : items) {
-        if (it.on && (it.view < 0 || it.view == (int)view)) {
+        if (it.on && (it.view < 0 || it.view == (int)view) && it.hidden_view != (int)view) {
             count++;
             attached += it.attached;
         }
@@ -521,7 +665,7 @@ extern "C" void rush2_battle_render_view(uint8_t* rdram, recomp_context* ctx) {
         for (int order = 0; order < rush2::battle_render::max_slots * 2; order++) {
             int slot = order % rush2::battle_render::max_slots;
             const Item& it = items[slot];
-            if (!it.on || (it.view >= 0 && it.view != (int)view) || it.attached != (pass == 1)) continue;
+            if (!it.on || (it.view >= 0 && it.view != (int)view) || it.hidden_view == (int)view || it.attached != (pass == 1)) continue;
             if (it.last != (order >= rush2::battle_render::max_slots)) continue;
             float m[4][4] = {};
             float rel[3] = { it.pos[0] - cam[0], it.pos[1] - cam[1], it.pos[2] - cam[2] };
@@ -566,6 +710,11 @@ extern "C" void rush2_battle_render_view(uint8_t* rdram, recomp_context* ctx) {
     }
     for (const auto& c : epilogue) dl.cmd(c[0], c[1]);
     if (MEM_BU(0, (int32_t)lighting_cache) != 0) dl.cmd(0xD9FFFFFF, 0x00020000);
+    // Test aid: R2_BATTLE_TEST=dlfault loads unknown microcode once (G_LOAD_UCODE of address 0), to check that RT64
+    // ends the list and writes dl_fault.txt (docs/crash_reports.md#display-list-faults).
+    static const bool test_fault = getenv("R2_BATTLE_TEST") != nullptr && strstr(getenv("R2_BATTLE_TEST"), "dlfault") != nullptr;
+    static int fault_countdown = 600;   // views drawn with battle models first: about 10 s of racing
+    if (test_fault && fault_countdown > 0 && --fault_countdown == 0) dl.cmd(0xDD000000, 0);
     MEM_W(0, (int32_t)palette_cache) = 0;
     dl.cmd(G_ENDDL_W0, 0);
 

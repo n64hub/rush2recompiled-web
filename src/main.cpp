@@ -1,5 +1,7 @@
 // Rush 2: Recompiled entry point. Structure follows BanjoRecomp's main.cpp (RecompFrontend integration).
 
+#include <atomic>
+#include <cmath>
 #include <array>
 #include <chrono>
 #include <cassert>
@@ -19,6 +21,7 @@
 #include "texture_census.h"
 #include "texture_derive.h"
 #include "render/rt64_raster_shader_cache.h"
+#include "hle/rt64_interpreter.h"
 
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
@@ -60,6 +63,8 @@
 #include "data_files.h"
 #include "wings.h"
 #include "track2049.h"
+#include "audio2049.h"
+#include "sfx_sweep.h"
 #include "track_mod_runtime.h"
 #include "touch_controls.h"
 #include "prewarm.h"
@@ -271,8 +276,91 @@ static void queue_audio(const float* samples, uint32_t byte_count) {
 }
 #endif
 
+// Test aid: RUSH2_AUDIO_LEVELS=1 in a simulation run mixes each source apart at 100% main volume (nothing is played)
+// and prints their RMS levels in dBFS once a second: Rush 2's own audio (its music and effects) with its peak, the
+// wings, all of Rush 2049's output (a Dreamcast disc's too) with its peak, the N64 MusyX player's music, effects and
+// engines apart, and the 2049 car engines (src/car_engines.cpp).
+static std::atomic<uint64_t> level_frames_total = 0;   // stream frames measured so far (rush2::sfx_sweep::dump_frames)
+
+uint64_t rush2::sfx_sweep::dump_frames() {
+    return level_frames_total.load();
+}
+
+uint32_t rush2::sfx_sweep::dump_rate() {
+    return sample_rate;
+}
+
+static void log_audio_levels(int16_t* audio_data, size_t sample_count) {
+    static std::vector<float> buf;
+    static double sq[7]{};
+    static float peak[7]{};
+    static uint64_t frames = 0;
+    static bool started = false;
+    if (!started) {
+        rush2::audio2049::measure_buses(true);
+        started = true;
+    }
+    // RUSH2_AUDIO_LEVELS=<folder> (not "1") also writes each source's stream there as raw interleaved stereo f32 at
+    // the mix rate (<source>.f32; rate.txt), for tools/audio_loudness.py.
+    static const char* dump_dir = std::getenv("RUSH2_AUDIO_LEVELS");
+    static FILE* dumps[7]{};
+    static const bool dumping = dump_dir != nullptr && std::strcmp(dump_dir, "1") != 0;
+    if (dumping && dumps[0] == nullptr) {
+        static const char* names[7] = { "rush2", "wings", "", "", "", "car_engines", "rush2049" };
+        std::filesystem::create_directories(dump_dir);
+        for (int i = 0; i < 7; i++) {
+            if (names[i][0] != '\0') dumps[i] = fopen((std::filesystem::path(dump_dir) / (std::string(names[i]) + ".f32")).string().c_str(), "wb");
+        }
+        if (FILE* f = fopen((std::filesystem::path(dump_dir) / "rate.txt").string().c_str(), "w")) {
+            fprintf(f, "%u\n", sample_rate);
+            fclose(f);
+        }
+    }
+    auto sum = [&](int slot) {
+        for (size_t i = 0; i < sample_count; i++) {
+            sq[slot] += double(buf[i]) * buf[i];
+            peak[slot] = std::max(peak[slot], std::fabs(buf[i]));
+        }
+        if (dumps[slot] != nullptr) {
+            fwrite(buf.data(), sizeof(float), sample_count, dumps[slot]);
+            fflush(dumps[slot]);
+        }
+    };
+    buf.assign(sample_count, 0.0f);
+    for (size_t i = 0; i < sample_count; i++) buf[i] = audio_data[i] * (0.5f / 32768.0f);
+    sum(0);
+    buf.assign(sample_count, 0.0f);
+    rush2::wings::mix_sound(buf.data(), sample_count, sample_rate, 0.5f / 32768.0f);
+    sum(1);
+    buf.assign(sample_count, 0.0f);
+    rush2::track2049::mix_audio(buf.data(), sample_count, sample_rate, 0.5f);
+    sum(6);
+    double bus[3];
+    uint64_t bus_frames;
+    rush2::audio2049::take_bus_energy(bus, bus_frames);
+    for (int b = 0; b < 3; b++) sq[2 + b] += bus[b];
+    buf.assign(sample_count, 0.0f);
+    rush2::car_engines::mix(buf.data(), sample_count, sample_rate, 0.5f / 32768.0f);
+    sum(5);
+    frames += sample_count / 2;
+    level_frames_total += sample_count / 2;
+    if (frames >= sample_rate) {
+        auto db = [&](double s) { return s > 0.0 ? 10.0 * std::log10(s / double(frames * 2)) : -999.0; };
+        auto pk = [](float p) { return p > 0.0f ? 20.0 * std::log10(p) : -999.0; };
+        printf("[levels] rush2 %.1f (peak %.1f)  wings %.1f  2049 all %.1f (peak %.1f): music %.1f  sfx %.1f  engines %.1f"
+               "  car engines %.1f dBFS\n", db(sq[0]), pk(peak[0]), db(sq[1]), db(sq[6]), pk(peak[6]), db(sq[2]), db(sq[3]),
+               db(sq[4]), db(sq[5]));
+        fflush(stdout);
+        for (double& s : sq) s = 0.0;
+        for (float& p : peak) p = 0.0f;
+        frames = 0;
+    }
+}
+
 void queue_samples(int16_t* audio_data, size_t sample_count) {
     if (rush2::sim::active()) {
+        static const bool levels = std::getenv("RUSH2_AUDIO_LEVELS") != nullptr;
+        if (levels) log_audio_levels(audio_data, sample_count);
         return; // a simulation run is silent, and in turbo makes audio far faster than it plays
     }
     static std::vector<float> swap_buffer;
@@ -599,6 +687,9 @@ static bool get_game_input(int controller_num, uint16_t* buttons, float* x, floa
 // on any computer.
 namespace {
     recompui::Element* launcher_menu = nullptr;
+    // The launcher page itself (its background and version line). Hidden whenever there is a ROM and nothing being
+    // built, so a launch goes from a black window straight into the game; shown for Locate ROM and the build screen.
+    recompui::Element* launcher_page = nullptr;
     recompui::Element* build_screen = nullptr;
     recompui::Label* build_label = nullptr;
     recompui::Element* build_fill = nullptr;
@@ -648,14 +739,16 @@ namespace {
         static bool hidden = false, shown = false;
         if (build_screen == nullptr) return ready;
         if (!hidden) {
-            hidden = true;   // a ROM located just now: its buttons go
+            hidden = true;   // a ROM located just now: its buttons go, and the page until something is built
             launcher_menu->set_visibility(Visibility::Hidden);
+            launcher_page->set_visibility(Visibility::Hidden);
         }
         rush2::prewarm::Progress p = rush2::prewarm::progress();
         if (!shown && !p.building) return ready;
         if (!shown) {
             shown = true;
             for (Element* b : launcher_buttons) b->set_visibility(Visibility::Hidden);
+            launcher_page->set_visibility(Visibility::Visible);
             launcher_menu->set_visibility(Visibility::Visible);
             build_screen->set_visibility(Visibility::Visible);
         }
@@ -701,9 +794,14 @@ static void launcher_init(recompui::LauncherMenu* menu) {
     }
     add_build_screen(game_options_menu);
     launcher_menu = game_options_menu;
-    // With a valid ROM the game starts once the build pass is over: the menu isn't shown meanwhile.
+    launcher_page = menu;
+    // With a valid ROM the game starts once the build pass is over: nothing of the launcher is shown meanwhile (a
+    // black window) unless the pass has something to build.
     std::u8string game_id = game.game_id;
-    if (recomp::is_rom_valid(game_id)) game_options_menu->set_visibility(recompui::Visibility::Hidden);
+    if (recomp::is_rom_valid(game_id)) {
+        game_options_menu->set_visibility(recompui::Visibility::Hidden);
+        menu->set_visibility(recompui::Visibility::Hidden);
+    }
     // Never Start Game: with a ROM the launcher starts the game itself (launcher_update).
     launcher_buttons.push_back(game_options_menu->add_start_game_or_load_rom_option("Locate ROM", "Locate ROM"));
     launcher_buttons.push_back(game_options_menu->add_exit_option());
@@ -716,6 +814,7 @@ static void launcher_update(recompui::LauncherMenu*) {
     if (started) {
         return;
     }
+    rush2::load_font_pack_early();
     // The ROM Locate ROM just stored: librecomp marks a ROM valid only when it checks the stored ones, so they're checked
     // again once the file is there, and the launcher goes straight on to the build pass and the game (it never offers
     // Start Game).
@@ -745,6 +844,12 @@ static void launcher_update(recompui::LauncherMenu*) {
     // Every car and track is built before the game starts (src/prewarm.cpp).
     rush2::prewarm::start(game_id);
     if (!show_build_progress(rush2::prewarm::ready())) {
+        return;
+    }
+    // The high-resolution fonts drawn from the game's first frame (rush2::load_font_pack_early): the window stays
+    // black until RT64 has the font pack, a fraction of a second, at most 2 s.
+    static const auto fonts_wait = std::chrono::steady_clock::now();
+    if (!rush2::font_pack_ready() && std::chrono::steady_clock::now() - fonts_wait < std::chrono::seconds(2)) {
         return;
     }
     started = true;
@@ -891,6 +996,9 @@ int main(int argc, char** argv) {
             // Not on a page: it builds its prebuilt shader list (web/rt64_shaders.txt) instead.
             RT64::RasterShaderCache::setDiskCacheDirectory(recomp::get_config_path() / "shader_cache");
 #endif
+            // A display list that runs into memory that isn't one is ended there, and its report (dl_fault.txt and an
+            // RDRAM snapshot) goes in the data folder (lib/rt64 hle/rt64_interpreter.cpp, docs/crash_reports.md#display-list-faults).
+            RT64::Interpreter::setFaultReportDirectory(recomp::get_config_path());
             auto presentation_mode = ultramodern::renderer::PresentationMode::PresentEarly;
             return recompui::renderer::create_render_context(rdram, window_handle, presentation_mode, developer_mode);
         },

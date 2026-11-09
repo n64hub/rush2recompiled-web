@@ -6,9 +6,13 @@
 //   .KAT is u32 count, then count x 0x2C bytes {u32 1, u32 offset, u32 size (bytes), u32 rate, u32 loops, u32 format
 //   (4 Yamaha/AICA ADPCM, 8 signed PCM8, 16 PCM16), u32, u32 loop start, u32 loop end (samples), u32, u32}.
 // - Volume (0x8C016508): x -> 1 - (1 - x)^2 -> index x 255 into the attenuation table 0x8C0BADA8 (u8[256]), sent as
-//   127 - a / 2; every sound but 0x99 (the plane) is scaled by 0.8 first (0x8C016210). The attenuation is taken as
-//   AICA total-level steps of 0.375 dB [I]. Pan goes out as (1 - p) / 2 x 127 [the sound library's pan law isn't
-//   traced; an equal-power pan stands in].
+//   127 - a / 2; every sound but 0x99 (the plane) is scaled by 0.8 first (0x8C016210). The sound library
+//   (amSoundSetVolume 0x8C0A2DB2 -> acDigiSetVolume 0x8C09D9AE, its table mode never switched on) sends that level
+//   to the AICA driver (AUDIO64.DRV 1.90f, command 0x96) as total level a & ~1, 0.375 dB steps. The driver's channel
+//   template (0x1134) keeps the direct send level and master volume full. Pan goes out as (1 - p) / 2 x 127, and the
+//   library sends it >> 2 (amSoundSetPan 0x8C0A2E1C); the driver (command 0x97, 0x3F24) makes that 0-31 value the
+//   channel's DIPAN: 16 and up attenuate the right side by value - 16 steps, 1-15 the left by 16 - value, 0 the left
+//   fully; 3 dB a step, 15 silent (pan_gains). The game's centre, 63, is one step left: left 3 dB down.
 // - Songs: list 0x8C0BA818 of 20 file names (18 .STR, then HighScore.rom and Select.rom); per-track song table
 //   0x8C0BA76C, s32 per 2049 track id 0-18 (-1 random). The pack keeps the .STR songs as IMA ADPCM
 //   (src/rush2049dc/rush2049_dc.cpp); the .ROM ones are raw mono PCM16, taken as 22050 Hz looping [I].
@@ -22,12 +26,15 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 
+#include "audio2049.h"
 #include "audio2049_dc.h"
 #include "rush2049_dc_internal.h"
+#include "stream_decode.h"
 
 namespace {
     using Source = rush2::rom2049::Source;
@@ -45,12 +52,14 @@ namespace {
     constexpr int plane_sound = 0x99;               // played without the 0.8 scale (0x8C016250)
     constexpr int voice_count = 32;
     constexpr float release_seconds = 0.01f;
-    // audio2049's callers (src/rush2049/track2049_audio.cpp) boost its MusyX output to make up for MusyX's headroom (music
-    // 2.8x, effects 2x, times 127/114 for Rush 2049's default master volume). The disc's streams and samples are
-    // already at full level, so they're scaled back to play at their own level at full volume.
-    constexpr float musyx_full = 127.0f / 114.0f;
-    constexpr float music_scale = 1.0f / (2.8f * musyx_full);
-    constexpr float sfx_scale = 1.0f / (2.0f * musyx_full);
+    // The gains audio2049's callers pass (src/rush2049/track2049_audio.cpp) are 1 at Rush 2's default settings, which
+    // play the disc as it plays at its own defaults: music and effects volume 1.0 (set at 0x8C06AE30), so its songs
+    // at their full level (0x8C06A086: volume 1 -> attenuation table entry 255, which is 0) and its effects by the
+    // law in volume_gain. Played so, the disc is louder than Rush 2 in songs, effects and engines alike, so each is
+    // turned down by its measured difference (audio2049::disc_*_compensation, include/audio2049.h).
+    constexpr float music_scale = rush2::audio2049::disc_music_compensation;
+    constexpr float effects_scale = rush2::audio2049::disc_effects_compensation;
+    constexpr float engine_scale = rush2::audio2049::disc_engine_compensation;
 
     struct SoundPair {
         int n64, dc;
@@ -78,11 +87,12 @@ namespace {
         float pitch = 1.0f;
         bool releasing = false;
         float release = 1.0f;
+        bool engine = false;   // a car engine: mixed at the engine gain (sfx_set_engine)
     };
 
     struct Song {
-        int file = -1;          // index into the disc's song list
-        int n64 = -1;           // the N64 song it stands for
+        int file = -1;          // index into the disc's song list (-1 for a streamed song)
+        int n64 = -1;           // the N64 song it stands for (a streamed song's own id)
         std::vector<int16_t> pcm; // interleaved stereo
         uint32_t rate = 22050;
         size_t frames = 0, loop_frame = 0;
@@ -90,7 +100,14 @@ namespace {
         // (decoding a whole song up front took a second or more before it could start).
         std::vector<uint8_t> adpcm;
         size_t first_block = 0; // the stream's block that pcm frame 0 is (the lead-in silence skipped)
+        // A streamed song (audio2049::set_stream_song) decodes the same way, through its decoder.
+        std::unique_ptr<rush2::audio2049::StreamDecoder> dec;
         size_t decoded = 0;     // frames of pcm decoded so far
+        // An endless song (synthesized as it plays) keeps only the frames around the play position: pcm[0] is frame
+        // `base`.
+        bool endless = false;
+        size_t base = 0;
+        float gain = music_scale;   // the source's loudness compensation
         double pos = 0.0;
         float fade = 1.0f, fade_step = 0.0f;
     };
@@ -104,14 +121,16 @@ namespace {
         std::array<uint8_t, 256> attenuation{};
         std::array<Voice, voice_count> voices;
         uint32_t next_serial = 1;
-        Song song;
-        bool song_on = false;
         int track = -1;
-        uint32_t song_request = 0;  // bumped by every play and stop; a song read in the background lands only if it's the latest
     };
 
     std::mutex mutex;
     std::unique_ptr<State> st;
+    // The song player, under `mutex`: the disc's songs (while a disc is loaded) and the streamed songs (always).
+    Song song;
+    bool song_on = false;
+    uint32_t song_request = 0;  // bumped by every play and stop; a song read in the background lands only if it's the latest
+    std::map<int, std::shared_ptr<const rush2::audio2049::StreamSong>> streams;
 
     uint32_t le32(const std::vector<uint8_t>& d, size_t o) {
         return d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | ((uint32_t)d[o + 3] << 24);
@@ -200,11 +219,23 @@ namespace {
         return a >= 254 ? 0.0f : std::pow(10.0f, -0.375f * (float)a / 20.0f);
     }
 
+    // The disc's pan (-1 left .. 1 right) as the game, its sound library and the AICA driver send it (see the top).
+    void pan_gains(float pan, float& left, float& right) {
+        int v = int((1.0f - std::clamp(pan, -1.0f, 1.0f)) / 2.0f * 127.0f) >> 2;
+        int steps_left = 0, steps_right = 0;
+        if (v >= 16) steps_right = v - 16;
+        else steps_left = v == 0 ? 15 : 16 - v;
+        auto gain = [](int steps) { return steps >= 15 ? 0.0f : std::pow(10.0f, -3.0f * (float)steps / 20.0f); };
+        left = gain(steps_left);
+        right = gain(steps_right);
+    }
+
     void set_gains(const State& s, Voice& v, int id, float volume, float pan, float pitch) {
         float g = volume_gain(s, volume) * (id == plane_sound ? 1.0f : 0.8f);
-        float angle = (std::clamp(pan, -1.0f, 1.0f) + 1.0f) * 0.25f * 3.14159265f;
-        v.gain_l = g * std::min(1.0f, std::cos(angle) * 1.41421356f);
-        v.gain_r = g * std::min(1.0f, std::sin(angle) * 1.41421356f);
+        float pl, pr;
+        pan_gains(pan, pl, pr);
+        v.gain_l = g * pl;
+        v.gain_r = g * pr;
         v.pitch = std::clamp(pitch, 0.0f, 4.0f);
     }
 
@@ -240,8 +271,27 @@ namespace {
 
     constexpr size_t str_header = 0x800;
 
-    // Decodes the song's ADPCM up to (and including) frame `to`.
+    // Decodes the song's ADPCM (or a streamed song's frames) up to (and including) frame `to`.
     void decode_song(Song& song, size_t to) {
+        if (song.dec) {
+            while (song.decoded <= to && song.decoded < song.frames) {
+                size_t want = std::min<size_t>(song.frames - song.decoded, 4096);
+                if (song.endless) {
+                    song.pcm.resize((song.decoded - song.base + want) * 2);
+                }
+                size_t got = song.dec->decode(&song.pcm[(song.decoded - song.base) * 2], want);
+                if (got == 0) {
+                    // Ended early (a damaged file): the rest stays silent.
+                    song.decoded = song.frames;
+                    break;
+                }
+                song.decoded += got;
+            }
+            if (song.decoded >= song.frames) {
+                song.dec.reset();
+            }
+            return;
+        }
         constexpr int n = rush2::rom2049::dc::music_block_samples;
         constexpr size_t block = 4 + n / 2;
         int16_t ch[n];
@@ -307,6 +357,29 @@ namespace {
         decode_song(out, 2 * (size_t)n - 1);
         return true;
     }
+
+    // Reads a streamed song (on a worker thread) and decodes its first seconds; the mixer decodes the rest as it plays.
+    bool read_stream(const rush2::audio2049::StreamSong& spec, Song& out, std::string& error) {
+        std::vector<uint8_t> bytes;
+        if (!spec.open && (!spec.read || !spec.read(bytes))) {
+            error = "couldn't read it";
+            return false;
+        }
+        out.dec = rush2::audio2049::open_stream(spec, std::move(bytes), error);
+        if (!out.dec || out.dec->frames == 0) {
+            return false;
+        }
+        out.rate = out.dec->rate;
+        out.frames = out.dec->frames;
+        out.endless = out.frames == SIZE_MAX;
+        out.loop_frame = out.dec->loop_frame < out.frames ? out.dec->loop_frame : 0;
+        out.gain = spec.gain * out.dec->gain;
+        if (!out.endless) {
+            out.pcm.resize(out.frames * 2);
+        }
+        decode_song(out, 2 * (size_t)rush2::rom2049::dc::music_block_samples - 1);
+        return true;
+    }
 }
 
 bool rush2::audio2049::dc::load(std::shared_ptr<const Source> source, bool effects) {
@@ -360,62 +433,91 @@ int rush2::audio2049::dc::track_song(int track_id) {
     return rush2::audio2049::disc_songs + st->dc_track_songs[track_id];
 }
 
-void rush2::audio2049::dc::play_song(int song) {
+void rush2::audio2049::dc::set_stream_song(int id, std::shared_ptr<const StreamSong> stream) {
+    std::lock_guard lock{ mutex };
+    if (stream) {
+        streams[id] = std::move(stream);
+    }
+    else {
+        streams.erase(id);
+    }
+}
+
+bool rush2::audio2049::dc::stream_song_set(int id) {
+    std::lock_guard lock{ mutex };
+    return streams.count(id) != 0;
+}
+
+void rush2::audio2049::dc::play_song(int id) {
     std::shared_ptr<const Source> source;
+    std::shared_ptr<const StreamSong> stream;
     std::string name;
     uint32_t request;
     {
         std::lock_guard lock{ mutex };
-        if (!st) return;
-        st->song_on = false;
-        st->song = Song{};
-        request = ++st->song_request;
-        int file = song_file(*st, song);
-        if (file < 0 || st->song_names[file].empty()) return;
-        source = st->source;
-        name = st->song_names[file];
-        st->song.file = file;
-        st->song.n64 = song;
-        st->song_on = true; // playing (silently) while it loads, as far as the callers can tell
+        song_on = false;
+        song = Song{};
+        request = ++song_request;
+        if (id >= stream_songs) {
+            auto it = streams.find(id);
+            if (it == streams.end()) return;
+            stream = it->second;
+        }
+        else {
+            if (!st) return;
+            int file = song_file(*st, id);
+            if (file < 0 || st->song_names[file].empty()) return;
+            source = st->source;
+            name = st->song_names[file];
+            song.file = file;
+        }
+        song.n64 = id;
+        song_on = true; // playing (silently) while it loads, as far as the callers can tell
     }
-    std::thread([source, name, song, request]() {
+    std::thread([source, stream, name, id, request]() {
         auto loaded = std::make_unique<Song>();
-        bool ok = read_song(*source, name, *loaded);
+        std::string error;
+        bool ok = stream ? read_stream(*stream, *loaded, error) : read_song(*source, name, *loaded);
         std::lock_guard lock{ mutex };
-        if (!st || st->song_request != request) return;
+        if (song_request != request) return;
         if (!ok) {
-            fprintf(stderr, "[2049] Couldn't read the disc's song %s\n", name.c_str());
-            st->song_on = false;
+            if (stream) {
+                fprintf(stderr, "[Music] Couldn't play song %d: %s\n", id, error.c_str());
+            }
+            else {
+                fprintf(stderr, "[2049] Couldn't read the disc's song %s\n", name.c_str());
+            }
+            song_on = false;
             return;
         }
-        loaded->file = st->song.file;
-        loaded->n64 = song;
-        loaded->fade = st->song.fade;
-        loaded->fade_step = st->song.fade_step;
-        st->song = std::move(*loaded);
+        loaded->file = song.file;
+        loaded->n64 = id;
+        loaded->fade = song.fade;
+        loaded->fade_step = song.fade_step;
+        song = std::move(*loaded);
     }).detach();
 }
 
 void rush2::audio2049::dc::stop_song(float fade_seconds) {
     std::lock_guard lock{ mutex };
-    if (!st || !st->song_on) return;
+    if (!song_on) return;
     if (fade_seconds <= 0.0f) {
-        st->song_on = false;
-        st->song = Song{};
-        st->song_request++;
+        song_on = false;
+        song = Song{};
+        song_request++;
         return;
     }
-    st->song.fade_step = 1.0f / fade_seconds;
+    song.fade_step = 1.0f / fade_seconds;
 }
 
 bool rush2::audio2049::dc::song_playing() {
     std::lock_guard lock{ mutex };
-    return st && st->song_on;
+    return song_on;
 }
 
 int rush2::audio2049::dc::current_song() {
     std::lock_guard lock{ mutex };
-    return st && st->song_on ? st->song.n64 : -1;
+    return song_on ? song.n64 : -1;
 }
 
 int rush2::audio2049::dc::sfx_start(int id, float volume, float pan, float pitch, float surround) {
@@ -462,6 +564,12 @@ void rush2::audio2049::dc::sfx_stop_all() {
     for (Voice& v : st->voices) v = Voice{};
 }
 
+void rush2::audio2049::dc::sfx_set_engine(int handle) {
+    std::lock_guard lock{ mutex };
+    if (!st) return;
+    if (Voice* v = voice_by_handle(*st, handle)) v->engine = true;
+}
+
 bool rush2::audio2049::dc::sfx_samples(int id, std::vector<int16_t>& pcm, uint32_t& rate) {
     std::lock_guard lock{ mutex };
     int dc = dc_sound(id);
@@ -473,14 +581,16 @@ bool rush2::audio2049::dc::sfx_samples(int id, std::vector<int16_t>& pcm, uint32
     return !pcm.empty();
 }
 
-void rush2::audio2049::dc::mix(float* out, size_t frames, uint32_t sample_rate, float music_gain, float sfx_gain) {
+void rush2::audio2049::dc::mix(float* out, size_t frames, uint32_t sample_rate, float music_gain, float sfx_gain,
+                               float engine_gain) {
     std::lock_guard lock{ mutex };
-    if (!st || sample_rate == 0) return;
+    if (sample_rate == 0) return;
     const float dt = 1.0f / (float)sample_rate;
-    // Effects.
-    float fx = sfx_gain * sfx_scale / 32768.0f;
-    for (Voice& v : st->voices) {
+    // Effects (a disc's).
+    static std::array<Voice, voice_count> no_voices;
+    for (Voice& v : st ? st->voices : no_voices) {
         if (v.s == nullptr) continue;
+        float fx = (v.engine ? engine_gain * engine_scale : sfx_gain * effects_scale) / 32768.0f;
         const Sample& s = *v.s;
         size_t n = s.pcm.size();
         double step = (double)s.rate * v.pitch / sample_rate;
@@ -506,37 +616,44 @@ void rush2::audio2049::dc::mix(float* out, size_t frames, uint32_t sample_rate, 
             }
         }
     }
-    // The song.
-    Song& song = st->song;
-    if (st->song_on && song.frames > 0) {
-        float g = music_gain * music_scale / 32768.0f;
+    // The song (the disc's or a streamed one).
+    if (song_on && song.frames > 0) {
+        float g = music_gain * song.gain / 32768.0f;
         double step = (double)song.rate / sample_rate;
+        // An endless song drops the frames played (keeping the interpolation's look-behind).
+        if (song.endless && song.pos > (double)song.base + 65536.0) {
+            size_t drop = (size_t)song.pos - song.base - 16;
+            song.pcm.erase(song.pcm.begin(), song.pcm.begin() + (ptrdiff_t)(drop * 2));
+            song.base += drop;
+        }
         // This call's frames, plus the interpolation's look-ahead and one more block in case it loops.
         decode_song(song, (size_t)(song.pos + step * frames) + 3 + rush2::rom2049::dc::music_block_samples);
+        size_t held = song.endless ? song.decoded - song.base : song.frames;
         for (size_t k = 0; k < frames; k++) {
             if (song.fade_step > 0.0f) {
                 song.fade -= song.fade_step * dt;
                 if (song.fade <= 0.0f) {
-                    st->song_on = false;
-                    st->song = Song{};
-                    st->song_request++;
+                    song_on = false;
+                    song = Song{};
+                    song_request++;
                     break;
                 }
             }
             int64_t i = (int64_t)song.pos;
             float t = (float)(song.pos - (double)i);
-            out[k * 2] += cubic(song.pcm, 2, 0, i, t, song.frames) * g * song.fade;
-            out[k * 2 + 1] += cubic(song.pcm, 2, 1, i, t, song.frames) * g * song.fade;
+            i -= (int64_t)song.base;
+            out[k * 2] += cubic(song.pcm, 2, 0, i, t, held) * g * song.fade;
+            out[k * 2 + 1] += cubic(song.pcm, 2, 1, i, t, held) * g * song.fade;
             song.pos += step;
-            if (song.pos >= (double)song.frames) song.pos -= (double)(song.frames - song.loop_frame);
+            if (!song.endless && song.pos >= (double)song.frames) song.pos -= (double)(song.frames - song.loop_frame);
         }
     }
 }
 
 void rush2::audio2049::dc::stats(Stats& out) {
     std::lock_guard lock{ mutex };
+    out.song = song_on ? song.n64 : -1;
     if (!st) return;
-    out.song = st->song_on ? st->song.n64 : -1;
     for (const Voice& v : st->voices) {
         if (v.s != nullptr) {
             out.voices_sfx++;

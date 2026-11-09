@@ -68,6 +68,16 @@ namespace {
     constexpr uint32_t mode_opaque = 0xC8112230;   // fog, then AA z-buffered opaque surface
     constexpr uint32_t mode_cutout = 0xC8113278;   // fog, then AA z-buffered alpha-tested (texture edge)
     constexpr uint32_t mode_blend = 0xC8104A50;    // fog, then AA z-buffered translucent (no depth write)
+    // A translucent material's first pass: mode_blend in the opaque z mode with depth write, under alpha compare
+    // (texels under blend_depth_alpha are skipped). Translucent triangles write no depth and are drawn in no order, so
+    // without it a far one drawn later painted over a nearer one: the arcade Mission's trusses and lamp glows over its
+    // trees (all soft-edged, so BLEND). The second pass (mode_blend) then adds the soft edges the first one skipped.
+    constexpr uint32_t mode_blend_depth = (mode_blend & ~0xC00u) | 0x20;    // ZMODE_OPA, Z_UPD
+    constexpr uint32_t blend_depth_alpha = 0x80;
+    constexpr uint32_t set_alpha_compare = 0xE2001E01;  // G_SETOTHERMODE_L, G_MDSFT_ALPHACOMPARE: 1 threshold, 0 none
+    // G_SETBLENDCOLOR as Rush 2's frame setup leaves it (0x80020178; track2049_convert.cpp blend_rush2): its alpha is
+    // the HUD's alpha-compare threshold, put back after a depth pass.
+    constexpr uint32_t blend_color_rush2 = 0x00000010;
     constexpr uint32_t late_pass = 0x40000;        // placement/node flag: drawn after the opaque nodes (transparent)
     constexpr uint32_t camera_card = 0x8000;       // node flag: an upright card turned to the camera (view_billboard_basis)
     constexpr uint32_t combine[2] = { 0xFC127FFF, 0xFFFFF238 };
@@ -543,30 +553,17 @@ namespace {
             // Inclusive and a foot wide: the game's cell is floor(x) (and x - 0.99 for negatives). Walls also reach
             // the wall query's 5 ft (func_8006FC94's 0x144($sp)) past the cell, so a car at its edge still meets them
             // (the stock files list polygons well past their cells), unless that crowds a cell past max_leaf.
-            float m = wide && ((p.flags & 0xF) == 5 || (p.flags & 0xF) == 6) ? 6.0f : 1.0f;
+            float m = wide && ((p.flags & 0xF) == 5 || (p.flags & 0xF) == 6) ? rush2::collision::wall_cell_reach : 1.0f;
             float rx0 = float(x0) - m, rx1 = float(x1) + m, rz0 = float(z0) - m, rz1 = float(z1) + m;
             if (p.x1 < rx0 || p.x0 > rx1 || p.z1 < rz0 || p.z0 > rz1) return false;
             if (!p.sweep.empty()) {
                 for (const auto& b : p.sweep) if (!(b[1] < rx0 || b[0] > rx1 || b[3] < rz0 || b[2] > rz1)) return true;
                 return false;
             }
-            // The polygon itself, not just its box (separating axes of its x/z outline): a long diagonal strip's box
-            // covers far more cells than the strip, and the stacked boxes of a pipe or a terraced slope would
-            // otherwise crowd one cell past max_leaf where the stock files, which list polygons this way, stay under.
-            const auto& o = p.xz;
-            for (size_t k = 0; k < o.size(); k++) {
-                const auto &a = o[k], &b = o[(k + 1) % o.size()];
-                float nx = b[1] - a[1], nz = a[0] - b[0];
-                if (nx * nx + nz * nz < 1e-8f) continue;
-                float pmin = 1e30f, pmax = -1e30f;
-                for (const auto& w : o) { float d = nx * w[0] + nz * w[1]; pmin = std::min(pmin, d); pmax = std::max(pmax, d); }
-                float rmin = 1e30f, rmax = -1e30f;
-                for (float cx : { rx0, rx1 }) for (float cz : { rz0, rz1 }) {
-                    float d = nx * cx + nz * cz; rmin = std::min(rmin, d); rmax = std::max(rmax, d);
-                }
-                if (rmax < pmin - 1e-3f || rmin > pmax + 1e-3f) return false;
-            }
-            return true;
+            // The polygon itself, not just its box: a long diagonal strip's box covers far more cells than the strip,
+            // and the stacked boxes of a pipe or a terraced slope would otherwise crowd one cell past max_leaf where
+            // the stock files, which list polygons this way, stay under.
+            return rush2::collision::outline_meets_box(p.xz, rx0, rx1, rz0, rz1);
         };
         size_t biggest = 0;
         std::function<int(int, int, int, int, int, const std::vector<int>&)> make_node =
@@ -1116,9 +1113,11 @@ namespace {
     void emit_mesh(const std::vector<VisualTri>& vtris, const std::vector<int>& tris, const std::vector<int>& order,
                    const std::vector<DrawMaterial>& materials, const Vec3& origin, float unit,
                    const std::function<void(MeshList&, size_t)>& load, MeshList& m,
-                   uint32_t opaque = mode_opaque, uint32_t cutout = mode_cutout, uint32_t blend = mode_blend) {
+                   uint32_t opaque = mode_opaque, uint32_t cutout = mode_cutout, uint32_t blend = mode_blend,
+                   bool blend_depth = true) {
         const float light[3] = { 0.30f, 0.80f, 0.52f };
         int current_mode = -1;
+        bool depth_state = false;   // the blend color and alpha compare are the depth pass's
         // Translucent materials last, over what is behind them.
         std::vector<size_t> passes;
         for (int pass = 0; pass < 2; pass++) {
@@ -1131,7 +1130,13 @@ namespace {
             const DrawMaterial& dm = materials[mi];
             const rush2::track_mod::Texture& tex = *dm.texture;
             int mode = dm.blend ? 2 : dm.cutout ? 1 : 0;
-            if (mode != current_mode) { m.cmd(0xE200001C, mode == 2 ? blend : mode ? cutout : opaque); current_mode = mode; }
+            bool two_pass = dm.blend && blend_depth;
+            if (two_pass && !depth_state) {
+                m.cmd(0xF9000000, blend_depth_alpha);   // G_SETBLENDCOLOR: the alpha compare threshold
+                depth_state = true;
+            }
+            if (two_pass) current_mode = -1;            // each batch sets its two passes' modes
+            else if (mode != current_mode) { m.cmd(0xE200001C, mode == 2 ? blend : mode ? cutout : opaque); current_mode = mode; }
             load(m, mi);
             // Each triangle's texture coordinates are shifted by whole repeats to stay inside the s16 range.
             std::vector<uint8_t> batch;
@@ -1143,14 +1148,25 @@ namespace {
                 m.vertices.insert(m.vertices.end(), batch.begin(), batch.end());
                 m.vtx_commands.push_back(m.list.size());
                 m.cmd(0x01000000 | (uint32_t(slots) << 12) | (uint32_t(slots) << 1), at);
-                for (size_t t = 0; t < batch_tris.size(); t += 2) {
-                    uint32_t a = (batch_tris[t][0] * 2 << 16) | (batch_tris[t][1] * 2 << 8) | (batch_tris[t][2] * 2);
-                    if (t + 1 < batch_tris.size()) {
-                        uint32_t b = (batch_tris[t + 1][0] * 2 << 16) | (batch_tris[t + 1][1] * 2 << 8) | (batch_tris[t + 1][2] * 2);
-                        m.cmd(0x06000000 | a, b);
+                auto tris_cmds = [&]() {
+                    for (size_t t = 0; t < batch_tris.size(); t += 2) {
+                        uint32_t a = (batch_tris[t][0] * 2 << 16) | (batch_tris[t][1] * 2 << 8) | (batch_tris[t][2] * 2);
+                        if (t + 1 < batch_tris.size()) {
+                            uint32_t b = (batch_tris[t + 1][0] * 2 << 16) | (batch_tris[t + 1][1] * 2 << 8) | (batch_tris[t + 1][2] * 2);
+                            m.cmd(0x06000000 | a, b);
+                        }
+                        else m.cmd(0x05000000 | a, 0);
                     }
-                    else m.cmd(0x05000000 | a, 0);
+                };
+                if (two_pass) {
+                    // The loaded vertices drawn twice: solid texels writing depth, then everything blended.
+                    m.cmd(0xE200001C, mode_blend_depth);
+                    m.cmd(set_alpha_compare, 1);
+                    tris_cmds();
+                    m.cmd(0xE200001C, blend);
+                    m.cmd(set_alpha_compare, 0);
                 }
+                tris_cmds();
                 batch.clear();
                 batch_tris.clear();
                 slots = 0;
@@ -1193,6 +1209,7 @@ namespace {
             }
             flush();
         }
+        if (depth_state) m.cmd(0xF9000000, blend_color_rush2);
     }
 
     // The commands loading RGBA16 stand-in texture t from `texels` (the pointer is the first command's second word),
@@ -1394,6 +1411,7 @@ bool rush2::track_mod::parse_settings(const std::string& text, Settings& s, Repo
     if (t["race"]["laps"]) report.info("track.toml: laps is ignored (players pick the lap count).");
     if (t["race"]["mirror"]) report.info("track.toml: mirror is ignored (every track can be raced mirrored).");
     if (auto v = t["race"]["start_time"].value<double>()) s.start_time = float(*v);
+    if (auto v = t["race"]["finish_time"].value<double>()) s.finish_time = float(*v);
     if (auto* arr = t["race"]["checkpoint_time"].as_array()) {
         for (auto& e : *arr) {
             std::array<float, 3> times{};
@@ -1434,11 +1452,22 @@ bool rush2::track_mod::parse_settings(const std::string& text, Settings& s, Repo
     }
     if (auto v = t["look"]["cloud_scroll"].value<double>()) s.cloud_scroll = float(*v);
     if (auto v = t["look"]["sky_parallax"].value<double>()) s.sky_parallax = float(*v);
-    str("audio", "music", s.music);
+    if (auto* arr = t["audio"]["music"].as_array()) {
+        for (auto& e : *arr) {
+            if (auto v = e.value<std::string>()) s.music_list.push_back(*v);
+            else report.error("track.toml: [audio] music lists song names or files (strings).");
+        }
+    }
+    else if (auto v = t["audio"]["music"].value<std::string>()) {
+        s.music_list.push_back(*v);
+    }
+    if (!s.music_list.empty()) s.music = s.music_list[0];
     str("menu", "preview", s.preview);
     str("menu", "logo", s.logo);
     str("menu", "diorama", s.diorama);
     str("menu", "after", s.menu_after);
+    str("menu", "variant_of", s.variant_of);
+    str("menu", "variant", s.variant);
     if (auto* surf = t["surfaces"].as_table()) {
         int next_slot = 3;
         for (auto& [key, node] : *surf) {
@@ -1535,7 +1564,7 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
     std::map<int, const rush2::gltf::Node*> checkpoints, grid;
     std::vector<std::pair<float, const rush2::gltf::Node*>> aispeeds;
     std::vector<std::pair<int, const rush2::gltf::Node*>> pickup_nodes;   // PICKUP_<kind>: kind as PickupRecord::kind
-    std::vector<const rush2::gltf::Node*> visual, sky, billboard_nodes;
+    std::vector<const rush2::gltf::Node*> visual, sky, billboard_nodes, finish_banner;
     std::vector<std::pair<int, const rush2::gltf::Node*>> prop_nodes;    // PROP_: PropRecord::type
     const bool arena = is_arena(settings);
     // A point-to-point race ([track] point_to_point): run once from START to FINISH along an open AIPATH_main, as
@@ -1668,6 +1697,15 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         if (int k = number_after(name, "START_"); k >= 0) { grid[k] = &n; continue; }
         if (int k = number_after(name, "AISPEED_"); k >= 0) { aispeeds.push_back({ float(k), &n }); continue; }
         if (name == "SKY") { if (mesh) sky.push_back(&n); else report.warning(n.name + " has no mesh; ignored."); continue; }
+        // The finish banner (FINISH_BANNER*): Rush 2's own <prefix>FINISH model, whose CHKPNT faces turn to FINISH on the
+        // last lap. FINISH_BANNER_LAST is never drawn: it only keeps the FINISH material in an export that drops unused
+        // ones.
+        if (starts(name, "FINISH_BANNER_LAST")) continue;
+        if (starts(name, "FINISH_BANNER")) {
+            if (mesh) finish_banner.push_back(&n);
+            else report.warning(n.name + " has no mesh; ignored.");
+            continue;
+        }
         if (starts(name, "PROP_")) {
             std::string kind = upper(name.substr(5));
             int type = starts(kind, "KNOCK") ? rush2::track2049::prop_knock : starts(kind, "TIP") ? rush2::track2049::prop_tip : 0;
@@ -1754,10 +1792,24 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
     // A circuit's gates are FINISH and then CHECKPOINT_1, 2, ...; a point-to-point race's START, the checkpoints and
     // FINISH last (START stands in at the path's start when there is none: see the AI path below).
     // loop: a run-in circuit's loop start (flags 4), where the path's end comes back onto it.
-    struct Gate { std::string name; Vec3 pos, dir; float radius; int at = -1; bool loop = false; };
+    // radius: half the marker's width (its X scale), where the converter looks for the AI path's crossing. pass: the
+    // marker's pass_radius custom property (m, kept in ft here), how far from it seen from above a car may cross its
+    // line and still count, when that is wider (0: radius). The path file's gate radius is the larger: it is what the
+    // race's gate test (func_800A1468) reads, while the crossings stay the converter's (rush2_mod_checkpoint_crossing).
+    struct Gate { std::string name; Vec3 pos, dir; float radius; int at = -1; bool loop = false; float pass = 0.0f; };
+    auto pass_radius = [](const rush2::gltf::Node* n) {
+        if (!n->extras.contains("pass_radius")) return 0.0f;
+        const auto& v = n->extras["pass_radius"];
+        return v.is_number() ? std::max(0.0f, v.get<float>()) * feet_per_meter : 0.0f;
+    };
+    auto marker_gate = [&](std::string name, const rush2::gltf::Node* n) {
+        Gate g{ std::move(name), to_game(n->position()), forward(n), half_width(n) };
+        g.pass = pass_radius(n);
+        return g;
+    };
     std::vector<Gate> gates;
-    if (finish && !open_path) gates.push_back({ "FINISH", to_game(finish->position()), forward(finish), half_width(finish) });
-    if (start_line) gates.push_back({ "START", to_game(start_line->position()), forward(start_line), half_width(start_line) });
+    if (finish && !open_path) gates.push_back(marker_gate("FINISH", finish));
+    if (start_line) gates.push_back(marker_gate("START", start_line));
     if (arena) {
         // Start spots: Rush 2049's battle starts player p at checkpoint [0, 2, 1, 3][p] (rush2_track49_battle_start), the
         // stunt mode at the path's first point, which is START_1's.
@@ -1774,9 +1826,9 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
     int cps_added = 0;
     for (const auto& [k, n] : checkpoints) {
         if (cps_added++ >= max_cps) break;   // the extra ones were reported above
-        gates.push_back({ "CHECKPOINT_" + std::to_string(k), to_game(n->position()), forward(n), half_width(n) });
+        gates.push_back(marker_gate("CHECKPOINT_" + std::to_string(k), n));
     }
-    if (finish && open_path) gates.push_back({ "FINISH", to_game(finish->position()), forward(finish), half_width(finish) });
+    if (finish && open_path) gates.push_back(marker_gate("FINISH", finish));
     for (size_t i = 0; i < gates.size(); i++) {
         const Gate& g = gates[i];
         if (length(g.dir) < 0.5f) report.error(g.name + " points straight up or down; turn it so its green arrow points down the track.");
@@ -2431,7 +2483,10 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
                                  "the checkpoint where the loop starts.");
                 }
                 gates[size_t(best_g)].loop = true;
-                for (auto& cg : found) cg.erase(std::remove_if(cg.begin(), cg.end(), [&](const Crossing& k) { return k.s > lap + 1.0f; }), cg.end());
+                // A path cut at the loop start's second crossing ends on it: that crossing goes too (it is the loop
+                // start met again, not another pass).
+                const bool cut = lap < at[steps];
+                for (auto& cg : found) cg.erase(std::remove_if(cg.begin(), cg.end(), [&](const Crossing& k) { return cut ? k.s > lap - 1.0f : k.s > lap + 1.0f; }), cg.end());
                 report.info("Run-in circuit: the loop starts at " + gates[size_t(best_g)].name + "; the laps go round from there.");
             }
         }
@@ -2990,7 +3045,8 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
                 // Pointing back against the race, as in every stock path file (the gate test 0x800A15BC takes a
                 // side change either way).
                 for (float f : g.dir) addf(d, -f);
-                add32(d, uint32_t(std::min(65535.0f, g.radius) * std::min(65535.0f, g.radius)));
+                float r = std::min(65535.0f, std::max(g.radius, g.pass));
+                add32(d, uint32_t(r * r));
                 // Circuit: the finish is the lap line, arms lap counting and starts the loop (7). An open path:
                 // open_flags.
                 add16(d, open_path ? open_flags(c) : c == 0 ? 7 : 0);
@@ -3425,6 +3481,30 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
     for (const BillboardModel& b : billboard_models) {
         for (const VisualTri& t : b.tris) if (std::find(used_materials.begin(), used_materials.end(), t.material) == used_materials.end()) used_materials.push_back(t.material);
     }
+    // The finish banner (Rush 2's <prefix>FINISH, func_8008F080): its faces, and the materials named CHKPNT and FINISH,
+    // whose texture-load lists are the texture table's CHKPNT and FINISH entries. When a player passes the last
+    // checkpoint of the last lap (checkpoint_passed_8008F220), Rush 2 points the banner's calls to CHKPNT's list at
+    // FINISH's (mirror_winding_walk_80077518), so FINISH is drawn with CHKPNT's coordinates.
+    std::vector<VisualTri> btris;
+    for (const auto* n : finish_banner) append_tris(*n, btris);
+    auto material_named = [&](const char* nm) {
+        for (size_t i = 0; i < scene.materials.size(); i++) if (scene.materials[i].name == nm) return int(i);
+        return -1;
+    };
+    int chkpnt_material = -1, finish_material = -1;
+    if (!btris.empty()) {
+        for (const VisualTri& t : btris) if (std::find(used_materials.begin(), used_materials.end(), t.material) == used_materials.end()) used_materials.push_back(t.material);
+        int c = material_named("CHKPNT"), f = material_named("FINISH");
+        bool on_banner = std::any_of(btris.begin(), btris.end(), [&](const VisualTri& t) { return c >= 0 && t.material == c; });
+        if (!on_banner) report.warning("FINISH_BANNER has no faces in a material named CHKPNT: it never changes to FINISH.");
+        else if (f < 0) report.warning("There is no material named FINISH (keep it on a mesh named FINISH_BANNER_LAST): the finish banner never changes.");
+        else {
+            chkpnt_material = c;
+            finish_material = f;
+            if (std::find(used_materials.begin(), used_materials.end(), f) == used_materials.end()) used_materials.push_back(f);
+        }
+        if (gates.empty()) report.warning("FINISH_BANNER needs the FINISH gate; it isn't drawn.");
+    }
     auto is_blend = [&](int m) { return m >= 0 && m < (int)scene.materials.size() && scene.materials[m].alpha_mode == "BLEND"; };
     std::map<int, int> texture_of;      // material -> out.textures
     std::map<int, bool> cutout_of;
@@ -3434,6 +3514,16 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         texture_of[m] = int(out.textures.size());
         cutout_of[m] = cutout;
         out.textures.push_back(make_texture(scene, mat, cutout ? (mat->alpha_mode == "MASK" ? mat->alpha_cutoff : 0.5f) : 0.0f));
+    }
+    if (chkpnt_material >= 0) {
+        // The swap keeps CHKPNT's texture coordinates, so FINISH's image has to come out at the same size.
+        const auto& c = out.textures[size_t(texture_of[chkpnt_material])];
+        const auto& f = out.textures[size_t(texture_of[finish_material])];
+        if (c.width != f.width || c.height != f.height) {
+            report.warning("The FINISH and CHKPNT images have different shapes: give them the same size, or FINISH "
+                           "is drawn stretched.");
+        }
+        report.info("Finish banner: FINISH_BANNER, CHKPNT turning to FINISH on the last lap.");
     }
 
     // Sections on a grid, by triangle center. A triangle wider than a cell, or too big for its cell, joins the first
@@ -3538,6 +3628,35 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         }
     }
 
+    // The game's own models for its records (Extras::models: the arcade versions' coins and keys), copied as the
+    // stock sky is. A record whose model couldn't be copied is left out.
+    struct ExtraCopy {
+        ModelCopy copy;
+        Section section;
+        uint16_t behaviour = 0;
+    };
+    std::vector<ExtraCopy> extra_copies;
+    for (const auto& em : extras.models) {
+        ExtraCopy ec;
+        std::string why;
+        if (!plan_copy(em.container, em.name, ec.copy, why)) {
+            report.error("The game's model " + em.name + " couldn't be copied: " + why + ".");
+            continue;
+        }
+        ec.section.name = em.name;
+        ec.section.radius = ec.copy.radius;
+        ec.behaviour = em.behaviour;
+        extra_copies.push_back(std::move(ec));
+    }
+    // The records draw these models (their class's model lookup is redirected to them): all or none.
+    std::vector<const rush2::track_mod::Extras::Record*> extra_records;
+    if (extra_copies.size() == extras.models.size()) {
+        for (const auto& r : extras.records) extra_records.push_back(&r);
+    }
+    if (!extra_records.empty()) {
+        report.info(std::to_string(extra_records.size()) + " collectible(s) of the course placed.");
+    }
+
     // ---- geometry container (docs/rush2049_research/geometry.md section 2) ----
     std::vector<uint8_t>& g = out.track.geometry;
     g.assign(0x28, 0);
@@ -3546,13 +3665,22 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         t.offset = uint32_t(g.size());
         g.insert(g.end(), t.texels.begin(), t.texels.end());
     }
-    if (stock_sky_model) {
-        for (const auto& [at, bytes] : sky_copy.blocks) {
+    // A copied model's texel and palette data, then (copy_loads) its texture-load lists in the load-list range.
+    auto copy_blocks = [&](ModelCopy& c) {
+        for (const auto& [at, bytes] : c.blocks) {
             align8(g);
-            sky_copy.moved[at] = uint32_t(g.size());
-            g.insert(g.end(), sky_copy.src->begin() + at, sky_copy.src->begin() + at + bytes);
+            c.moved[at] = uint32_t(g.size());
+            g.insert(g.end(), c.src->begin() + at, c.src->begin() + at + bytes);
         }
-    }
+    };
+    auto copy_loads = [&](ModelCopy& c) {
+        for (const auto& [at, bytes] : c.loads) {
+            c.moved[at] = uint32_t(g.size());
+            copy_list(c, at, bytes, g, 0, uint32_t(g.size()));
+        }
+    };
+    if (stock_sky_model) copy_blocks(sky_copy);
+    for (ExtraCopy& ec : extra_copies) copy_blocks(ec.copy);
     align8(g);
     uint32_t txld_start = uint32_t(g.size());
     std::vector<uint32_t> load_lists;
@@ -3567,12 +3695,8 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         add32(g, 0xDF000000);
         add32(g, 0);
     }
-    if (stock_sky_model) {
-        for (const auto& [at, bytes] : sky_copy.loads) {
-            sky_copy.moved[at] = uint32_t(g.size());
-            copy_list(sky_copy, at, bytes, g, 0, uint32_t(g.size()));
-        }
-    }
+    if (stock_sky_model) copy_loads(sky_copy);
+    for (ExtraCopy& ec : extra_copies) copy_loads(ec.copy);
     uint32_t empty_list = uint32_t(g.size());
     add32(g, 0xDF000000);
     add32(g, 0);
@@ -3585,17 +3709,25 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
     if (!stris.empty() || stock_sky_model) names.push_back("SKYO1");
     for (const Mover& m : movers) if (!m.model.empty()) names.push_back(m.model);
     for (const BillboardModel& b : billboard_models) names.push_back(b.name);
+    for (const ExtraCopy& ec : extra_copies) names.push_back(ec.section.name);
     names.push_back(prefix + "FINISH");
-    names.push_back(prefix + "FINISHB");
+    // FINISHB only as an empty stand-in: with a FINISH_BANNER it is left out, so a backward race's func_8008F080 falls
+    // back to FINISH, the model drawn (a list shared by two models would be relocated twice).
+    if (btris.empty() || gates.empty()) names.push_back(prefix + "FINISHB");
     std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) { return strncmp(a.c_str(), b.c_str(), 15) < 0; });
     uint32_t model_table = uint32_t(g.size());
     g.resize(g.size() + names.size() * 0x34, 0);
     uint32_t texture_table = uint32_t(g.size());
-    for (const char* tn : { "CHKPNT", "FINISH" }) {
-        add_name(g, tn);
+    // Entry +0x18 is the texture-load list func_8008F080 swaps (empty without a FINISH_BANNER).
+    auto load_list_of = [&](int material) {
+        auto it = std::find(used_materials.begin(), used_materials.end(), material);
+        return material >= 0 && it != used_materials.end() ? load_lists[size_t(it - used_materials.begin())] : empty_list;
+    };
+    for (int k = 0; k < 2; k++) {
+        add_name(g, k ? "FINISH" : "CHKPNT");
         add16(g, 0); add16(g, 0);
         add32(g, 0xFFFF);
-        add32(g, empty_list);
+        add32(g, load_list_of(k ? finish_material : chkpnt_material));
         add32(g, 0);
     }
     uint32_t palette_table = uint32_t(g.size());
@@ -3641,7 +3773,7 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         m.cmd(0xD9FEFFFE, 0x00000000);          // G_ZBUFFER, G_FOG off
         m.cmd(0xD7000002, 0xFFFFFFFF);
         emit_mesh(stris, all, used_materials, draw_materials, Vec3{}, unit,
-                  [&](MeshList& ml, size_t mi) { ml.cmd(0xDE000000, load_lists[mi]); }, m, sky_opaque, sky_cutout, sky_blend);
+                  [&](MeshList& ml, size_t mi) { ml.cmd(0xDE000000, load_lists[mi]); }, m, sky_opaque, sky_cutout, sky_blend, false);
         m.cmd(0xD9FFFFFF, 0x00010001);          // G_ZBUFFER, G_FOG back on
         m.cmd(0xE3000A01, 0x00100000);          // 2-cycle
         m.cmd(combine[0], combine[1]);
@@ -3657,41 +3789,69 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         for (size_t i : m.vtx_commands) m.list[i].second += base;
         for (const auto& [w0, w1] : m.list) { add32(g, w0); add32(g, w1); }
     }
-    if (stock_sky_model) {
-        const std::vector<uint8_t>& d = *sky_copy.src;
+    // A copied model's vertices (raised by `rise`, 1/16 ft; true if any hit the s16 limit), other lists and its own
+    // list, which `list` gets.
+    auto copy_model = [&](ModelCopy& c, float rise, uint32_t& list) {
+        const std::vector<uint8_t>& d = *c.src;
+        bool clipped = false;
         align8(g);
         uint32_t vtx_base = uint32_t(g.size());
-        if (sky_copy.vtx1 > sky_copy.vtx0) {
-            g.insert(g.end(), d.begin() + sky_copy.vtx0, d.begin() + sky_copy.vtx1);
+        if (c.vtx1 > c.vtx0) {
+            g.insert(g.end(), d.begin() + c.vtx0, d.begin() + c.vtx1);
             // The relocator's mirror pass follows the vertices from the list's first G_VTX while bit 15 of their +6
             // halfword says another follows (geometry.md 4.2): end the chain at the copy's last vertex.
             g[g.size() - 16 + 6] &= 0x7F;
-            // Sky models keep their world height (StockSky::ground): raised as far as this track's start is above
-            // the source track's, in 1/16 ft.
-            float rise = ((gates.empty() ? 0.0f : gates[0].pos[1]) - stock_sky(settings.sky)->ground) * 16.0f;
-            bool clipped = false;
-            for (size_t at = vtx_base; at + 16 <= g.size(); at += 16) {
+            for (size_t at = vtx_base; rise != 0.0f && at + 16 <= g.size(); at += 16) {
                 long y = std::lround(int16_t(uint16_t(g[at + 2] << 8 | g[at + 3])) + rise);
                 clipped |= y < -32768 || y > 32767;
                 y = std::clamp(y, -32768l, 32767l);
                 g[at + 2] = uint8_t(uint16_t(y) >> 8);
                 g[at + 3] = uint8_t(y);
             }
-            if (clipped) {
-                report.warning("The stock sky " + settings.sky + " is squashed at the game's height limit: FINISH (at " +
-                               fmt_ft(gates[0].pos[1]) + " high) is too far above or below the sky's own track.");
-            }
         }
-        for (const auto& [at, bytes] : sky_copy.subs) {
+        for (const auto& [at, bytes] : c.subs) {
             align8(g);
-            sky_copy.moved[at] = uint32_t(g.size());
+            c.moved[at] = uint32_t(g.size());
             g.insert(g.end(), d.begin() + at, d.begin() + at + bytes);
         }
         align8(g);
+        list = uint32_t(g.size());
+        copy_list(c, c.list, c.list_bytes, g, vtx_base, list);
+        return clipped;
+    };
+    if (stock_sky_model) {
+        // Sky models keep their world height (StockSky::ground): raised as far as this track's start is above the
+        // source track's, in 1/16 ft.
+        float rise = ((gates.empty() ? 0.0f : gates[0].pos[1]) - stock_sky(settings.sky)->ground) * 16.0f;
         sky_model.name = "SKYO1";
-        sky_model.list = uint32_t(g.size());
         sky_model.radius = sky_copy.radius;
-        copy_list(sky_copy, sky_copy.list, sky_copy.list_bytes, g, vtx_base, sky_model.list);
+        if (copy_model(sky_copy, rise, sky_model.list)) {
+            report.warning("The stock sky " + settings.sky + " is squashed at the game's height limit: FINISH (at " +
+                           fmt_ft(gates[0].pos[1]) + " high) is too far above or below the sky's own track.");
+        }
+    }
+    for (ExtraCopy& ec : extra_copies) copy_model(ec.copy, 0.0f, ec.section.list);
+    // Each extra record is a child of the opaque section nearest it (the one whose cell it is in, if any), as a
+    // stock track's keys are children of their section: the game culls and draws them with it, so the section's box
+    // and radius grow to hold it (a coin over a jump can be far above the section's ground).
+    std::map<int, std::vector<const rush2::track_mod::Extras::Record*>> children_of;
+    for (const auto* r : extra_records) {
+        Vec3 p = { r->pos[0], r->pos[1], r->pos[2] };
+        int best = -1;
+        for (size_t s = 0; s < sections.size(); s++) {
+            if (sections[s].late) continue;
+            if (best < 0 || dist_xz(sections[s].origin, p) < dist_xz(sections[size_t(best)].origin, p)) best = int(s);
+        }
+        if (best < 0) continue;
+        Section& s = sections[size_t(best)];
+        constexpr float margin = 10.0f;     // ft around the record's point
+        Vec3 rel = sub(p, s.origin);
+        for (int c = 0; c < 3; c++) {
+            s.lo[c] = std::min(s.lo[c], rel[c] - margin);
+            s.hi[c] = std::max(s.hi[c], rel[c] + margin);
+        }
+        s.radius = std::max(s.radius, length(rel) + margin);
+        children_of[best].push_back(r);
     }
     for (Mover& mv : movers) {
         if (mv.model.empty()) continue;
@@ -3739,6 +3899,30 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         for (size_t i : m.vtx_commands) m.list[i].second += base;
         for (const auto& [w0, w1] : m.list) { add32(g, w0); add32(g, w1); }
     }
+    // The finish banner: <prefix>FINISH, placed at the FINISH gate (the placement's finish record).
+    Section finish_model;
+    if (!btris.empty() && !gates.empty()) {
+        std::vector<int> all(btris.size());
+        for (size_t i = 0; i < all.size(); i++) all[i] = int(i);
+        MeshList m;
+        m.cmd(0xE3001001, 0x00000000);
+        m.cmd(0xE3000F00, 0x00000000);
+        m.cmd(combine[0], combine[1]);
+        m.cmd(0xD7000002, 0xFFFFFFFF);
+        emit_mesh(btris, all, used_materials, draw_materials, gates[0].pos, 16.0f,
+                  [&](MeshList& ml, size_t mi) { ml.cmd(0xDE000000, load_lists[mi]); }, m);
+        m.cmd(0xE3001001, 0x00008000);
+        m.cmd(0xDF000000, 0);
+        align8(g);
+        uint32_t base = uint32_t(g.size());
+        g.insert(g.end(), m.vertices.begin(), m.vertices.end());
+        align8(g);
+        finish_model.name = prefix + "FINISH";
+        finish_model.list = uint32_t(g.size());
+        finish_model.radius = m.radius;
+        for (size_t i : m.vtx_commands) m.list[i].second += base;
+        for (const auto& [w0, w1] : m.list) { add32(g, w0); add32(g, w1); }
+    }
     align8(g);
     uint32_t name_table = uint32_t(g.size());
     for (size_t i = 0; i < names.size(); i++) {
@@ -3746,12 +3930,17 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
         for (const Section& s : sections) if (s.name == names[i]) sec = &s;
         for (const Mover& mv : movers) if (mv.model == names[i]) sec = &mv.section;
         for (const BillboardModel& bm : billboard_models) if (bm.name == names[i]) sec = &bm.section;
+        if (finish_model.list && names[i] == prefix + "FINISH") sec = &finish_model;
+        uint16_t behaviour = 0;                      // a plain model
+        for (const ExtraCopy& ec : extra_copies) {
+            if (ec.section.name == names[i]) { sec = &ec.section; behaviour = ec.behaviour; }
+        }
         uint32_t r = model_table + uint32_t(i) * 0x34;
         put32(g, r, 1);                              // one LOD
         put32(g, r + 4 + 8, sec ? sec->list : empty_list);
         add_name(g, names[i]);
         addf(g, sec ? sec->radius : 1.0f);
-        add16(g, 0);                                 // behaviour: plain model
+        add16(g, behaviour);
         add16(g, 0);
     }
     const uint32_t header[10] = { model_table, name_table, texture_table, palette_table, uint32_t(names.size()), 2, 0,
@@ -3769,6 +3958,13 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
     for (size_t j = 0; j < movers.size(); j++) if (!movers[j].model.empty()) mover_records.push_back(int(j));
     size_t first_billboard = sections.size() + 1 + mover_records.size();
     size_t records = first_billboard + billboards.size();
+    // The extra records follow the top-level chain, each section's together (the stock files' pre-order).
+    std::map<int, size_t> first_child;
+    size_t child_at = records;
+    for (const auto& [s, kids] : children_of) {
+        first_child[s] = child_at;
+        child_at += kids.size();
+    }
     for (size_t i = 0; i < records; i++) {
         bool is_finish = i == sections.size();
         const Mover* mv = i > sections.size() && i < first_billboard ? &movers[mover_records[i - sections.size() - 1]] : nullptr;
@@ -3796,10 +3992,26 @@ bool rush2::track_mod::convert(const std::vector<uint8_t>& glb, const std::strin
             out.track.prop_records.push_back(r);
         }
         add16(pl, uint16_t(i + 1 < records ? int16_t(i + 1) : int16_t(-1)));
-        add16(pl, 0xFFFF);
+        auto child = first_child.find(int(i));
+        add16(pl, !is_finish && !mv && !bb && child != first_child.end() ? uint16_t(child->second) : 0xFFFF);
         add32(pl, 0);
         for (int k = 0; k < 6; k++) addf(pl, is_finish || mv || bb ? 0.0f : (k < 3 ? sections[i].lo[k] : sections[i].hi[k - 3]));
         if (mv) out.track.path_records.push_back({ int(mv - movers.data()), 0, int(i) });
+    }
+    // A class record (a key) holds its world position: the placement walker makes a breakable's position relative to
+    // its parent (func_80081790), as with the stock tracks' keys (src/rush1/track1_convert.cpp).
+    for (const auto& [s, kids] : children_of) {
+        for (size_t j = 0; j < kids.size(); j++) {
+            const auto& r = *kids[j];
+            add_name(pl, r.name);
+            for (float f : r.m) addf(pl, f);
+            for (float f : r.pos) addf(pl, f);
+            add32(pl, 0x40);
+            add16(pl, uint16_t(j + 1 < kids.size() ? int16_t(first_child[s] + j + 1) : int16_t(-1)));
+            add16(pl, 0xFFFF);
+            add32(pl, 0);
+            for (int k = 0; k < 6; k++) addf(pl, 0.0f);
+        }
     }
 
     // ---- moving objects' paths: a 2049 file with one PTHD chunk (movers.md; movers::parse_paths reads it) ----

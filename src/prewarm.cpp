@@ -47,7 +47,9 @@
 #include "car1_stripes.h"
 #include "car2049.h"
 #include "arcade2049.h"
+#include "sfrush_ps1.h"
 #include "car_mods.h"
+#include "odometer2049.h"
 #include "prewarm.h"
 #include "rush2049_rom.h"
 #include "texture_prewarm.h"
@@ -87,7 +89,9 @@ namespace {
         auto cs = rush2::calspeed::get_rom();
         auto r1 = rush2::track1::get_rom();
         char s[160];
-        snprintf(s, sizeof(s), "%p%d %p%d%d%d %p%d ", (const void*)r49.get(), (int)rush2::track2049::available(),
+        // The race tracks' versions too (Games tab Enabled Source: both copies, or which copy the N64 ones come from).
+        snprintf(s, sizeof(s), "%p%d%d%d %p%d%d%d %p%d ", (const void*)r49.get(), (int)rush2::track2049::available(),
+                 (int)rush2::track2049::disc_courses_available(), (int)rush2::track2049::courses_from_disc(),
                  (const void*)cs.get(), (int)rush2::calspeed::available(), (int)rush2::calspeed::scenery_enabled(),
                  (int)rush2::calspeed::billboards_enabled(), (const void*)r1.get(), (int)rush2::track1::available());
         return s + rush2::track_mod::signature();
@@ -178,7 +182,7 @@ namespace {
         const bool sf_rush = r1 != nullptr && rush2::track1::available();
         {
             std::lock_guard lock{ progress_mutex };
-            jobs = { { "Rush 2049 arcade mods", 1.5 }, { "Car mods", 0.3 }, { "Custom tracks", 2.4 },
+            jobs = { { "Arcade mods", 1.5 }, { "Car mods", 0.3 }, { "Custom tracks", 2.4 },
                      { "Rush 2049 and California Speed tracks", 3.3 }, { "Track select art", 0.2 },
                      { "Car stats", 1.5 } };
             if (r49 != nullptr) jobs.push_back({ "Rush 2049 cars", 1.0 });
@@ -192,7 +196,7 @@ namespace {
             }
         }
         spawn(L"Prewarm Arcade", [] {
-            job("Rush 2049 arcade mods", [] { rush2::arcade2049::refresh_now(); });
+            job("Arcade mods", [] { rush2::arcade2049::refresh_now(); rush2::sfrush_ps1::refresh_now(); });
             std::thread cars([] {
                 name_thread(L"Prewarm Car Mods", false);
                 job("Car mods", [] { rush2::car_mods::prepare(); });
@@ -200,7 +204,7 @@ namespace {
             job("Custom tracks", [] { rush2::track_mod::prepare(); });
             cars.join();
         });
-        if (r49 != nullptr) spawn(L"Prewarm 2049 Cars", [r49] { job("Rush 2049 cars", [&] { rush2::car2049::prepare(*r49); }); });
+        if (r49 != nullptr) spawn(L"Prewarm 2049 Cars", [r49] { job("Rush 2049 cars", [&] { rush2::car2049::prepare(*r49); rush2::odometer2049::prepare(r49); }); });
         if (cs != nullptr) spawn(L"Prewarm CS Cars", [cs] { job("California Speed cars", [&] { rush2::calspeed::prepare_cars(*cs); }); });
         spawn(L"Prewarm Car Stats", [] { job("Car stats", [] { rush2::car2049::prepare_bar_ranges(); }); });
         if (sf_rush) {
@@ -226,7 +230,7 @@ namespace {
         bool built_all = build_pass(game_id);
         printf("[prewarm] launch builds %s (%.1f s, %llu cache misses%s)\n", built_all ? "done" : "skipped (the ROM didn't load)",
                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
-               (unsigned long long)rush2::track_cache::misses(), rush2::arcade2049::rebuilt() ? ", arcade mods rebuilt" : "");
+               (unsigned long long)rush2::track_cache::misses(), rush2::arcade2049::rebuilt() || rush2::sfrush_ps1::rebuilt() ? ", arcade mods rebuilt" : "");
         fflush(stdout);
         pass_done = true;
 
@@ -238,6 +242,7 @@ namespace {
         std::string built = tracks_signature();
         if (!built_all) {
             if (r49 != nullptr) rush2::car2049::prepare(*r49);
+            rush2::odometer2049::prepare(r49);
             if (cs != nullptr) rush2::calspeed::prepare_cars(*cs);
             rush2::car_mods::prepare();
             prepare_tracks();
@@ -247,6 +252,7 @@ namespace {
             if (auto now = rush2::wings::get_rom(); now != r49) {
                 r49 = now;
                 if (r49 != nullptr) rush2::car2049::prepare(*r49);
+                rush2::odometer2049::prepare(r49);
             }
             if (auto now = rush2::calspeed::get_rom(); now != cs) {
                 cs = now;
@@ -312,7 +318,7 @@ void rush2::prewarm::frame(uint8_t* rdram) {
         preloaded = -1;
         return;
     }
-    int t = (int8_t)MEM_B(0, (int32_t)track_id);
+    int t = MEM_BU(0, (int32_t)track_id);
     if (t == preloaded) return;
     preloaded = t;
     std::thread([t] {
@@ -320,8 +326,8 @@ void rush2::prewarm::frame(uint8_t* rdram) {
         if (t >= rush2::track1::first_menu_id && t < rush2::track1::first_menu_id + rush2::track1::track_count) {
             rush2::track1::preload(t - rush2::track1::first_menu_id + 1);
         }
-        else if (t >= rush2::track2049::mod_menu_id && t < rush2::track2049::mod_menu_id + rush2::track2049::mod_capacity) {
-            rush2::track_mod::preload(t - rush2::track2049::mod_menu_id);
+        else if (rush2::track2049::is_mod_id(t)) {
+            rush2::track_mod::preload(rush2::track2049::mod_index(t));
         }
         else {
             rush2::track2049::preload(t);

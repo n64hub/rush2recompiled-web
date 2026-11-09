@@ -7,9 +7,15 @@
 //   per player, 1 to 4 players (split screen). Without it, one player in RUSH2_TEST_CAR's car, or the Pickup (0).
 // - RUSH2_TEST_RACE_LAPS=<n>, RUSH2_TEST_RACE_DRONES=<n>: the track select's LAPS and DRONES (the race keeps the saved
 //   ones otherwise).
+// - RUSH2_TEST_RACE_FOG=<1-4>: the track select's FOG (settings +0xE, the race's 0x800D1FA8).
+// - RUSH2_TEST_RACE_COLOR=<0-31>: every player's car in that MAIN COLOR (checking a car's paint).
+// - RUSH2_TEST_RACE_BACKWARD=1: the track select's BACKWARD on (settings +0xC, copied to 0x80119848 by
+//   menu_settings_to_race_globals_80094698 at 0x800947C0).
 // - RUSH2_TEST_RACE_BATTLE=1: the race select's BATTLE row on (rush2::battle::set_race_battle; not saved).
 // - RUSH2_TEST_RACE_VIEW_CAR=<car>: the first view follows that car (a drone: 1 and up) for the whole race, as
-//   RUSH2_ONLINE_VIEW_CAR does online, to watch a drone drive the course.
+//   RUSH2_ONLINE_VIEW_CAR does online, to watch a drone drive the course. RUSH2_TEST_RACE_VIEW_LANE=<0-3> keeps that
+//   drone to one AI lane (left to right as you drive).
+// - RUSH2_TEST_RACE_FINISH_BANNER=1: the finish banner turns to FINISH as the race starts (the last lap's swap).
 // - RUSH2_TEST_RACE_WAIT=<seconds>: the race starts that long after the title screen is first up (a mod rebuilt at
 //   launch finished first, as when a player starts a race after it).
 //
@@ -46,6 +52,7 @@ extern "C" void car_record_get_main_color_800B2694(uint8_t* rdram, recomp_contex
 extern "C" void car_record_get_accent_color_800B2640(uint8_t* rdram, recomp_context* ctx);
 extern "C" void car_options_get_color_lo_800B2608(uint8_t* rdram, recomp_context* ctx);
 extern "C" void car_record_get_stripe_color_800B25D0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void track_finish_line_setup_8008F080(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t player_records = 0x800C2140;    // 0x28 each, +0x24 the profile
@@ -66,8 +73,8 @@ namespace {
     constexpr uint32_t race_type = 0x8010C3E8;         // s32: 0 a race, 1 circuit, 2 stunt
     constexpr uint32_t menu_settings = 0x800D5760;     // +0 laps, +1 drones (func_80094698 copies them to the race)
     constexpr int max_players = 4;
-    // Track select ids: Rush 2's, the added games', the custom tracks' (38-63) and California Speed's (64-79) last.
-    constexpr int menu_tracks = rush2::calspeed::first_menu_id + rush2::calspeed::track_count;
+    // Track select ids: Rush 2's, the added games', the custom tracks' (38-63 and 80-248) and California Speed's (64-79).
+    constexpr int menu_tracks = rush2::track2049::menu_id_limit;
 
     int call(uint8_t* rdram, recomp_context* ctx, void (*func)(uint8_t*, recomp_context*), int32_t a0 = 0,
              int32_t a1 = 0) {
@@ -94,8 +101,8 @@ namespace {
         }
         std::vector<rush2::track_mod::Entry> mods = rush2::track_mod::tracks();
         for (size_t i = 0; i < mods.size(); i++) {
-            if (mods[i].folder == spec && rush2::track2049::mod_menu_id + int(i) < rush2::calspeed::first_menu_id) {
-                return rush2::track2049::mod_menu_id + int(i);
+            if (mods[i].folder == spec && i < size_t(rush2::track2049::mod_capacity)) {
+                return rush2::track2049::mod_id(int(i));
             }
         }
         return -1;
@@ -147,6 +154,16 @@ namespace {
             MEM_B(5, entry) = (int8_t)call(rdram, ctx, car_record_get_stripe_color_800B25D0, (int32_t)profile, cars[p]);
         }
         rush2::race_setup::fill_player_rows(rdram, ctx, players);
+        // RUSH2_TEST_RACE_COLOR=<0-31>: every player's car in that MAIN COLOR (its car table entry and its player row of
+        // the MAIN table), for checking a car's paint: a new player's record holds the colors the car had when it was
+        // made, a mod car's its base car's when the mod loaded later.
+        if (const char* color = env("RUSH2_TEST_RACE_COLOR")) {
+            int c = std::atoi(color);
+            for (int p = 0; p < players; p++) {
+                MEM_B(2, (int32_t)(car_table + p * car_entry_size)) = (int8_t)c;
+                MEM_B(0, (int32_t)(rush2::car_types::table(rush2::car_types::main_color) + (p + 1) * rush2::car_types::types + cars[p])) = (int8_t)c;
+            }
+        }
         MEM_H(0, (int32_t)num_players) = (int16_t)players;
         MEM_H(0, (int32_t)num_views) = (int16_t)players;
         // ONE RACE's game mode: the race start turns a race on a stunt track or arena into stunt mode itself.
@@ -156,6 +173,12 @@ namespace {
         }
         if (const char* drones = env("RUSH2_TEST_RACE_DRONES")) {
             MEM_B(1, (int32_t)menu_settings) = (int8_t)std::atoi(drones);
+        }
+        if (const char* fog = env("RUSH2_TEST_RACE_FOG")) {
+            MEM_B(0xE, (int32_t)menu_settings) = (int8_t)std::atoi(fog);
+        }
+        if (const char* backward = env("RUSH2_TEST_RACE_BACKWARD")) {
+            MEM_B(0xC, (int32_t)menu_settings) = (int8_t)(std::atoi(backward) != 0);
         }
         if (const char* battle = env("RUSH2_TEST_RACE_BATTLE")) {
             rush2::battle::set_race_battle(std::atoi(battle) != 0);
@@ -186,6 +209,24 @@ namespace {
 extern "C" void rush2_test_race_frame(uint8_t* rdram, recomp_context* ctx) {
     static const char* spec = env("RUSH2_TEST_RACE");
     static bool done = false;
+    // RUSH2_TEST_RACE_VIEW_LANE=<0-3>: the watched drone (RUSH2_TEST_RACE_VIEW_CAR) takes that AI lane (left to right)
+    // as its home lane (drone state +0x2A, car record 0x801124A0 + car * 0x354 + 0x30C: drone_driver_80074990), which
+    // drone_steer_along_path_80074284 scores a lane higher for, so it keeps to it.
+    static const char* view_lane = env("RUSH2_TEST_RACE_VIEW_LANE");
+    static const char* view_car = env("RUSH2_TEST_RACE_VIEW_CAR");
+    if (spec != nullptr && done && view_lane != nullptr && view_car != nullptr && !rush2::race_setup::in_menus(rdram)) {
+        uint32_t state = 0x801124A0u + uint32_t(std::atoi(view_car)) * 0x354u + 0x30Cu;
+        MEM_H(0x2A, (int32_t)state) = (int16_t)std::atoi(view_lane);
+    }
+    // RUSH2_TEST_RACE_FINISH_BANNER=1: turns the finish banner to FINISH once the race is on, as passing the last
+    // checkpoint of the last lap does (checkpoint_passed_8008F220 -> track_finish_line_setup_8008F080), so a test
+    // sees it from the grid (docs/custom_tracks.md#finish-banner).
+    static const bool finish_banner = env("RUSH2_TEST_RACE_FINISH_BANNER") != nullptr;
+    static bool banner_done = false;
+    if (finish_banner && done && !banner_done && MEM_W(0, (int32_t)0x8010C0D0) == 3) {
+        banner_done = true;
+        call(rdram, ctx, track_finish_line_setup_8008F080);
+    }
     if (spec == nullptr || done || rush2::online::state() != rush2::online::State::Offline ||
         !rush2::race_setup::in_menus(rdram)) {
         return;

@@ -30,6 +30,13 @@ runs a screen through its jump table.
 | --- | --- |
 | 0 | Start Game (the race-type menu, below) |
 | 1 | Select Player (the profile list; A picks one, then the track select). The list is JUST PLAY, CREATE PLAYER, then the saved players, with the cursor on the first saved player, so test runs press up twice: `8:START,11:A,12.5:DU,13.2:DU,14:A` reaches the track select as JUST PLAY. With no saved players (a fresh RUSH2_DATA_DIR) the cursor is on CREATE PLAYER: one up. A circuit then opens the circuit menu (CONTINUE CIRCUIT, ENTER CODE, NEW CIRCUIT, CIRCUIT REVIEW) with the cursor on ENTER CODE when no circuit is in progress, so a sim run starts a new circuit with `14:START,18:DD,19:A,22:DU,23:A,26:DD,27:A` and is on race 1's track select by 31 s. |
+| 2 | The records' (and UNLOCKS') profile list (`menu_screen_records_profile_list_803B23C8`) |
+| 3 | RECORDS' chooser: STATISTICS, BEST AVERAGES, BEST LAPS... for the chosen profile (`menu_screen_delete_player_803B0EE8`, widgets 0x803C88EC; its rows printed by `menu_text_cb_records_filter_803C394C` at 0x803C3FE4, five from 0x800C4D78 + language x 20, the cursor at 0x803C88E8, a row greyed (style 4) when `func_803B0E98` returns 0) |
+| 4 | The records' pages (`records_screen_803B0A90`) |
+| 5 | SETUP (`menu_screen_options_list_803B17A8`, widgets 0x803C8730; rows by `menu_text_cb_start_game_alt_803C3334`) |
+| 6 | Controller Setup |
+| 7 | Music and sound |
+| 10 | The circuit menu (`menu_screen_circuit_menu_803B7018`, widgets 0x803C78A0; rows by `menu_text_cb_name_entry_screen_803BD718`) |
 | 0xD | Controller Pak manager: never shown, any switch to it is redirected (docs/game_fixes.md#no-controller-pak-manager) |
 | 0xE | Boot logos (then the title) |
 | 0x10 | Title screen (START goes on to Start Game) |
@@ -81,6 +88,13 @@ row's index, never a fixed number.
   RUSH2_TEST_CAR=24 --script "8:START,11:A,13.5:A,17:A,..." --shots ...` reaches it at 17 s as JUST PLAY in its own
   data folder.
 
+### Shoulder buttons
+
+L and R (LB / RB and the right trigger on a controller, Q / E on the keyboard) step TRACK on the track select and
+CAR on the car select from any row, as left and right do on that row (issue #48, src/select_shoulders.cpp: the
+press becomes a D-pad left or right and the row's id TRACK's or CAR's for that step; the track select's cursor is
+moved to TRACK's row for the step and put back at 0x803AC410 / 0x803AC554). In an input script they are `L` and `R`.
+
 ### Game filter
 
 With more than one game's tracks (cars) on a select, C-up (Y, Triangle, I) opens the game filter panel
@@ -100,6 +114,40 @@ How a select is rebuilt after a change, as the game rebuilds it between visits:
   the player being set up; at 0x803B8CE4 $v0 is the car type the carousel opens on, looked up in that player's list.
   Not found, the game opens on index 0 with that player's number as the type, so `rush2_filter_car_cursor` opens on
   the list's first car when the filter took the record's car off.
+
+### Track versions
+
+A course with more than one version (the Rush 2049 race tracks' N64 version 12-17 and Dreamcast version 249-254, the
+arcade mod's ARCADE versions, any custom track's `[menu] variant_of`: docs/custom_tracks.md#versions) is one carousel
+entry. C-left (X, Square, J on the keyboard; `CL` in an input script, which reaches it: the hook reads the game's own
+presses, 0x8011962A) switches the shown course to its next version, under the FILTER prompt with the version's name
+(N64, DC, ARCADE, a mod's own: at most 6 letters, what fits before the text drawer's clip with FILTER where it always
+was). A course whose other versions are locked (Metro, Mission, Presidio before unlocking, with the arcade mod)
+shows its arcade version and still names it; `--config cheats.unlock_all_tracks=true` opens them for a test run
+(src/rush2049/track2049_menu.cpp `rush2_track49_filter_frame`, drawn by `rush2::game_filter::draw`). The pick is saved
+per course in the saves' "track_select" section ("versions") and the screen is rebuilt as after a filter change, on
+the new version. `RUSH2_TEST_TRACK=ID` with a course's other version opens on that version (picked for the run).
+
+Each version's preview has a thin ring around the round picture in its version's color: N64 blue, DC orange, ARCADE
+red (`version_ring_*`, include/track2049.h). The ring shows only when the X prompt names the version
+(`other_version`), and on a circuit's track select (no X prompt there; the circuit picked the version) when the
+course has another version installed (`has_other_version`); otherwise the track select branches over it (the ring's commands sit between two G_NOOPs tagged
+"RING"/"RINE", `show_ring` in src/rush2049/track2049_menu.cpp). All three show the course's own 2049 route tube and
+color. The DC versions (249-254) have their own previews, R49PDTRACKn (the disc's picture, built from
+`rush2::wings::track_source(true)`). The arcade versions keep their own picture, read back from their route preview,
+in front of the 2049 course's tube (`course_preview`, src/rush2049/track2049_art.cpp). Both are pooled like custom
+tracks' previews. Test: `tools/test_race.py menus --config cheats.unlock_all_tracks=true --env RUSH2_TEST_TRACK=12
+--script "14:START,17:A,19:DU,20.5:A,27:CL,31:CL" --shots 26,30,34`. For one version add
+`--no-mod rush2049_arcade --games rush2049_enabled_source=N64`.
+
+The circuit screen's window shows the route turning without the round picture, so the race tracks' dioramas
+(R49TRACKn, the DC versions' own R49DTRACKn) and previews also have a flat ring in the version's color around the
+route, lying in its floor plane, drawn without fog. It is built hidden (its first command branches past its end marker
+`circuit_ring_end`). `rush2_track49_circuit_pose` opens it (`circuit_ring_start` G_NOOP) when the course has another
+version installed (`has_other_version`, locked ones count). For an arcade preview it points the still route's branch
+at the ring instead of past it. The track select's lookup closes it again. Test: a circuit whose pool is one version
+(set every `circuit.track_N` off but the one, including 249-254, which default to on, and `circuit.mods_off` for the
+arcade folders), `RUSH2_TEST_FINISH=4`, the circuit recipe above, CIRCUIT REVIEW race 1 page at about 64 s.
 
 ## Pause menu
 
@@ -145,11 +193,20 @@ hidden and silent from a data folder of its own and reports when it loaded, each
 drove; read its docstring for the options. `tools/test_race.py menus --script S` runs the same sandbox with no race set
 up, for a script through the real menus (it starts as JUST PLAY: the folder has no saved players).
 
+To look at a spot on a track, don't hold the gas and hope: watch a drone drive the AI lanes there,
+`tools/test_race.py TRACK --drones 1 --env RUSH2_TEST_RACE_VIEW_CAR=1 --env RUSH2_TEST_RACE_VIEW_LANE=1` (the view on
+drone 1, kept to lane 1 of 0-3, left to right), with `--shots` as it passes.
+
+`--env RUSH2_TEST_RACE_FINISH_BANNER=1` turns the finish banner to FINISH as the race starts (Rush 2's last-lap swap,
+which otherwise needs a player past the last checkpoint of the last lap). The grid is under or past most banners, so
+watch a drone come back to it at the end of lap 1.
+
 - `RUSH2_TEST_RACE_CARS=T[,T...]`: one car type per player, 1 to 4 players (split screen). View p follows car p
   (`view_cars` 0x80240380, as online sets them): left unset, view 0 kept another car and split screen's first view
   watched it from far off. Without it one player, in
   `RUSH2_TEST_CAR`'s car or the Pickup (0). `RUSH2_TEST_RACE_LAPS`, `RUSH2_TEST_RACE_DRONES`: the track select's LAPS
-  and DRONES (0x800D5760 +0 and +1, raw counts); otherwise the saved ones. `RUSH2_TEST_RACE_BATTLE=1`: the race
+  and DRONES (0x800D5760 +0 and +1, raw counts); otherwise the saved ones. `RUSH2_TEST_RACE_BACKWARD=1`: BACKWARD on (+0xC, the race's 0x80119848).
+  `RUSH2_TEST_RACE_BATTLE=1`: the race
   select's BATTLE row on (not saved; docs/rush2049_research/battle.md section 7.2). `RUSH2_TEST_MANUAL`, `RUSH2_TEST_DEATHS`
   and `RUSH2_TEST_FINISH` (src/players4.cpp) still apply.
 - Each player races as JUST PLAY leaves them, never with a saved player: record +0x24 is the controller's own buffer
@@ -175,6 +232,33 @@ more for the pause menu. The scripted presses skip the controller path (port cla
 `RUSH2_TEST_VPAD` (src/input.cpp; SL SR SU SD are its left stick). It also works in `tools/test_race.py` runs, which
 otherwise ignore controllers, but a stick never claims a port, so press a button first (`2:LS,3:SU:10`). Bindings for
 the run go in with `--config 'players.bindings={"players":[{"controller":{"gas":{"axis":"-lefty"}}}]}'`.
+
+`RUSH2_TEST_KEYS="<seconds>:<key>[:<hold seconds>],..."` does the same for the keyboard (SDL scancode names: Up, Down,
+Left, Right, Space, Return, letters), timed as the pad's: the keys are added to SDL's keyboard state where the game
+reads it (`rush2::input::keyboard_state`), so the keyboard joins a port and drives it through its bindings. Both need
+Background Input on in a hidden run (`--config general.background_input_mode=On`). A key held from before the race
+stays released until let go (gas and brake excepted), so pulse other keys after the start: wings on the keyboard
+were checked with `1:Up:45` and `Space` held 1.8 s every 2 s from 10 s in stunt arena 25, with `RUSH2_WINGS_LOG=1`
+printing the stick and torque the wings steer with while out (src/rush2049/wings_state.cpp; issue #54).
+
+`RUSH2_AUDIO_LEVELS=1` prints each sound source's level once a second in a test run (src/main.cpp
+`log_audio_levels`); `RUSH2_AUDIO_LEVELS=<folder>` also writes their streams for `tools/audio_loudness.py <folder>`
+(integrated loudness, docs/rush2049_research/audio.md#10-loudness-against-rush-2).
+
+### Hidden desktop
+
+Every tool that launches the game (test_race.py through race_watch.py, rush1/shots.py, menu_shot.py, ui_drive.py,
+online_test.py, first_boot_test.py, startup_time.py, shutdown_time.py, calspeed/sim_wrecks.py, trackview runs) starts
+it through `tools/hidden_desktop.py`: `popen()` is `subprocess.Popen` with the child on a Win32 desktop of its own,
+`Rush2Test` (`CreateDesktopW` + `STARTUPINFO.lpDesktop`, as TESConversion's `tools/live/hidden_launch.py`). The game
+renders, ticks and loads at the same speed there (track 0 race up 8.5-8.7 s either way), but its window never shows
+on the user's screen, takes focus or reads their keyboard and mouse, so a run with a visible window (`--show`, menu
+runs on build/) doesn't get in their way. Its windows are found with `hidden_desktop.find_window(pid)` /
+`windows(pid, class)` (`EnumDesktopWindows` over that desktop and the normal one; `shots.find_window` uses it),
+captured with `PrintWindow` and driven with `PostMessage` keys and clicks as before. The tool keeps its handle to the
+desktop open while it runs: once a process closes it, the game's window handles stop being valid in that process.
+Sound still plays from a hidden run, so the muting rules hold. `RUSH2_VISIBLE=1` starts runs on the normal desktop, to
+watch one.
 
 ### Touch controls
 

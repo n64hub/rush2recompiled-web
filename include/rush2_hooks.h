@@ -43,6 +43,7 @@ void rush2_hud_build_end(uint8_t* rdram, recomp_context* ctx);
 void rush2_hud_finish_begin(uint8_t* rdram, recomp_context* ctx);
 void rush2_hud_finish_end(uint8_t* rdram, recomp_context* ctx);
 void rush2_hud_widget_created(uint8_t* rdram, recomp_context* ctx);
+void rush2_hud_texture_found(uint8_t* rdram, recomp_context* ctx);
 void rush2_hud_box_begin(uint8_t* rdram, recomp_context* ctx);
 void rush2_hud_box_part(uint8_t* rdram, recomp_context* ctx);
 void rush2_hud_entry_created(uint8_t* rdram, recomp_context* ctx);
@@ -63,6 +64,13 @@ void rush2_interp_view_begin(uint8_t* rdram, recomp_context* ctx);
 void rush2_car49_flames_view_begin(uint8_t* rdram, recomp_context* ctx);
 void rush2_car49_flames_draw(uint8_t* rdram, recomp_context* ctx);
 void rush2_interp_projection(uint8_t* rdram, recomp_context* ctx);
+// Sky Fog (src/sky_fog.cpp), from rush2_model_draw: model_draw_8007AA48 about to call a node's model ($s7 node, $fp
+// list); marks the sky model as the sky.
+void rush2_sky_fog_model_draw(uint8_t* rdram, recomp_context* ctx);
+// Fill Scenery Gaps (src/scenery_fill.cpp): race_load_track_800A5110 around its placement_walk_80081790 call, so the
+// scene nodes the track's placements made are known.
+void rush2_scenery_fill_walk_begin(uint8_t* rdram, recomp_context* ctx);
+void rush2_scenery_fill_walk_end(uint8_t* rdram, recomp_context* ctx);
 void rush2_interp_root_modelview(uint8_t* rdram, recomp_context* ctx);
 void rush2_interp_poly(uint8_t* rdram, recomp_context* ctx);
 void rush2_interp_poly_vtx(uint8_t* rdram, recomp_context* ctx);
@@ -82,6 +90,18 @@ void rush2_frame_clear_begin(uint8_t* rdram, recomp_context* ctx);
 void rush2_title_background_tiles(uint8_t* rdram, recomp_context* ctx);
 void rush2_frame_clear_end(uint8_t* rdram, recomp_context* ctx);
 void rush2_model_draw(uint8_t* rdram, recomp_context* ctx);
+
+// Rush 2049 Menus (src/rush2049/menus2049.cpp).
+void rush2_menus49_frame(uint8_t* rdram, recomp_context* ctx);
+void rush2_menus49_style_begin(uint8_t* rdram, recomp_context* ctx);
+void rush2_menus49_style_end(uint8_t* rdram, recomp_context* ctx);
+void rush2_menus49_row(uint8_t* rdram, recomp_context* ctx, int list);
+void rush2_menus49_font(uint8_t* rdram, recomp_context* ctx);
+bool rush2_menus49_sound(uint8_t* rdram, recomp_context* ctx);
+
+// The race start announcer (src/announcer.cpp).
+void rush2_announcer_cue(uint8_t* rdram, recomp_context* ctx, int cue);
+bool rush2_announcer_sound(uint8_t* rdram, recomp_context* ctx);
 
 // Three and four player races (src/players4.cpp).
 void rush2_players4_init(uint8_t* rdram, recomp_context* ctx);
@@ -123,6 +143,7 @@ int rush2_draw_distance_matrix_cols(uint8_t* rdram, recomp_context* ctx);
 void rush2_cheats_frame(uint8_t* rdram, recomp_context* ctx);
 void rush2_cheats_car_list(uint8_t* rdram, recomp_context* ctx);
 void rush2_cheats_kill_floor(uint8_t* rdram, recomp_context* ctx);
+int rush2_cheats_no_damage(uint8_t* rdram, uint32_t car);
 
 // High-resolution font tile clamping around the 2D image loader (src/fonts.cpp).
 void rush2_font_load_begin(uint8_t* rdram, recomp_context* ctx);
@@ -160,6 +181,8 @@ void rush2_track49_select_init(uint8_t* rdram, recomp_context* ctx);
 void rush2_track49_select_count(uint8_t* rdram, recomp_context* ctx);
 void rush2_track49_carousel_order(uint8_t* rdram, recomp_context* ctx);
 void rush2_track49_select_step(uint8_t* rdram, recomp_context* ctx);
+void rush2_track49_carousel_slide(uint8_t* rdram, recomp_context* ctx);
+void rush2_track49_carousel_place(uint8_t* rdram, recomp_context* ctx);
 void rush2_track49_select_model(uint8_t* rdram, recomp_context* ctx);
 void rush2_track49_select_pose(uint8_t* rdram, recomp_context* ctx);
 int rush2_track49_select_available(uint8_t* rdram, recomp_context* ctx);
@@ -225,6 +248,9 @@ void rush2_speedometer(uint8_t* rdram, recomp_context* ctx);
 void rush2_track49_race_time(uint8_t* rdram, recomp_context* ctx);
 bool rush2_mod_checkpoint_crossing(uint8_t* rdram, recomp_context* ctx, bool lane);
 void rush2_track49_circuit_screen(uint8_t* rdram, recomp_context* ctx);
+void rush2_track49_circuit_pose(uint8_t* rdram, recomp_context* ctx);
+void rush2_track49_circuit_entries(uint8_t* rdram, recomp_context* ctx);
+void rush2_map_extent(uint8_t* rdram, recomp_context* ctx);
 
 // Circuit length and courses (src/circuit.cpp).
 void rush2_circuit_started(uint8_t* rdram, recomp_context* ctx);
@@ -488,6 +514,10 @@ void rush2_filter_car_text(uint8_t* rdram, recomp_context* ctx);
 void rush2_filter_car_cursor(uint8_t* rdram, recomp_context* ctx);
 void rush2_wings_car_rows(uint8_t* rdram, recomp_context* ctx);
 void rush2_wings_car_step(uint8_t* rdram, recomp_context* ctx);
+void rush2_shoulder_car_buttons(uint8_t* rdram, recomp_context* ctx);
+void rush2_shoulder_car_row(uint8_t* rdram, recomp_context* ctx);
+void rush2_shoulder_track_buttons(uint8_t* rdram, recomp_context* ctx);
+void rush2_shoulder_track_restore(uint8_t* rdram, recomp_context* ctx);
 void rush2_wings_car_label_t7(uint8_t* rdram, recomp_context* ctx);
 void rush2_wings_car_label_t4(uint8_t* rdram, recomp_context* ctx);
 void rush2_wings_car_arrow_t9(uint8_t* rdram, recomp_context* ctx);
@@ -557,6 +587,8 @@ void rush2_online_present_end(uint8_t* rdram, recomp_context* ctx);
 int rush2_online_sim_view(uint8_t* rdram, uint32_t car_state, int view);
 int rush2_online_body_kind(uint8_t* rdram, recomp_context* ctx, int car, int kind);
 int rush2_online_wheels_shown(uint8_t* rdram, uint32_t physics_car, int view, int shown);
+uint32_t rush2_mod_car_wheel_scale(uint8_t* rdram, int type, uint32_t scale_bits);
+void rush2_mod_car_shadows(uint8_t* rdram);
 uint32_t rush2_online_arrow_views(uint8_t* rdram, int car, uint32_t flags);
 int rush2_online_arrow_view(uint8_t* rdram, int view);
 int rush2_online_hud_views(uint8_t* rdram, int views);

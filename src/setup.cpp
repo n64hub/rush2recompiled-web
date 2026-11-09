@@ -30,6 +30,7 @@
 #include "setup.h"
 #include "sim_run.h"
 #include "stunt2049.h"
+#include "menus2049.h"
 #include "wings.h"
 #include "wings_internal.h"
 
@@ -77,6 +78,11 @@ namespace {
               "Respawns start in 1st gear (manual gearbox)" },
             { Cfg::General, "hide_respawning_cars", false, true, 0 },
             { Cfg::General, "drone_catch_up", true, true, 0 },
+            { Cfg::General, "unlocked_car_opponents", false, false, 0 },
+            { Cfg::Graphics, "sky_fog", static_cast<uint32_t>(0), static_cast<uint32_t>(1), 2, "The sky isn't fogged",
+              "The fog fades into the sky toward the horizon" },
+            { Cfg::Graphics, "scenery_fill", static_cast<uint32_t>(0), static_cast<uint32_t>(1), 2,
+              "Holes show where a track's scenery ends", "Ground and walls fill the holes past the scenery" },
             { Cfg::General, "default_steering", static_cast<uint32_t>(SteeringResponse::Original),
               static_cast<uint32_t>(SteeringResponse::Linear), 0, nullptr, nullptr, true },
             { Cfg::General, "pause_menu_extras", false, true, 1, "Rush 2's pause menu",
@@ -92,6 +98,11 @@ namespace {
             { Cfg::Games, "stunt_scoring", static_cast<uint32_t>(rush2::stunt2049::Scoring::Rush2),
               static_cast<uint32_t>(rush2::stunt2049::Scoring::Rush2049), -1 },
             { Cfg::Games, "rush2049_odometer", false, false, -1 },
+            { Cfg::Games, "rush2049_menus", static_cast<uint32_t>(rush2::menus2049::Mode::Off),
+              static_cast<uint32_t>(rush2::menus2049::Mode::Off), -1 },
+            { Cfg::Games, "rush2049_menu_fonts", false, false, -1 },
+            { Cfg::Games, "rush2049_menu_sounds", false, false, -1 },
+            { Cfg::Games, "rush2049_menu_background", false, false, -1 },
             { Cfg::Games, "car_speeds", rush2_speeds, rush2_speeds, -1 },
             { Cfg::Games, "rush2049_computer_cars", own_tracks, all_tracks, -1 },
             { Cfg::Games, "calspeed_computer_cars", own_tracks, all_tracks, -1 },

@@ -10,7 +10,8 @@ got past the race (test aid; docs/menus.md#starting-a-race-without-the-menus).
 
 TRACK `menus` sets no race up: the game boots to the title and the --script drives the menus (as JUST PLAY: the
 data folder has no saved players). Otherwise TRACK is a track select id (0-11 Rush 2, 12-17 Rush 2049, 18-24 SF Rush, 25-28 stunt arenas, 29 obstacle course,
-30-37 battle arenas, 38-63 custom tracks, 64-79 California Speed) or a custom track's folder name. --cars gives one
+30-37 battle arenas, 38-63 and 80-248 custom tracks, 64-79 California Speed, 249-254 the Rush 2049 race
+tracks' Dreamcast versions) or a custom track's folder name. --cars gives one
 car type per player (1-4 players; Rush 2 0-21, 2049 23-35, California Speed 36-56, mod cars 57-72). --script is the
 --input-script (default: gas held from 1 s), counted from launch: the race is up about 5 s in.
 
@@ -19,7 +20,7 @@ folder of its own (tmp/test_race/data), so the player's settings and saves are n
 its settings and saves are cleared (its caches are kept), the ROMs in build/ are hard-linked in, build/games.json is
 copied (the same games on; --games K=V sets one of its options, V as JSON or else a string; --config NAME.K=V sets
 one in NAME.json, e.g. cheats.unlock_all_parts=true), and the mods enabled
-in build/mods.json are linked in and enabled, plus --mod ones and the mod holding a TRACK folder (--mod-dir PATH links
+in build/mods.json are linked in and enabled, plus --mod ones (less --no-mod ones) and the mod holding a TRACK folder (--mod-dir PATH links
 a mod folder from anywhere, such as a converter's output, or copies a .rtz, in place of the installed mod of its id). Real time by
 default; --turbo runs the race as fast as the machine goes from its first tick (the script's presses stop then).
 --finish S finishes the players' cars S seconds into the race (RUSH2_TEST_FINISH) to reach the race-over screens.
@@ -82,7 +83,7 @@ def set_options(name, pairs):
 USER_SETTINGS = ['graphics.json', 'general.json', 'cheats.json', 'circuit.json', 'npc_cars.json']
 
 
-def prepare_data(track, extra_mods, games=(), configs=(), mod_dirs=(), user_settings=False):
+def prepare_data(track, extra_mods, games=(), configs=(), mod_dirs=(), user_settings=False, no_mods=()):
     os.makedirs(DATA, exist_ok=True)
     for n in os.listdir(DATA):
         p = os.path.join(DATA, n)
@@ -114,7 +115,7 @@ def prepare_data(track, extra_mods, games=(), configs=(), mod_dirs=(), user_sett
             enabled = list(json.load(f).get('enabled_mods', []))
     except (OSError, ValueError):
         pass
-    enabled += extra_mods
+    enabled = [m for m in enabled + extra_mods if m not in no_mods]
     src_mods = os.path.join(BUILD, 'mods')
     entries = os.listdir(src_mods) if os.path.isdir(src_mods) else []
     if not track.isdigit() and track != 'menus':
@@ -194,6 +195,7 @@ def main():
     ap.add_argument('--turbo', action='store_true')
     ap.add_argument('--finish', type=float)
     ap.add_argument('--mod', action='append', default=[])
+    ap.add_argument('--no-mod', action='append', default=[], help='an installed mod (its id) to leave off for the run')
     ap.add_argument('--mod-dir', action='append', default=[], help='a mod folder to link in (or a .rtz to copy in), '
                     'in place of the installed mod with the same id (its mod.json id)')
     ap.add_argument('--out', default=os.path.join(REPO, 'tmp', 'test_race', 'out'))
@@ -216,6 +218,8 @@ def main():
                     'a hidden window presents differently, so profile with it shown')
     ap.add_argument('--exe', help="run this game exe instead of build/'s (e.g. .release/build/Rush2Recompiled.exe, "
                     'the Release build players get, for crashes the local build doesn\'t show)')
+    ap.add_argument('--saves', help="copy this folder's files into the run's saves folder (a COPY of a profile "
+                    "save, for screens that need saved players; never point it at build/saves itself)")
     ap.add_argument('--data', help="the run's data folder (default tmp/test_race/data); give each run that may "
                     "overlap another session's its own")
     a = ap.parse_args()
@@ -224,7 +228,12 @@ def main():
         DATA = os.path.abspath(a.data)
     if a.records and not os.path.isfile(a.records):
         sys.exit('no placement file %s (the converted track: track_mod_test.exe output)' % a.records)
-    mods = prepare_data(a.track, a.mod, a.games, a.config, a.mod_dir, a.user_settings)
+    mods = prepare_data(a.track, a.mod, a.games, a.config, a.mod_dir, a.user_settings, a.no_mod)
+    if a.saves:
+        os.makedirs(os.path.join(DATA, 'saves'), exist_ok=True)
+        for n in os.listdir(a.saves):
+            if os.path.isfile(os.path.join(a.saves, n)):
+                shutil.copyfile(os.path.join(a.saves, n), os.path.join(DATA, 'saves', n))
     env = {k: v for k, v in os.environ.items() if not k.startswith('RUSH2_')}
     env.update(RUSH2_SIM='1', RUSH2_DATA_DIR=DATA, RUSH2_SIM_TURBO='1' if a.turbo else '0')
     if a.track != 'menus':

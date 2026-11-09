@@ -137,11 +137,23 @@ bool rush2::draw_distance_take_fog(float& mul, float& offset) {
 // (already stored). The view's G_MW_FOG is already written.
 extern "C" void rush2_draw_distance_projection(uint8_t* rdram, recomp_context* ctx) {
     pending_fog = false;
+    // Sky Fog works from the same view values (src/sky_fog.cpp).
+    rush2::sky_fog::view_setup(rdram, (uint32_t)ctx->r16, read_f32(rdram, (uint32_t)ctx->r29 + 0x10),
+                               (double)ctx->f8.fl * ctx->f24.fl);
     float k = scale.load(std::memory_order_relaxed);
+    if (k != 1.0f) {
+        ctx->f8.fl *= k;
+    }
+    // FOG 1 on a converted course with a sky model: no fog (fog alpha 0 at every depth; src/sky_fog.cpp).
+    if (rush2::sky_fog::fog_removed(rdram, (uint32_t)ctx->r16)) {
+        pending_fog_mul = 0.0f;
+        pending_fog_offset = 0.0f;
+        pending_fog = true;
+        return;
+    }
     if (k == 1.0f) {
         return;
     }
-    ctx->f8.fl *= k;
 
     // The game's fog factors (0x8007C930-0x8007C9BC): mul = 128000 / (max - min), offset = (500 - min) * 256 /
     // (max - min), both s16. RT64's fog alpha is z / w * mul + offset.
@@ -211,7 +223,7 @@ void rush2::draw_distance_pvs(uint8_t* rdram, uint32_t sp, uint32_t table) {
     if (widened == 0) {
         widened = (uint32_t)((uint8_t*)recomp::alloc(rdram, 16) - rdram) + 0x80000000;
     }
-    int slot = MEM_B(0, (int32_t)track_id);
+    int slot = MEM_BU(0, (int32_t)track_id);
     int count = slot >= 0 ? std::min<int>(MEM_BU(0, (int32_t)(pvs_counts + slot)), 128) : 0;
     uint32_t chosen = (uint32_t)MEM_W(0, (int32_t)(sp + 0x5C));
     for (int b = 0; b < 16; b++) {

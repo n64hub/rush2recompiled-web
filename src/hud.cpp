@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -51,10 +52,12 @@
 #include "battle.h"
 #include "car_mods.h"
 #include "online.h"
+#include "menus2049.h"
 #include "odometer2049.h"
 #include "pause_menu.h"
 #include "stunt2049.h"
 #include "track2049.h"
+#include "texture_origin.h"
 
 #include "recompui/recompui.h"
 #include "ultramodern/config.hpp"
@@ -1023,6 +1026,44 @@ void rush2_hud_widget_created(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// hud_widget_load_texture_80060340 just after its texture_find_by_name_800601F8 call ($v0 the texture record, the
+// widget at $sp + 0x20, its handle (slot << 10 | index) at +0xC). The lookup searches the model containers from slot 0
+// up and the race track's is slot 0, so a track texture named like a HUD image hides the HUD's: Rush 2049's Haight
+// has a 32 x 64 road sign WRONGWAY, and the race HUD drew it as WRONG WAY. Rush 2's own tracks have no such name
+// clash with the race HUD, so for a race HUD widget whose match is another game's data, the first later container
+// with a Rush 2 texture of the same name is used.
+void rush2_hud_texture_found(uint8_t* rdram, recomp_context* ctx) {
+    constexpr uint32_t texture_tables = 0x80119220;     // per container: records (0x20 bytes each, name first), count
+    constexpr uint32_t container_count = 0x800D5788;    // u8
+    uint32_t record = (uint32_t)ctx->r2;
+    if (!building_hud || record == 0 || rush2::origin::at(record) == rush2::origin::Game::Rush2) {
+        return;
+    }
+    int32_t widget = MEM_W(0x20, (int32_t)ctx->r29);
+    int slot = (uint16_t)MEM_H(0xC, widget) >> 10;
+    int count = MEM_BU(0, (int32_t)container_count);
+    auto same_name = [&](uint32_t other) {
+        for (int c = 0; c < 16; c++) {
+            char a = (char)MEM_B(c, (int32_t)record), b = (char)MEM_B(c, (int32_t)other);
+            if (std::toupper((unsigned char)a) != std::toupper((unsigned char)b)) return false;
+            if (a == 0) return true;
+        }
+        return true;
+    };
+    for (int s = slot + 1; s < count && s < 32; s++) {
+        uint32_t records = (uint32_t)MEM_W(0, (int32_t)(texture_tables + s * 8));
+        int n = MEM_W(4, (int32_t)(texture_tables + s * 8));
+        for (int i = 0; records != 0 && i < n && i < 0x400; i++) {
+            uint32_t other = records + (uint32_t)i * 0x20;
+            if (same_name(other) && rush2::origin::at(other) == rush2::origin::Game::Rush2) {
+                ctx->r2 = (gpr)(int32_t)other;
+                MEM_H(0xC, widget) = (int16_t)((s << 10) | i);
+                return;
+            }
+        }
+    }
+}
+
 // func_80093B38 entry (builds a box: x0, y0, x1, y1 in $a0-$a3, the alpha, callback, parameter and kept flag at
 // $sp + 0x10 - 0x1C): the identity its five widgets get.
 void rush2_hud_box_begin(uint8_t* rdram, recomp_context* ctx) {
@@ -1179,7 +1220,7 @@ namespace {
         c.odometer_w = rush2::odometer2049::width;
         c.odometer_gap = rush2::odometer2049::gap;
         c.small_scale = fitting_scale();
-        c.stunt_arena = MEM_B(0, (int32_t)stunt_track_id) == stunt_track;
+        c.stunt_arena = MEM_BU(0, (int32_t)stunt_track_id) == stunt_track;
         c.race_type = MEM_W(0, (int32_t)race_type_word);
         c.battle = rush2::track2049::battle_race(rdram);
         c.battle_hud = rush2::battle::hud_mode();
@@ -1472,7 +1513,7 @@ namespace {
                       c.odometer_w, c.odometer_h, c.odometer_gap, c.small_scale, c.stunt_arena, c.manual[0], c.manual[1],
                       c.manual[2], c.manual[3], c.race_type, c.battle, c.stunts_all_tracks, c.deaths, c.mode_option, c.attract, c.battle_hud, c.battle_time_limit,
                       c.shown.time, c.shown.speed, c.shown.position, c.shown.radar, c.shown.map, c.shown.time_left, c.shown.tach,
-                      c.shown.lap_banner, c.shown.gear, MEM_B(0, (int32_t)stunt_track_id));
+                      c.shown.lap_banner, c.shown.gear, MEM_BU(0, (int32_t)stunt_track_id));
         o += b;
         bool first = true;
         uint32_t count = std::min<uint32_t>((uint32_t)MEM_W(0, (int32_t)widget_count), max_widgets);
@@ -1765,6 +1806,13 @@ void rush2_hud_draw_widget(uint8_t* rdram, recomp_context* ctx) {
         map_pending = true;
         map_start = MEM_W(0, (int32_t)dl_2d_cursor);
     }
+    // Rush 2049 Menus' Style and Layout: header plates and the list screens' frames give way to 2049's
+    // (src/rush2049/menus2049.cpp). The loop skips a widget whose hidden byte, loaded into $t7, is set.
+    if (slot < max_widgets && rush2::menus2049::skip_widget(rdram, slot_identity[slot].name, slot_identity[slot].callback,
+                                                            slot_identity[slot].param, MEM_B(widget_hidden, widget) != 0)) {
+        ctx->r15 = 1;
+        return;
+    }
     if (slot >= max_widgets || MEM_B(widget_hidden, widget) != 0) {
         return;
     }
@@ -1818,6 +1866,8 @@ void rush2_hud_draw_widget(uint8_t* rdram, recomp_context* ctx) {
 // func_800734E0 entry (prints a string at ($a0, $a1), justified around $a0). Anchors text printed by HUD callback
 // widgets, and moves it side by side.
 void rush2_hud_print(uint8_t* rdram, recomp_context* ctx) {
+    // Rush 2049 Menus' buttons behind the menu lists' rows, and its text colors (src/rush2049/menus2049.cpp).
+    rush2::menus2049::before_print(rdram, ctx);
     // The stunt panel's text (func_800B7654, which prints every player's in a loop with the player in $s6; players 3 and
     // 4's at player 2's place): moved with the player's own box (the one the text is over: the trick name's on the
     // left, the scores' on the right) and drawn at its scale. The text is drawn at once (the callback sets the text
@@ -1890,6 +1940,7 @@ void rush2_hud_2d_list_start(uint8_t* rdram, recomp_context* ctx) {
 
 // func_800B39AC at its return (0x800B3A18): $v0 = the start of the frame's list.
 void rush2_hud_2d_list_end(uint8_t* rdram, recomp_context* ctx) {
+    rush2::menus2049::finish_buttons(rdram);
     ctx->r2 = (int32_t)(dl_2d_buffers + (uint32_t)MEM_W(0, (int32_t)dl_2d_frame) * dl_2d_buffer_size);
 }
 
@@ -1903,6 +1954,7 @@ void rush2_hud_draw_end(uint8_t* rdram, recomp_context* ctx) {
     in_hud_callback = false;
     finish_half(rdram);
     finish_map(rdram);
+    rush2::menus2049::list_end(rdram, ctx);
     rush2::battle::hud_draw(rdram, ctx);
     rush2::odometer2049::update(rdram);
     for (int p = 0; p < 4; p++) {

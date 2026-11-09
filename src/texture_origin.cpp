@@ -3,8 +3,8 @@
 // The game's textures all come from assets, which func_80077F20 / func_80077F84 decompress into the heap
 // (src/assets.cpp). An asset the recomp replaces with converted Rush 2049 or SF Rush data is tagged with that game
 // over the range it is copied to, and any other asset decompressed over a range takes the tag off. RT64 tells the
-// texture observer (src/texture_upscale.cpp) the address each texture was loaded from, and Dump Textures sorts the
-// texture by the tag found there.
+// texture observer (src/texture_upscale.cpp) the address each texture was loaded from, and the texture census
+// (src/texture_census.cpp) reports the tag found there; src/hud.cpp checks the game of a HUD record's data.
 
 #include <iterator>
 #include <map>

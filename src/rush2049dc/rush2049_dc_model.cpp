@@ -88,10 +88,11 @@ namespace {
 #include "rush2049_dc_names.inc"
     };
 
-    // Sizes of the non-track N64 files. The game loads only the battle HUD (61, 63) and weapons (76) into fixed RDRAM
-    // windows, so only those made files are held to the N64's size; the rest (cars: src/rush2049/car2049.cpp grows the slot)
-    // keep every texture as big as TMEM takes, and the full-size images come from the texture pack either way.
-    constexpr int fixed_window_files[] = { 61, 63, 76 };
+    // Sizes of the non-track N64 files. The HUD (61, 62), battle HUD (63) and weapons (76) are loaded into fixed RDRAM
+    // windows (src/rush2049/battle_render.cpp; one too big loses every battle model), so only those made files are held
+    // to the N64's size; the rest (cars: src/rush2049/car2049.cpp grows the slot) keep every texture as big as TMEM
+    // takes, and the full-size images come from the texture pack either way.
+    constexpr int fixed_window_files[] = { 61, 62, 63, 76 };
     struct FileSize {
         int file;
         uint32_t bytes;
@@ -319,6 +320,10 @@ namespace {
     // texture (1-cycle takes the second cycle, which only passes the first on) and, depth tested, hid the far scenery
     // (the Golden Gate) behind it.
     constexpr uint32_t rm_sky = 0x0F0A4000;
+    // A see-through texture in the sky (the Metro moon, AL_MOON in TRACK4, the only disc sky texture with clear
+    // texels) is blended over the panels drawn before it: the N64's track 4 SKYSKY switches to 0x00504240 (1-cycle
+    // G_RM_XLU_SURF, no z) for its moon's two triangles. Drawn with rm_sky the moon's clear corners showed as a box.
+    constexpr uint32_t rm_sky_translucent = 0x00504240;
     constexpr uint32_t cc_sky[2] = { 0xFC121824, 0xFF33FFFF };
     constexpr uint32_t sky_begin[][2] = { { 0xE3000A01, 0x00000000 }, { 0xD9FEFFFE, 0x00000000 } };
     constexpr uint32_t sky_end[][2] = { { 0xD9FFFFFF, 0x00010001 }, { 0xE3000A01, 0x00100000 } };
@@ -534,7 +539,7 @@ namespace {
             else {
                 mode = tex >= 0 ? textures[tex].mode : rm_opaque;
             }
-            if (sky) mode = rm_sky;
+            if (sky) mode = textured && mode != rm_opaque ? rm_sky_translucent : rm_sky;
             cc = textured ? (sky ? cc_sky : cc_textured) : cc_shade;
             if (!(flags & 1) && tex >= 0 && tex != list_texture) {
                 cmds.push_back({ 0xDE000000, txld_base + textures[tex].list, Fix::None });
@@ -1039,6 +1044,206 @@ std::string rush2::rom2049::dc::n64_name(const std::string& dc_name) {
     }();
     auto it = map.find(dc_name);
     return it == map.end() ? dc_name : it->second;
+}
+
+namespace {
+    void texel_rgb(const std::vector<uint8_t>& texels, size_t i, bool rgba32, int& r, int& g, int& b, int& a) {
+        if (rgba32) {
+            r = texels[i * 4];
+            g = texels[i * 4 + 1];
+            b = texels[i * 4 + 2];
+            a = texels[i * 4 + 3];
+            return;
+        }
+        uint16_t c = uint16_t((texels[i * 2] << 8) | texels[i * 2 + 1]);
+        r = ((c >> 11) & 0x1F) * 255 / 31;
+        g = ((c >> 6) & 0x1F) * 255 / 31;
+        b = ((c >> 1) & 0x1F) * 255 / 31;
+        a = (c & 1) ? 255 : 0;
+    }
+
+    // Lamp red: clearly red and not black (the disc's tail light lenses: red 50-255, blue under 0.7 of it, green
+    // under 0.55, which leaves the amber marker lights out).
+    bool lamp_red(int r, int g, int b, int a) {
+        return a >= 128 && r >= 50 && r * 20 > g * 36 && r * 10 > b * 14;
+    }
+
+    // Reddish: a lens's rim and highlight, redder than gray but not lamp red.
+    bool reddish(int r, int g, int b, int a) {
+        return a >= 128 && r >= 40 && r > g + 16 && r > b + 16;
+    }
+
+    // Fills a lens's middle (its highlight, not red): texels with lights within 8 texels left, right, above and below
+    // that `same(i)` allows (the same in every paint job: not paint).
+    template <typename Same>
+    void fill_holes(std::vector<uint8_t>& mask, uint32_t w, uint32_t h, Same same) {
+        constexpr int reach = 8;
+        std::vector<uint8_t> out = mask;
+        auto hit = [&](int x, int y, int dx, int dy) {
+            for (int k = 1; k <= reach; k++) {
+                int nx = x + dx * k, ny = y + dy * k;
+                if (nx < 0 || ny < 0 || nx >= int(w) || ny >= int(h)) return false;
+                if (mask[size_t(ny) * w + nx]) return true;
+            }
+            return false;
+        };
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+                size_t i = size_t(y) * w + x;
+                if (mask[i]) continue;
+                if (hit(int(x), int(y), -1, 0) && hit(int(x), int(y), 1, 0) && hit(int(x), int(y), 0, -1) &&
+                    hit(int(x), int(y), 0, 1) && same(i)) {
+                    out[i] = 1;
+                }
+            }
+        }
+        mask = std::move(out);
+    }
+
+    // Drops the lights with no light next to them (single red texels of decals and edges).
+    void drop_isolated(std::vector<uint8_t>& mask, uint32_t w, uint32_t h) {
+        std::vector<uint8_t> out(mask.size(), 0);
+        bool any = false;
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+                if (!mask[size_t(y) * w + x]) continue;
+                bool neighbour = false;
+                for (int dy = -1; dy <= 1 && !neighbour; dy++) {
+                    for (int dx = -1; dx <= 1 && !neighbour; dx++) {
+                        int nx = int(x) + dx, ny = int(y) + dy;
+                        neighbour = (dx || dy) && nx >= 0 && ny >= 0 && nx < int(w) && ny < int(h) &&
+                                    mask[size_t(ny) * w + nx];
+                    }
+                }
+                out[size_t(y) * w + x] = neighbour;
+                any |= neighbour;
+            }
+        }
+        mask = any ? std::move(out) : std::vector<uint8_t>{};
+    }
+}
+
+std::vector<uint8_t> rush2::rom2049::dc::brake_light_mask(const std::vector<const std::vector<uint8_t>*>& jobs, uint32_t w,
+                                                          uint32_t h, bool rgba32) {
+    const size_t n = size_t(w) * h, bytes = rgba32 ? 4 : 2;
+    if (jobs.size() < 2 || n == 0) return {};
+    for (const std::vector<uint8_t>* t : jobs) {
+        if (t == nullptr || t->size() < n * bytes) return {};
+    }
+    std::vector<uint8_t> mask(n, 0);
+    for (size_t i = 0; i < n; i++) {
+        bool all = true;
+        for (const std::vector<uint8_t>* t : jobs) {
+            int r, g, b, a;
+            texel_rgb(*t, i, rgba32, r, g, b, a);
+            if (!lamp_red(r, g, b, a)) {
+                all = false;
+                break;
+            }
+        }
+        mask[i] = all;
+    }
+    // The lens around the red: reddish texels next to it, the same in every job (not paint), two texels deep.
+    for (int pass = 0; pass < 2; pass++) {
+        std::vector<uint8_t> grown = mask;
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+                size_t i = size_t(y) * w + x;
+                if (mask[i]) continue;
+                bool next = false;
+                for (int dy = -1; dy <= 1 && !next; dy++) {
+                    for (int dx = -1; dx <= 1 && !next; dx++) {
+                        int nx = int(x) + dx, ny = int(y) + dy;
+                        next = nx >= 0 && ny >= 0 && nx < int(w) && ny < int(h) && mask[size_t(ny) * w + nx];
+                    }
+                }
+                if (!next) continue;
+                int r0, g0, b0, a0;
+                texel_rgb(*jobs[0], i, rgba32, r0, g0, b0, a0);
+                bool ok = reddish(r0, g0, b0, a0);
+                for (size_t j = 1; j < jobs.size() && ok; j++) {
+                    int r, g, b, a;
+                    texel_rgb(*jobs[j], i, rgba32, r, g, b, a);
+                    ok = std::abs(r - r0) <= 24 && std::abs(g - g0) <= 24 && std::abs(b - b0) <= 24 && (a >= 128) == (a0 >= 128);
+                }
+                grown[i] = ok;
+            }
+        }
+        mask = std::move(grown);
+    }
+    fill_holes(mask, w, h, [&](size_t i) {
+        int r0, g0, b0, a0;
+        texel_rgb(*jobs[0], i, rgba32, r0, g0, b0, a0);
+        for (size_t j = 1; j < jobs.size(); j++) {
+            int r, g, b, a;
+            texel_rgb(*jobs[j], i, rgba32, r, g, b, a);
+            if (std::abs(r - r0) > 24 || std::abs(g - g0) > 24 || std::abs(b - b0) > 24 || (a >= 128) != (a0 >= 128)) return false;
+        }
+        return a0 >= 128;
+    });
+    drop_isolated(mask, w, h);
+    return mask;
+}
+
+bool rush2::rom2049::dc::front_texture_name(const std::string& name) {
+    for (const char* part : { "FRONT", "FRNT", "HEAD", "NOSE", "HOOD", "LOWF" }) {
+        if (name.find(part) != std::string::npos) return true;
+    }
+    // C7_F, C9_F3: a front panel.
+    size_t f = name.rfind("_F");
+    return f != std::string::npos && name.find_first_not_of("0123456789", f + 2) == std::string::npos;
+}
+
+bool rush2::rom2049::dc::tail_texture_name(const std::string& name) {
+    return name.find("TAIL") != std::string::npos || name.find("TLGHT") != std::string::npos;
+}
+
+std::vector<uint8_t> rush2::rom2049::dc::tail_texture_mask(const std::vector<uint8_t>& texels, uint32_t w, uint32_t h,
+                                                           bool rgba32) {
+    const size_t n = size_t(w) * h;
+    if (n == 0 || texels.size() < n * (rgba32 ? 4 : 2)) return {};
+    std::vector<uint8_t> mask(n, 0);
+    for (size_t i = 0; i < n; i++) {
+        int r, g, b, a;
+        texel_rgb(texels, i, rgba32, r, g, b, a);
+        mask[i] = lamp_red(r, g, b, a) || reddish(r, g, b, a);
+    }
+    fill_holes(mask, w, h, [&](size_t i) {
+        int r, g, b, a;
+        texel_rgb(texels, i, rgba32, r, g, b, a);
+        return a >= 128;
+    });
+    drop_isolated(mask, w, h);
+    return mask;
+}
+
+std::vector<uint8_t> rush2::rom2049::dc::light_texels(const std::vector<uint8_t>& texels, uint32_t w, uint32_t h, bool rgba32,
+                                                      const std::vector<uint8_t>& mask, uint32_t mask_w, uint32_t mask_h) {
+    std::vector<uint8_t> out = texels;
+    const size_t bytes = rgba32 ? 4 : 2;
+    if (mask.empty() || mask_w == 0 || mask_h == 0 || texels.size() < size_t(w) * h * bytes) return out;
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            if (!mask[size_t(y * mask_h / h) * mask_w + x * mask_w / w]) continue;
+            size_t i = size_t(y) * w + x;
+            int r, g, b, a;
+            texel_rgb(texels, i, rgba32, r, g, b, a);
+            if (a < 128) continue;
+            g /= 3;
+            b /= 3;
+            if (rgba32) {
+                out[i * 4] = 255;
+                out[i * 4 + 1] = uint8_t(g);
+                out[i * 4 + 2] = uint8_t(b);
+            }
+            else {
+                uint16_t c = uint16_t((31 << 11) | ((g * 31 / 255) << 6) | ((b * 31 / 255) << 1) | 1);
+                out[i * 2] = uint8_t(c >> 8);
+                out[i * 2 + 1] = uint8_t(c);
+            }
+        }
+    }
+    return out;
 }
 
 // The RT64 replacement hash of a scaled-down texture: what RT64 hashes (TMEMHasher, rt64_tmem_hasher.h) when the

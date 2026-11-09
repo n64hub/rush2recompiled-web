@@ -32,6 +32,7 @@ namespace audio = rush2::audio2049;
 namespace {
     constexpr uint32_t music_volume = 0x800D5773;   // s8: 0-40
     constexpr uint32_t sfx_volume = 0x800D5774;     // s8: 0-40
+    constexpr uint32_t engine_volume = 0x800D577A;  // s8: 0-40 (Rush 2's ENGINE volume, src/car_engines.cpp)
     constexpr uint32_t music_fade = 0x800BD150;     // f32
     constexpr uint32_t cameras = 0x800E79D0;        // Per-view cameras, 0x40 bytes: matrix rows +0x0, +0xC, +0x18;
                                                     // position +0x24.
@@ -57,6 +58,7 @@ namespace {
     std::atomic<int> pending_song = -1;
     std::atomic<float> music_gain = 0.0f;
     std::atomic<float> sfx_gain = 0.0f;
+    std::atomic<float> engine_gain = 0.0f;   // the 2049 cars' engines, on Rush 2's ENGINE volume as its own engines
     // When object sounds were last updated: they go quiet while the race is paused (no physics ticks).
     std::atomic<int64_t> sounds_updated_ms = 0;
     std::atomic<uint8_t*> sounds_rdram = nullptr;
@@ -129,16 +131,11 @@ namespace {
         if (!(fade >= 0.0f && fade <= 1.0f)) {
             fade = 1.0f;
         }
-        // audio2049's gain 1 is Rush 2049's default mix (master volume 114/127); Rush 2's full volume (40) maps to
-        // Rush 2049's full volume.
-        constexpr float full = 127.0f / 114.0f;
-        // Music and effects get back the 6 dB of headroom audio2049 leaves (its full voice gain is 0.5). Music gets
-        // 3 dB more: at 2x alone it still sounded quieter than Rush 2's own. Effects (2049 engines among them) stay at
-        // 2x; at 2.8x the engines were too loud. Peaks are soft-limited in mix_audio.
-        constexpr float music_boost = 2.8f;
-        constexpr float sfx_boost = 2.0f;
-        music_gain = (int8_t)MEM_B(0, (int32_t)music_volume) / 40.0f * full * music_boost * fade;
-        sfx_gain = (int8_t)MEM_B(0, (int32_t)sfx_volume) / 40.0f * full * sfx_boost;
+        // audio2049's gain 1 is Rush 2049's N64 output at its default options; Rush 2's settings at their defaults play
+        // it so (include/audio2049.h). Peaks are soft-limited in mix_audio.
+        music_gain = (int8_t)MEM_B(0, (int32_t)music_volume) / audio::rush2_default_volume * fade;
+        sfx_gain = (int8_t)MEM_B(0, (int32_t)sfx_volume) / audio::rush2_default_volume;
+        engine_gain = (int8_t)MEM_B(0, (int32_t)engine_volume) / audio::rush2_default_engine_volume;
     }
 
     // Per moving object: the sound effect it plays and the loop it waits to start.
@@ -165,7 +162,8 @@ int rush2::track2049::queued_race_song() {
 }
 
 void rush2::track2049::play_song_now(uint8_t* rdram, int song) {
-    if (!ready()) {
+    // A streamed song (the arcade's, the PlayStation disc's, a mod's) needs no Rush 2049 data.
+    if (!ready() && song < audio::stream_songs) {
         return;
     }
     update_gains(rdram);
@@ -174,13 +172,11 @@ void rush2::track2049::play_song_now(uint8_t* rdram, int song) {
 }
 
 void rush2::track2049::stop_song_now() {
-    if (loaded) {
-        audio::stop_song(0.0f);
-    }
+    audio::stop_song(0.0f);
 }
 
 int rush2::track2049::playing_song() {
-    return loaded && audio::song_playing() ? audio::current_song() : -1;
+    return audio::song_playing() ? audio::current_song() : -1;
 }
 
 // func_80062F50 entry: queues music command $a0.
@@ -195,15 +191,17 @@ extern "C" void rush2_track49_music_command(uint8_t* rdram, recomp_context* ctx)
             audio::play_song(song);
             fprintf(stderr, "[2049] Playing Rush 2049 song %d\n", song);
         }
-        else if (loaded) {
+        else {
             audio::stop_song(0.5f);
-            rush2::track2049::stop_object_sounds();
+            if (loaded) {
+                rush2::track2049::stop_object_sounds();
+            }
         }
     }
     else if ((cmd >> 30) == 3) {
         update_gains(rdram);
     }
-    else if ((cmd & 0xFFFF) == 0xFFFF && (cmd >> 31) == 0 && loaded) {
+    else if ((cmd & 0xFFFF) == 0xFFFF && (cmd >> 31) == 0) {
         audio::stop_song(0.0f);
     }
 }
@@ -321,11 +319,13 @@ void rush2::track2049::stop_object_sounds() {
 }
 
 void rush2::track2049::mix_audio(float* samples, size_t sample_count, uint32_t sample_rate, float scale) {
-    if (!loaded) {
+    // Without the 2049 sound banks a streamed song can still play (src/music.cpp).
+    if (!loaded && !audio::song_playing()) {
         return;
     }
     bool paused = sounds_paused(sounds_rdram.load(), sounds_updated_ms.load());
-    audio::mix(samples, sample_count / 2, sample_rate, music_gain.load() * scale, paused ? 0.0f : sfx_gain.load() * scale);
+    audio::mix(samples, sample_count / 2, sample_rate, music_gain.load() * scale, paused ? 0.0f : sfx_gain.load() * scale,
+               paused ? 0.0f : engine_gain.load() * scale);
     // Loud passages can pass full scale: a soft knee above 0.9 keeps them from clipping hard.
     constexpr float knee = 0.9f, headroom = 1.0f - knee;
     for (size_t i = 0; i < sample_count; i++) {

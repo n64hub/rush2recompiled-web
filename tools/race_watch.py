@@ -38,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(HERE, 'rush2049'))
 import roms, paths  # noqa: E402
+import hidden_desktop  # noqa: E402  (game runs start on a hidden desktop; RUSH2_VISIBLE=1 shows them)
 
 k32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
@@ -251,10 +252,13 @@ def peek(rd, addrs, seconds, proc, always=False):
         print('0x%08X: ' % a + ('min %d, max %d (%d samples)' % (min(vs), max(vs), len(vs)) if vs else 'no race samples'))
 
 
-def peek_changes(rd, addrs, seconds, proc, launched):
-    """Polls u32 words at addrs in every game state and prints a line, timed from launch, whenever one changes."""
+def peek_changes(rd, addrs, seconds, proc, launched, tick=None):
+    """Polls u32 words at addrs in every game state and prints a line, timed from launch, whenever one changes.
+    tick: called every poll (the --shots that are due)."""
     last, t0 = {}, time.time()
     while time.time() - t0 < seconds and not (proc and proc.poll() is not None):
+        if tick:
+            tick()
         for a in addrs:
             v = rd.block(a, 4)
             if v:
@@ -308,7 +312,7 @@ def main():
     if a.launch:
         exe = os.path.abspath(a.exe) if a.exe else os.path.join(REPO, 'build', 'Rush2Recompiled.exe')
         log = open(os.path.join(a.out, 'run.log'), 'w')
-        proc = subprocess.Popen([exe, '--input-script', a.launch], cwd=os.path.dirname(exe), stdout=log,
+        proc = hidden_desktop.popen([exe, '--input-script', a.launch], cwd=os.path.dirname(exe), stdout=log,
                                 stderr=subprocess.STDOUT)
         pid = proc.pid
         with open(os.path.join(a.out, 'pid.txt'), 'w') as f:   # for tools attaching to this run
@@ -328,7 +332,7 @@ def main():
         print('RDRAM not found')
         return 1
     if a.peek and a.peek_changes:
-        peek_changes(rd, a.peek, a.seconds, proc, launched)
+        peek_changes(rd, a.peek, a.seconds, proc, launched, take_shots)
         if proc and proc.poll() is None:
             proc.terminate()
         return 0

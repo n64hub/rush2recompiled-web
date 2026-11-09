@@ -88,8 +88,10 @@ re-rolls 5. [V]
 Disc song: the Dreamcast `.STR` that the N64 song arranges. Matched by tempo and by time-aligned chroma: 60 s of the
 N64 render (`audio_build.bat --song N`) slid over the whole decoded stream, mean frame correlation 0.54-0.87 for the
 match against 0.26-0.43 for every other stream. Songs 4, 7 and 8 have no clear counterpart (best 0.36, 0.48, 0.49 with
-runners-up within 0.03; 8 sits closest to Noon and Sunset). The Sound tab (src/music.cpp) names the matched N64 songs
-after their disc song and keeps a number for the rest. [I]
+runners-up within 0.03; 8 sits closest to Noon and Sunset). These matches are weak (the lowest match is barely above
+the best non-match, and song 0's 32 bpm is likely a misread tempo), so they only hint that the N64 song arranges
+that disc song. [I] The ROM names no songs; the Sound tab (src/music.cpp) names each N64 song after the first track
+that plays it: Marina, Haight, Civic, Metro, Mission, Presidio, Stunt 1 (song 8) and Stunt 3 (song 9).
 
 Song n is played with `sndSeqPlay(group n, song n, data, NULL)`: no start volume or fade, all tracks on, speed 1
 (func_800979A0; group/song pair table 0x8011F070). A new song only starts once the old one was stopped. [V]
@@ -127,12 +129,19 @@ Check: the wing sound as 2049 plays it (sfx 0x3D, volume 0.5 → CC7 63, pan 0 �
 the port at voice gains **3568 / 3490** and step 1535/4096, exactly the values `src/rush2049/wings_sound.cpp` took from the
 running game.
 
-Output scale: the RSP mixer isn't ported. With a 15-bit gain of 32767 = 1.0 the race songs would peak up to
-+6.7 dBFS (song 7) and run at −11 to −16.5 dBFS RMS, which a composer on the N64 would have heard clip, so the mixer
-evidently keeps 6 dB of headroom; `audio2049` uses **0.5**. `src/rush2049/wings_sound.cpp` uses 3568/32768 (1.0 scale), so it
-is 6 dB louder than `audio2049`'s sfx 0x3D at the same settings.
+Output scale: a 15-bit gain of 32767 is **unity**, from the game's own RSP mixer [V]. `func_80011910` builds the
+audio task (OSTask at 0x800382F8): type 2, rspboot 0x80027DD0, text **0x8002A050** (0x1000 bytes, ROM 0x2AC50, loaded
+at IMEM 0x080), data 0x8002E210 (0x800). The microcode reads each voice's 0x50-byte record, resamples 8 output
+samples at a time with a 4-tap filter, and mixes them into four DMEM buffers (0x300 left, 0x480 right, 0xBD0,
+0xD60) at IMEM 0x700-0x708: `vmulf` (sample x gain x 2 / 65536, rounded) then `vmadh` (+ buffer x 1, $v28 = 1),
+the gain being the high half of the record's 16.16 volume word (current at +0x0..+0xC, per-sample step at
++0x10..+0x1C, IMEM 0x7C8). So a voice adds sample x gain / 32768. The output pass (IMEM 0x800) adds a per-channel
+constant from 0xBC0 to each left/right sample (`vmudh`/`vmadh` by 1), clamps, interleaves into 0x600 and DMAs out
+192 stereo frames: no scaling. The port used to assume 0.5 here (the songs peak over full scale at 1.0; the game
+clamps each voice's add, as `mix_audio`'s soft knee does). `src/rush2049/wings_sound.cpp` already used 3568/32768.
 
-Port output at music_gain = sfx_gain = 1 (48 kHz, first 60 s):
+Port output at music_gain = sfx_gain = 1 with the old 0.5 output scale (48 kHz, first 60 s; add 6.0 dB for the
+game's level):
 
 | Song (race track) | Peak | RMS | 1 s RMS range |
 |---|---|---|---|
@@ -260,6 +269,11 @@ func_800E0050 (from func_800E05F0, every other frame) updates each layer from rp
 - the local player's car: volume x (0.8 - 0.05 x players), pitch and volume sent only when they change;
 - other cars: volume x 0.75 as the emitter's maximum volume (func_800BF2B8), at the car's position (+0x22C).
 
+In the port the engine layers are mixed at Rush 2's ENGINE volume (s8 0-40 at 0x800D577A), not its SFX volume
+(0x800D5774), as Rush 2 plays its own engines: `audio2049::sfx_set_engine` marks each layer's handle, and the mixers
+(MusyX by the hardware voice's owner, the disc player per voice) give marked voices the engine gain
+(`update_gains`, src/rush2049/track2049_audio.cpp). Issue #49.
+
 Outside races (0x801174B4 without 0x400000) other cars' rpm is held at 890, and they also play a random sound
 0x62-0x64 (1 in 5 per update, range 400, volume 0.8) [I: the race bit's meaning].
 
@@ -279,3 +293,54 @@ pitch min(r / 0x800BD15C [same], 2), volume (int)((int)(A[layer][min(r / 1000, 1
 l = car +0x3F4 x [0x800E7BAC] (as u16 & 0x7FFF, func_800650DC). Its samples (VADPCM, the ALSound list of the
 sound effect ALInstrument at 0x800D2478; the engine sounds have key base 40, no detune, full volume and sustain) are
 decoded from the ROM and mixed on the host at pitch samples per output frame, as libaudio's sound player plays them.
+
+## 10. Loudness against Rush 2
+
+Rush 2049 plays at the level the game itself plays at, set from the game code, and only a source that is louder
+than Rush 2 is turned down (issue #51):
+
+- **N64**: `audio2049` reproduces the game's output at its default options (master 114/127, the mixer at unity,
+  section 4). Rush 2's settings at their defaults (music 0x800D5773 and effects 0x800D5774: 35 of 40; engine
+  0x800D577A: 35 too, read at the main menu of a fresh run; in a race Rush 2 lowers the live engine byte to 32 and both games' engines follow it) play it so: `update_gains` (src/rush2049/track2049_audio.cpp) passes
+  setting / default (`rush2_default_volume`, `rush2_default_engine_volume`, include/audio2049.h), and both games
+  scale alike when the settings move. No boosts.
+- **Dreamcast**: the disc's music and effects volumes start at 1.0 (0x8C06AE30: 0x8C17843C, 0x8C178440); a song
+  starts through the same volume law as effects (0x8C06A086 -> 0x8C016508: 1 - (1 - x)^2, x 255, attenuation table
+  0x8C0BADA8, whose entry 255 is 0), so at the defaults the songs play at their full mastered level and the effects
+  by `volume_gain` with the 0.8 scale (all but 0x99).
+
+Measured at those levels in races (car idle, chase view, 100% main volume; `RUSH2_AUDIO_LEVELS=<folder>` in
+`tools/test_race.py` runs, then `tools/audio_loudness.py --skip 14`), integrated loudness of the race songs:
+
+| Source | Tracks | LUFS | Mean |
+|---|---|---|---|
+| Rush 2 (idle engine, -29 LUFS, taken out) | 0-7 | -16.8, -16.5, -20.1, -17.8, -16.8, -14.9, -14.7, -14.2 | -16.1 |
+| N64 2049 | 12-17 | -18.5, -20.5, -17.1, -20.3, -20.5, -15.7 | -18.4 |
+| Dreamcast | 12-17 | -13.8, -11.8, -11.2, -12.7, -12.9, -13.8 | -12.6 |
+
+Effects and engines, compared the same way: every sound of each game played on its own at full volume, centred, at
+the default settings, through its game's real path (`RUSH2_TEST_SFX_SWEEP=rush2|2049` from the main menu with the music
+stopped, src/sfx_sweep.cpp: Rush 2's through `snd_play_effect` and libaudio, 2049's through `audio2049`; then
+`tools/audio_loudness.py DIR --sweep RUN_LOG`), each sound's loudest 400 ms (momentary max), power-averaged per group
+(engines: Rush 2's engine table 0x800BD1FC, 2049's layer sounds 0x66-0x74):
+
+| Source | Effects | Engines |
+|---|---|---|
+| Rush 2 | -16.63 LUFS (100 sounding) | -14.16 (16) |
+| N64 2049 | -14.67 (104) | -14.41 (15) |
+| Dreamcast | -11.68 (42) | -11.46 (15) |
+
+Each source louder than Rush 2 is turned down by its difference, per bus (include/audio2049.h); a quieter one is left
+as its game plays it:
+
+| Bus | N64 2049 | Dreamcast |
+|---|---|---|
+| Songs | none (-2.2 dB quieter) | x0.666 (-3.53 dB) |
+| Effects (weapons, track objects, stunts) | x0.798 (-1.96 dB) | x0.566 (-4.95 dB) |
+| Engines | none (-0.25 dB quieter) | x0.733 (-2.70 dB) |
+
+The disc's effects are the hottest: its samples are mastered louder than the N64's, and its centre pan leaves one side
+at full level where the N64's centre takes 3 dB off both (dreamcast.md, Audio). Before this, at the default
+settings, the port played the N64 2049 songs 2.7 dB over the game's level (a 0.5 mixer scale, Rush 2's 40 mapped to
+2049's 127 and a 2.8x boost by ear) and its effects and engines 0.2 dB under; the disc's songs, effects and engines
+1.2 dB under their level (the boosts divided back out at Rush 2's 40), its centred sounds at both sides' full level.

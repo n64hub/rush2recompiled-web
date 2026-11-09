@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -29,8 +30,42 @@ namespace rush2::track2049 {
     constexpr int stunt_host_slot = 11; // STUNT1: Rush 2's stunt track.
     constexpr int obstacle_menu_id = 29; // Track select id of the obstacle course.
     constexpr int battle_menu_id = 30;   // Track select id of battle arena DM1 (30-37).
-    constexpr int mod_menu_id = 38;      // Track select id of the first custom track (src/track_mod/), up to 63.
-    constexpr int mod_capacity = 26;     // Custom tracks the track select (and circuits) can offer.
+    // Custom tracks (src/track_mod/) take two ranges of track select ids: 38-63 between the battle arenas and California
+    // Speed (64-79), then 80-248 after it. The game keeps the id in one byte (0x8010C3F0, read unsigned: us.toml turns
+    // the game's lb of it into lbu), so 254 is the last; 255 stays free, as the -1 a signed read would make of it.
+    // 249-254 are the Dreamcast versions of the six race tracks (disc_menu_id).
+    constexpr int mod_menu_id = 38;      // Track select id of the first custom track.
+    constexpr int mod_low_count = 26;    // Custom tracks in the first range (38-63).
+    constexpr int mod_high_menu_id = 80; // Track select id of custom track 26, the first of the second range.
+    constexpr int menu_id_limit = 255;   // Track select ids are 0-254.
+    // The race tracks' Dreamcast versions (249-254, race track k at disc_menu_id + k - 1), offered beside the N64 ones
+    // (12-17) when both the N64 ROM and the Dreamcast disc are stored: one track select entry per course, whose
+    // version button picks which is raced (src/rush2049/track2049_menu.cpp, "Track versions"). With the disc alone,
+    // 12-17 are the disc's and these aren't offered.
+    constexpr int disc_menu_id = menu_id_limit - track_count;    // 249
+    constexpr int mod_capacity = mod_low_count + (disc_menu_id - mod_high_menu_id);   // 195
+    // Custom track `index`'s track select id (index < mod_capacity).
+    constexpr int mod_id(int index) {
+        return index < mod_low_count ? mod_menu_id + index : mod_high_menu_id + (index - mod_low_count);
+    }
+    // The custom track index of track select id t, or -1 when t isn't a custom track's id.
+    constexpr int mod_index(int t) {
+        if (t >= mod_menu_id && t < mod_menu_id + mod_low_count) return t - mod_menu_id;
+        if (t >= mod_high_menu_id && t < disc_menu_id) return mod_low_count + (t - mod_high_menu_id);
+        return -1;
+    }
+    constexpr bool is_mod_id(int t) {
+        return mod_index(t) >= 0;
+    }
+    // Whether t is a race track's Dreamcast version (249-254).
+    constexpr bool is_disc_course(int t) {
+        return t >= disc_menu_id && t < disc_menu_id + track_count;
+    }
+    // The track select id of the course t is a version of: a Dreamcast version's N64 entry (12-17), else t. What the
+    // unlocks, keys and logos of a course go by.
+    constexpr int course_id(int t) {
+        return is_disc_course(t) ? first_menu_id + (t - disc_menu_id) : t;
+    }
     constexpr float obstacle_time = 300.0f; // The obstacle course's clock in seconds, no checkpoint extensions.
 
     // The Rush 2049 Tracks option (Games tab). Tracks are offered when it is on and the 2049 ROM is present.
@@ -117,17 +152,30 @@ namespace rush2::track2049 {
     bool coin_icon(const rush2::rom2049::Source& rom2049, bool gold, std::vector<uint8_t>& texels,
                    std::vector<uint8_t>& palette);
 
-    // Converts every Rush 2049 track and arena of the source in use, and every California Speed track (as its scenery
-    // options are set), into the disk cache (those not there yet), when their options are on. Any thread
-    // (src/prewarm.cpp, at launch).
+    // Converts every Rush 2049 track and arena (the race tracks' Dreamcast versions too, when they are offered), and
+    // every California Speed track (as its scenery options are set), into the disk cache (those not there yet), when
+    // their options are on. Any thread (src/prewarm.cpp, at launch).
     void prepare();
     // Reads the cache entry of the 2049 or California Speed track that track select id t races into memory now, for
     // the race about to load it (src/prewarm.cpp, from the car select). Any thread.
     void preload(int t);
 
-    // The 2049 track (1-6, or obstacle) raced in the host slot, or 0 (src/rush2049/track2049.cpp).
+    // The 2049 track (1-6, or obstacle) raced in the host slot, or 0 (src/rush2049/track2049.cpp). disc: a race track's
+    // Dreamcast version (track select 249-254), read from the disc whichever source the Games tab uses.
     int race_track();
-    void set_race_track(int k);
+    void set_race_track(int k, bool disc = false);
+    // Whether race_track() is a race track's Dreamcast version (track select 249-254).
+    bool race_track_disc();
+    // Where the race tracks' versions come from. The N64 versions (12-17) are the N64 ROM's when it is stored and
+    // enabled (the Games tab's Enabled Source), else the disc's; the stunt arenas, obstacle course and battle arenas
+    // are the source the game uses (rush2::wings::get_rom: Primary Source).
+    bool courses_from_disc();
+    // Whether the Dreamcast versions (249-254) can be offered: the Rush 2049 tracks are on and both the N64 ROM and
+    // the disc are stored and enabled (Enabled Source: Both).
+    bool disc_courses_available();
+    // The Rush 2049 data the raced (or last raced) 2049 track was converted from, else the source in use. For the
+    // race's objects (props, moving objects), which read the game's own tables of that copy.
+    std::shared_ptr<const rush2::rom2049::Source> race_source();
     // The 2049 stunt arena (1-4) being played, or 0.
     int stunt_arena();
     void set_stunt_arena(int n);
@@ -137,12 +185,18 @@ namespace rush2::track2049 {
     void set_battle_arena(int n);
     // The Rush 2 slot the raced 2049 track or stunt arena is loaded in (host_slot or stunt_host_slot), or -1.
     int loaded_slot();
+    // Whether the race is on a converted course (a Rush 2049 track or arena, a custom or arcade track, a California
+    // Speed track) rather than a stock Rush 2 one: one is applied in the slot being raced.
+    bool converted_race(uint8_t* rdram);
     // Whether the race is on a custom track whose track.toml asks for California Speed's road hold
     // ([track] road_hold = true; src/calspeed/calspeed_rom.cpp rush2_calspeed_road_hold).
     bool mod_road_hold(uint8_t* rdram);
     // Whether the race is on a custom track with no [audio] music, which plays a random one of the songs the player
     // switched on (src/music.cpp).
     bool mod_random_song(uint8_t* rdram);
+    // The custom track (rush2::track_mod::tracks() index) applied in the slot being raced, or -1 (src/music.cpp: its
+    // own songs and the course it is a version of).
+    int raced_mod(uint8_t* rdram);
     // Whether the race is on a custom track that races with smooth collision (its track.toml smooth_collision), and its
     // fold angle (degrees).
     bool mod_smooth_collision(uint8_t* rdram, float* fold = nullptr);
@@ -179,18 +233,66 @@ namespace rush2::track2049 {
     // floor -side, floor +side), which the track select recolors each frame (preview_tube_color).
     std::string menu_preview_name(int k);
     // Rush 2049's track select preview (as menu_preview_name's) of AI path file `path` (a converted track's): its route
-    // tube colored as race track `color`'s (1-6), and behind it `picture` (128 x 128 RGBA, rows top-down; empty for
-    // none) as 2049's round screenshot. Texels, vertices and the list (at `list`) in `blob`, `pointers` the offsets of
+    // tube colored as race track `color`'s (1-6), and behind it `picture` (picture_w (at most route_picture_max_w) x
+    // picture_h RGBA, rows top-down; empty for none) in place of 2049's round screenshot, at its full texel size, shown
+    // as large as fits route_picture_w x route_picture_h of the track select's 320 x 240 screen (between the carousel
+    // arrows). Texels, vertices and the list (at `list`) in `blob`, `pointers` the offsets of
     // the words in it pointing into it (to rebase), radius in world units. Custom tracks without an authored diorama
     // show it (src/track_mod/track_mod.cpp); the track select poses and animates it like the 2049 tracks'.
-    bool route_preview(const std::vector<uint8_t>& path, int color, const std::vector<uint8_t>& picture,
-                       std::vector<uint8_t>& blob, uint32_t& list, std::vector<uint32_t>& pointers, float& radius);
+    bool route_preview(const std::vector<uint8_t>& path, int color, const std::vector<uint8_t>& picture, int picture_w,
+                       int picture_h, std::vector<uint8_t>& blob, uint32_t& list, std::vector<uint32_t>& pointers,
+                       float& radius);
+    constexpr float route_picture_w = 224.0f, route_picture_h = 128.0f;   // the arrows are at x 21-41 and 279-299
+    constexpr int route_picture_max_w = 512, route_picture_max_h = 256;   // texels
+    // Track versions (docs/menus.md#track-versions): the race tracks' previews have a thin ring around the round
+    // screenshot in their version's color, so the N64, Dreamcast and arcade versions of a course tell apart at a
+    // glance (0xRRGGBB). The ring is drawn after the screenshot, so the track select's turn and the circuit screen
+    // (which skips the screenshot) leave it alone.
+    constexpr uint32_t version_ring_n64 = 0x2E7DFF;       // blue
+    constexpr uint32_t version_ring_dc = 0xFF8A1E;        // orange
+    constexpr uint32_t version_ring_arcade = 0xE51E2A;    // red
+    // The ring's commands sit between G_NOOPs with these words, so the track select can branch over them: it shows
+    // the ring only when the course has another version (the X prompt names the version).
+    constexpr uint32_t version_ring_start = 0x52494E47;   // "RING"
+    constexpr uint32_t version_ring_end = 0x52494E45;     // "RINE"
+    // Race track k's (1-6) preview as menu_preview_name's: `rom`'s route tube in the course's color, then the round
+    // screenshot with a `ring` colored ring. The screenshot is `rom`'s own thumbnail, or with `picture_of` the one in
+    // that route_preview blob (list at `picture_list`): the arcade versions' pictures with the 2049 course's route.
+    // Out as route_preview's.
+    bool course_preview(const rush2::rom2049::Source& rom, int k, const std::vector<uint8_t>* picture_of,
+                        uint32_t picture_list, uint32_t ring, std::vector<uint8_t>& blob, uint32_t& list,
+                        std::vector<uint32_t>& pointers, float& radius);
+    // Whether custom track t (a mod id) is one of the app's Rush 2049 arcade mod's (rush2::arcade2049::track_mod_id,
+    // matched by the mod's id so other mods can't claim it): the game filter files those under Rush 2049.
+    bool mod_from_2049(int t);
+    // The same for the app's SF Rush arcade mod (rush2::arcade2049::sfrush_track_mod_id): filed under SF Rush.
+    bool mod_from_sfrush(int t);
+    // The versions of the course track select id t is a version of (docs/menus.md#track-versions), as the track
+    // select's version button goes through them: the course first (12-17: the Rush 2049 race tracks' N64 version),
+    // then the Dreamcast version (249-254), then the custom tracks that are versions of it, in mod order. {t} for a
+    // course with no other version. Game thread.
+    std::vector<int> course_versions(int t);
+    // The Dreamcast version's (249-254) preview of race track k, beside the N64 one: "R49PDTRACKk".
+    std::string disc_preview_name(int k);
+    // The circuit screen shows the route turning in a small window without the round picture, so the race tracks'
+    // dioramas (R49TRACKn) and previews also have a flat ring in the version's color around the route, between
+    // G_NOOPs with these words: shown there for a course with another version, branched over on the track select.
+    constexpr uint32_t circuit_ring_start = 0x52494E43;   // "RINC"
+    constexpr uint32_t circuit_ring_end = 0x52494E44;     // "RIND"
+    // The Dreamcast version's diorama of race track k (the circuit screen's, the unlock shop's): "R49DTRACKk", the
+    // disc's route tube with the ring in `ring`'s color, as a model for extend_menu_container (out as route_preview's).
+    std::string disc_model_name(int k);
+    bool course_diorama(const rush2::rom2049::Source& rom, int k, uint32_t ring, std::vector<uint8_t>& blob,
+                        uint32_t& list, std::vector<uint32_t>& pointers, float& radius);
     constexpr int preview_tube_rings = 100;
     // A preview's list is followed by room for the track select to turn its model (the tube or the outline) in, so a
     // frame the renderer is still reading isn't rewritten under it (src/rush2049/track2049_menu.cpp, PreviewModel):
     // after the list's end, {u32 preview_buffer_tag, u32 the model's commands (the list's first), u32 its vertices
     // (the first in memory), u32 0}, then per spare buffer 16 bytes per vertex and 8 per command and two more.
     constexpr uint32_t preview_buffer_tag = 0x52343942;    // "R49B"
+    // The same tag on a preview whose spare buffers aren't in the container: the custom tracks', whose room the track
+    // select's container drops (up to 201 of them would fill the game heap) and lends from a pool while on screen.
+    constexpr uint32_t preview_pooled_tag = 0x52343950;    // "R49P"
     constexpr int preview_spare_buffers = 2;
     // 2049's track select camera, fitted to a capture of it (§7.5): focal length and center in screen pixels.
     constexpr float preview_focal = 167.0f, preview_center_x = 162.0f, preview_center_y = 116.0f;

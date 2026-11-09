@@ -47,6 +47,8 @@
 
 #include "asset_catalog.h"
 #include "assets.h"
+#include "arcade2049.h"
+#include "sfrush_ps1.h"
 #include "car2049.h"
 #include "car_mods.h"
 #include "data_files.h"
@@ -114,11 +116,21 @@ namespace {
         int image = -1, mask = -1;   // into Model::images
         int scheme = 0;              // a new car's color scheme (its .json's "schemes", each a glb) the part is of
         bool hood = false;           // of the hood camera's hood (H0_L / H2_L), not the body
+        bool brake = false;          // lit brake lights, drawn only while the car brakes (its .json's "brakes")
     };
     struct Model {
         std::vector<Part> parts;
         std::vector<std::vector<uint8_t>> images; // encoded (PNG, JPEG...)
+        // Per image, how its texture repeats as the render tile's cms / cmt bits (G_TX_MIRROR 1, G_TX_CLAMP 2), from
+        // the glTF sampler of the first texture using it: clamp-to-edge clamps, mirrored repeat mirrors.
+        std::vector<std::array<uint32_t, 2>> image_cm;
     };
+
+    // A tile word's cms / cmt bits for an image (tile_cm | the masks).
+    uint32_t tile_cm(const Model& model, int image) {
+        if (image < 0 || image >= (int)model.image_cm.size()) return 0;
+        return (model.image_cm[image][1] << 18) | (model.image_cm[image][0] << 8);
+    }
 
     bool read_accessor(const nlohmann::json& js, const std::vector<uint8_t>& bin, int index, int width,
                        std::vector<float>& out) {
@@ -207,6 +219,14 @@ namespace {
             size_t start = v.value("byteOffset", size_t(0)), length = v.value("byteLength", size_t(0));
             if (start + length > bin.size()) return -1;
             model.images.emplace_back(bin.begin() + start, bin.begin() + start + length);
+            std::array<uint32_t, 2> cm = { 0, 0 };
+            int sampler = js["textures"][texture].value("sampler", -1);
+            if (sampler >= 0 && js.contains("samplers") && sampler < (int)js["samplers"].size()) {
+                const auto& sm = js["samplers"][sampler];
+                auto mode = [](int wrap) -> uint32_t { return wrap == 33071 ? 2u : wrap == 33648 ? 1u : 0u; };
+                cm = { mode(sm.value("wrapS", 10497)), mode(sm.value("wrapT", 10497)) };
+            }
+            model.image_cm.push_back(cm);
             return image_of_source[source] = int(model.images.size() - 1);
         };
         std::function<void(int, const std::array<float, 16>&)> node = [&](int i, const std::array<float, 16>& parent) {
@@ -415,31 +435,57 @@ namespace {
         return true;
     }
 
+    // ---- brake light lists ---------------------------------------------------------------------------------------
+    // Brake lights are lamps laid over the body's tail lights, and the arcade's BRAKE textures are soft glows (alpha 0
+    // and near black around a red core): drawn with the body's opaque render mode they were dark boxes. Their lists
+    // draw blended instead: the body's fog cycle kept and G_RM_ZB_XLU_SURF2 after it (a mode without the fog cycle:
+    // G_RM_ZB_XLU_SURF in both), alpha the texture's own (the full-size replacement's) through G_CC_MODULATEIDECALA
+    // (a fogged list's shade alpha is the fog), unlit (G_LIGHTING cleared) with white vertices, full bright.
+    uint32_t brake_render_mode(uint32_t body) {
+        return (body >> 30) == 3 ? (body & 0xCCCC0000u) | 0x00104A50u : 0x00504A50u;
+    }
+    constexpr uint32_t brake_combine[2] = { 0xFC127FFFu, 0xFFFFF238u }; // (G_CC_MODULATEIDECALA, G_CC_PASS2)
+    constexpr uint32_t clear_lighting[2] = { 0xD9FDFFFFu, 0u };         // G_GEOMETRYMODE, F3DEX2's G_LIGHTING 0x20000
+    constexpr uint32_t set_lighting[2] = { 0xD9FFFFFFu, 0x00020000u };
+
     // ---- the car container ---------------------------------------------------------------------------------------
     // One LOD's FRAME1 list and its vertices (appended to d): per stand-in its texture load, then the triangles, 32
     // vertices per G_VTX. With several color schemes, each scheme's triangles are a block between two scheme markers
     // (rush2::car2049::scheme_marker), which a car's copy turns into a branch past the block for the schemes it doesn't
     // show. Returns the list's offset.
-    // hood: the hood camera's hood's parts instead of the body's.
+    // hood: the hood camera's hood's parts instead of the body's. brake_scheme: that scheme's brake lights alone (a
+    // list of their own); brake_lists: each scheme's brake light list (0: none), switched in after its block.
     uint32_t emit_body(std::vector<uint8_t>& d, const Model& model, const std::vector<StandIn>& stand_ins,
-                       const std::vector<uint32_t>& load_lists, float& radius, bool hood = false) {
+                       const std::vector<uint32_t>& load_lists, float& radius, bool hood = false, int brake_scheme = -1,
+                       const std::vector<uint32_t>* brake_lists = nullptr) {
         std::vector<uint8_t> vertices;
         std::vector<std::pair<uint32_t, uint32_t>> list; // commands; a G_VTX's w1 is relative to the vertices
         std::vector<size_t> vtx_commands;
         auto cmd = [&](uint32_t w0, uint32_t w1) { list.emplace_back(w0, w1); };
-        // Render mode and combiner as Rush 2's car panels set them (PICKUPD0_TOP1).
-        cmd(0xE200001C, 0xC8112230);
-        cmd(0xFC1216AC, 0xF0FFFE38);
+        // Render mode and combiner as Rush 2's car panels set them (PICKUPD0_TOP1); a brake light list's blended.
+        constexpr uint32_t body_mode = 0xC8112230, body_combine[2] = { 0xFC1216AC, 0xF0FFFE38 };
+        const bool brake = brake_scheme >= 0;
+        if (brake) {
+            cmd(clear_lighting[0], clear_lighting[1]);
+            cmd(0xE200001C, brake_render_mode(body_mode));
+            cmd(brake_combine[0], brake_combine[1]);
+        }
+        else {
+            cmd(0xE200001C, body_mode);
+            cmd(body_combine[0], body_combine[1]);
+        }
         const float light[3] = { 0.30f, 0.80f, 0.52f };
         int schemes = 1;
         for (const Part& part : model.parts) schemes = std::max(schemes, part.scheme + 1);
         for (int scheme = 0; scheme < schemes; scheme++) {
-            if (schemes > 1) cmd(0, rush2::car2049::scheme_marker(scheme, false));
+            if (brake_scheme >= 0 && scheme != brake_scheme) continue;
+            if (schemes > 1 && brake_scheme < 0) cmd(0, rush2::car2049::scheme_marker(scheme, false));
             for (size_t si = 0; si < stand_ins.size(); si++) {
                 const StandIn& s = stand_ins[si];
                 bool loaded = false;
                 for (const Part& part : model.parts) {
-                    if (part.image != s.image || part.mask != s.mask || part.scheme != scheme || part.hood != hood) continue;
+                    if (part.image != s.image || part.mask != s.mask || part.scheme != scheme || part.hood != hood ||
+                        part.brake != (brake_scheme >= 0)) continue;
                     if (!loaded) {
                         cmd(0xDE000000, load_lists[si]);
                         loaded = true;
@@ -460,7 +506,7 @@ namespace {
                                                int16_t(std::clamp(std::lround(p[2]), -32767l, 32767l)) };
                             radius = std::max(radius, std::sqrt(float(xyz[0]) * xyz[0] + float(xyz[1]) * xyz[1] + float(xyz[2]) * xyz[2]));
                             float shade = 0.72f + 0.28f * std::max(0.0f, -nn[0] * light[0] + nn[1] * light[1] + nn[2] * light[2]);
-                            uint8_t c = uint8_t(std::clamp(shade * 255.0f, 0.0f, 255.0f));
+                            uint8_t c = brake ? 0xFF : uint8_t(std::clamp(shade * 255.0f, 0.0f, 255.0f));
                             // The N64 puts texel i's center at coordinate i (Rush 2's panels run 0 to width - 1), glTF at
                             // i + 0.5: without the half texel, every sample lands half a stand-in texel (16 texels of a
                             // 1024-wide image) off, into the gaps between the image's islands.
@@ -514,7 +560,15 @@ namespace {
                     flush();
                 }
             }
-            if (schemes > 1) cmd(0, rush2::car2049::scheme_marker(scheme, true));
+            // The scheme's brake lights: a switch the car's copy turns into a call to their list while it brakes.
+            if (brake_lists != nullptr && scheme < int(brake_lists->size()) && (*brake_lists)[scheme] != 0) {
+                for (auto [w0, w1] : rush2::car2049::brake_switch((*brake_lists)[scheme])) cmd(w0, w1);
+            }
+            if (schemes > 1 && brake_scheme < 0) cmd(0, rush2::car2049::scheme_marker(scheme, true));
+        }
+        if (brake) { // the body's mode back for what its list draws after the call
+            cmd(0xE200001C, body_mode);
+            cmd(body_combine[0], body_combine[1]);
         }
         cmd(0xDF000000, 0);
         // The last vertex ends the chain.
@@ -549,7 +603,7 @@ namespace {
             uint32_t line = s.width / 8;            // 64-bit words per row of CI8
             uint32_t bytes = s.width * s.height;
             uint32_t masks = s.width == 64 ? 6 : 5, maskt = s.height == 64 ? 6 : 5;
-            uint32_t tile = (maskt << 14) | (masks << 4); // wrap in both
+            uint32_t tile = (maskt << 14) | (masks << 4) | tile_cm(model, s.image); // the image's sampler's repeat
             uint32_t dxt = 2048 / line;
             // Loaded as 16-bit texels (half as many), drawn as CI 8-bit: as Rush 2's car texture loads do.
             for (uint32_t w : { 0xFD500000u, s.offset, 0xF5500000u, 0x07000000u | tile, 0xE6000000u, 0u,
@@ -560,9 +614,20 @@ namespace {
             }
         }
         uint32_t txld_end = uint32_t(d.size());
-        // Names sorted (func_8005BCB4's binary search), model i under name i.
+        // Names sorted (func_8005BCB4's binary search), model i under name i. Each scheme's brake lights are a model
+        // of their own, <prefix>BRK<scheme> (rush2::car2049::brake_switch), which the game never draws by name.
         std::vector<std::string> names;
         for (const char* p : parts) names.push_back(prefix + p);
+        int scheme_count = 1;
+        for (const Part& part : model.parts) scheme_count = std::max(scheme_count, part.scheme + 1);
+        std::vector<bool> has_brake(scheme_count, false);
+        for (const Part& part : model.parts) {
+            if (part.brake) has_brake[part.scheme] = true;
+        }
+        auto brake_name = [&](int k) { return prefix + "BRK" + std::to_string(k); };
+        for (int k = 0; k < scheme_count; k++) {
+            if (has_brake[k]) names.push_back(brake_name(k));
+        }
         std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
             return strncmp(a.c_str(), b.c_str(), 15) < 0;
         });
@@ -590,8 +655,13 @@ namespace {
         add32(d, 0xDF000000);
         add32(d, 0);
         float radius = 0.0f;
-        uint32_t lod0 = emit_body(d, model, stand_ins, load_lists, radius);
-        uint32_t lod1 = emit_body(d, model, stand_ins, load_lists, radius); // its own copy: each LOD is relocated
+        std::vector<uint32_t> brake_lists(scheme_count, 0);
+        float brake_radius = 0.0f;
+        for (int k = 0; k < scheme_count; k++) {
+            if (has_brake[k]) brake_lists[k] = emit_body(d, model, stand_ins, load_lists, brake_radius, false, k);
+        }
+        uint32_t lod0 = emit_body(d, model, stand_ins, load_lists, radius, false, -1, &brake_lists);
+        uint32_t lod1 = emit_body(d, model, stand_ins, load_lists, radius, false, -1, &brake_lists); // its own copy: each LOD is relocated
         // The hood camera's hood, as a converted 2049 car's (its HOOD): H0_L, and H2_L too (Rush 2 swaps it in by panel
         // 0's damage; the body's hood folds instead), each its own list. H0_R / H2_R stay empty.
         bool has_hood = std::any_of(model.parts.begin(), model.parts.end(), [](const Part& p) { return p.hood; });
@@ -603,6 +673,13 @@ namespace {
         for (size_t i = 0; i < names.size(); i++) {
             bool body = names[i] == prefix + "FRAME1";
             uint32_t hood = names[i] == prefix + "H0_L" ? hood0 : names[i] == prefix + "H2_L" ? hood2 : 0;
+            bool brake = false;
+            for (int k = 0; k < scheme_count && hood == 0; k++) {
+                if (has_brake[k] && names[i] == brake_name(k)) {
+                    hood = brake_lists[k]; // one LOD, as a hood's
+                    brake = true;
+                }
+            }
             uint32_t r = model_table + uint32_t(i) * 0x34;
             put32(d, r, body ? 2 : 1);
             for (int l = 0; l < 4; l++) {
@@ -616,7 +693,7 @@ namespace {
             }
             std::vector<uint8_t> n(0x18, 0);
             memcpy(n.data(), names[i].data(), std::min<size_t>(15, names[i].size()));
-            float rad = body ? radius / 16.0f : hood ? hood_radius / 16.0f : 0.5f;
+            float rad = body ? radius / 16.0f : brake ? brake_radius / 16.0f : hood ? hood_radius / 16.0f : 0.5f;
             uint32_t bits;
             memcpy(&bits, &rad, 4);
             put32(n, 16, bits);
@@ -647,6 +724,7 @@ namespace {
         // A livery's: the copy a damaged panel draws (car2049's add_damage_textures), and its key.
         std::vector<uint8_t> scuffed;
         uint64_t scuffed_key = 0;
+        uint32_t cm = 0;                // the tile's cms / cmt bits (tile_cm): the image's sampler's repeat
     };
 
     // A livery stand-in's damaged copy, as make_stand_in scuffs a car's: its colors lighter and darker in blotches of
@@ -682,6 +760,7 @@ namespace {
         std::vector<TrueColor> stand_ins;
         size_t triangles = 0;
         std::shared_ptr<ModelMod> hood; // a livery's hood camera hood (its .json's "hoods")
+        std::shared_ptr<ModelMod> brake; // a livery's brake lights, drawn only while braking (its .json's "brakes")
     };
     std::map<std::string, ModelMod> model_mods; // by model name (file name, upper case)
     std::string model_signature;
@@ -759,6 +838,7 @@ namespace {
         if (small) {
             for (TrueColor& s : m.stand_ins) scuff_true_color(s, uint32_t(m.glb_hash) * 977u + uint32_t(s.image));
         }
+        for (TrueColor& s : m.stand_ins) s.cm = tile_cm(*model, s.image);
         m.model = model;
         return true;
     }
@@ -794,7 +874,7 @@ namespace {
         uint32_t masks = 0, maskt = 0;
         while ((1u << masks) < s.width) masks++;
         while ((1u << maskt) < s.height) maskt++;
-        uint32_t tile = (maskt << 14) | (masks << 4);
+        uint32_t tile = (maskt << 14) | (masks << 4) | s.cm;
         return { { 0xFD100000u, texels }, { 0xF5100000u, 0x07000000u | tile }, { 0xE6000000u, 0u },
                  { 0xF3000000u, 0x07000000u | ((s.width * s.height - 1) << 12) | (2048 / line) },
                  { 0xE7000000u, 0u }, { 0xF5100000u | (line << 9), tile },
@@ -802,20 +882,31 @@ namespace {
     }
 
     // loads: each stand-in's texture-load list, called (G_DL) in place of loading it in the list (a livery's, whose
-    // loads car2049's add_damage_textures inlines per panel).
+    // loads car2049's add_damage_textures inlines per panel). brake: a livery's brake lights, blended, unlit and full
+    // bright (brake_render_mode; lit is ignored), its end setting the model's mode back.
     uint32_t emit_model(std::vector<uint8_t>& d, const ModelMod& mm, const std::vector<uint32_t>& texels,
-                        const ListState& st, bool lit, float& radius, const std::vector<uint32_t>* loads = nullptr) {
+                        const ListState& st, bool lit, float& radius, const std::vector<uint32_t>* loads = nullptr,
+                        bool brake = false) {
         std::vector<uint8_t> vertices;
         std::vector<std::pair<uint32_t, uint32_t>> list;
         std::vector<size_t> vtx_commands;
         auto cmd = [&](uint32_t w0, uint32_t w1) { list.emplace_back(w0, w1); };
+        if (brake) lit = false;
         cmd(0xE3001001, 0x00000000);            // no TLUT: true color
         cmd(0xE3000F00, 0x00000000);            // no mipmaps
         // The model's own render mode (blending, z, fog) and textured combiner, always textured: its list may start on
         // an untextured part (ALCATRAZTRACK: G_TEXTURE off, a shade-only combiner) and switch further on. Without a
         // textured combiner: TEXEL0 x SHADE (color and alpha), the second cycle passing it on.
-        if (st.has_mode) cmd(st.mode[0], st.mode[1]);
-        cmd(st.has_combine ? st.combine[0] : 0xFC1219FF, st.has_combine ? st.combine[1] : 0xFFFFFE38);
+        const uint32_t combine[2] = { st.has_combine ? st.combine[0] : 0xFC1219FF, st.has_combine ? st.combine[1] : 0xFFFFFE38 };
+        if (brake) {
+            cmd(clear_lighting[0], clear_lighting[1]);
+            cmd(0xE200001C, brake_render_mode(st.has_mode ? st.mode[1] : 0xC8112230));
+            cmd(brake_combine[0], brake_combine[1]);
+        }
+        else {
+            if (st.has_mode) cmd(st.mode[0], st.mode[1]);
+            cmd(combine[0], combine[1]);
+        }
         cmd(0xD7000002, 0xFFFFFFFF);            // G_TEXTURE on, tile 0, scale 1
         const float light[3] = { 0.30f, 0.80f, 0.52f };
         const Model& model = *mm.model;
@@ -848,6 +939,9 @@ namespace {
                             float n3[3] = { -nn[0], nn[1], nn[2] };
                             for (int k = 0; k < 3; k++) rgba[k] = uint8_t(int8_t(std::clamp(std::lround(n3[k] * 127.0f), -127l, 127l)));
                             rgba[3] = 255;
+                        }
+                        else if (brake) {
+                            rgba[0] = rgba[1] = rgba[2] = rgba[3] = 255;
                         }
                         else if (!part.col.empty()) {
                             for (int k = 0; k < 4; k++) rgba[k] = uint8_t(std::clamp(part.col[v][k] * 255.0f + 0.5f, 0.0f, 255.0f));
@@ -904,6 +998,10 @@ namespace {
                 }
                 flush();
             }
+        }
+        if (brake) { // the model's mode back for what its list draws after the call
+            if (st.has_mode) cmd(st.mode[0], st.mode[1]);
+            cmd(combine[0], combine[1]);
         }
         cmd(0xE3001001, 0x00008000); // the TLUT mode Rush 2's lists leave set (RGBA16)
         cmd(0xDF000000, 0);
@@ -1075,7 +1173,9 @@ namespace {
         std::map<uint32_t, std::vector<uint8_t>> scuffs;               // texels -> scuffed copy
         uint32_t loads_start = 0, loads_end = 0;
         auto place = [&](const TrueColor& s) {
-            auto t = texels_at.find(s.key);
+            // One load list per content and repeat mode (the same image could clamp in one livery and wrap in another).
+            const uint64_t place_key = s.key ^ (uint64_t(s.cm) * 0x9E3779B97F4A7C15ull);
+            auto t = texels_at.find(place_key);
             if (t != texels_at.end()) return t->second;
             align8(out);
             uint32_t at = uint32_t(out.size());
@@ -1091,7 +1191,7 @@ namespace {
             if (loads_start == 0) loads_start = load;
             loads_end = uint32_t(out.size());
             scuffs[at] = s.scuffed;
-            return texels_at.emplace(s.key, std::make_pair(at, load)).first->second;
+            return texels_at.emplace(place_key, std::make_pair(at, load)).first->second;
         };
         for (size_t v = 0; v < it->second.size(); v++) {
             const ModelMod& mm = it->second[v];
@@ -1101,11 +1201,40 @@ namespace {
                 texels.push_back(at);
                 loads.push_back(load);
             }
+            // Its brake lights: a model of their own (<prefix>BRK, rebased by the loader), which each body list calls
+            // through its switch while the car brakes (rush2::car2049::brake_switch).
+            std::string prefix = livery_prefix(int(v) + 1);
+            uint32_t brake_list = 0;
+            if (mm.brake) {
+                // Its texture loads inline, as the hood's: the relocator doesn't enter a called load list.
+                std::vector<uint32_t> brake_texels;
+                for (const TrueColor& s : mm.brake->stand_ins) brake_texels.push_back(place(s).first);
+                float brake_radius = 0.0f;
+                brake_list = emit_model(out, *mm.brake, brake_texels, st, false, brake_radius, nullptr, true);
+                const bool brake_lit[1] = { false }; // white vertex colors, not normals
+                add_model(prefix + "BRK", 1, &brake_list, brake_lit, brake_radius / 16.0f);
+            }
             // Each LOD its own list: the loader rebases a list once per LOD that names it.
             float radius = 0.0f;
             uint32_t lists[4];
-            for (uint32_t l = 0; l < lods; l++) lists[l] = emit_model(out, mm, texels, st, lod_lit[l], radius, &loads);
-            std::string prefix = livery_prefix(int(v) + 1);
+            for (uint32_t l = 0; l < lods; l++) {
+                lists[l] = emit_model(out, mm, texels, st, lod_lit[l], radius, &loads);
+                // The list is the last thing written: its G_ENDDL gives way to the brake light switch.
+                if (brake_list != 0 && out.size() >= 8 && be32(out, uint32_t(out.size() - 8)) == 0xDF000000u) {
+                    out.resize(out.size() - 8);
+                    for (auto [w0, w1] : rush2::car2049::brake_switch(brake_list)) {
+                        add32(out, w0);
+                        add32(out, w1);
+                    }
+                    // The brake list draws unlit: a lit LOD's lighting back after it (a no-op while not braking).
+                    if (lod_lit[l]) {
+                        add32(out, set_lighting[0]);
+                        add32(out, set_lighting[1]);
+                    }
+                    add32(out, 0xDF000000);
+                    add32(out, 0);
+                }
+            }
             add_model(prefix + "FRAME1", lods, lists, lod_lit, radius / 16.0f);
             const bool unlit[1] = { false };
             for (const char* part : rush2::track2049::sheen_parts) add_model(prefix + part, 1, &empty, unlit, 0.5f);
@@ -1220,6 +1349,7 @@ namespace {
 
 // Start of func_800776DC, the mirror walk of an asset slot: the lists as they loaded while it turns triangles over.
 extern "C" void rush2_livery_mirror_begin(uint8_t* rdram, recomp_context* ctx) {
+    rush2::car2049::brake_mirror(rdram, true);
     std::lock_guard lock{ style_mutex };
     if (livery_words.empty()) return;
     for (const auto& [list, words] : livery_words) {
@@ -1234,6 +1364,7 @@ extern "C" void rush2_livery_mirror_begin(uint8_t* rdram, recomp_context* ctx) {
 
 // Its exit (0x800777E8): the liveries' words back.
 extern "C" void rush2_livery_mirror_end(uint8_t* rdram, recomp_context* ctx) {
+    rush2::car2049::brake_mirror(rdram, false);
     std::lock_guard lock{ style_mutex };
     if (!lifted) return;
     lifted = false;
@@ -1256,6 +1387,10 @@ int rush2::car_mods::livery_count(int type) {
 
 int rush2::car_mods::livery_style(uint8_t* rdram, uint32_t profile, int type) {
     int n = livery_count(type);
+    // Test aid: RUSH2_TEST_LIVERY=<style> shows that STYLE on every car with liveries (JUST PLAY has no profile to
+    // keep one in).
+    static const char* test_livery = std::getenv("RUSH2_TEST_LIVERY");
+    if (test_livery != nullptr && n > 0) return std::clamp(std::atoi(test_livery), 0, n);
     if (n == 0 || profile == 0) return 0;
     std::lock_guard lock{ style_mutex };
     load_styles();
@@ -1503,7 +1638,7 @@ namespace {
     bool convert(const std::string& prefix, const std::string& cache_name, uint32_t seed,
                  const std::vector<std::vector<uint8_t>>& glbs, std::shared_ptr<Model>& model, std::vector<uint8_t>& car,
                  std::vector<StandIn>& stand_ins, std::string& error, bool sheen = false,
-                 const std::vector<std::vector<uint8_t>>& hoods = {}) {
+                 const std::vector<std::vector<uint8_t>>& hoods = {}, const std::vector<std::vector<uint8_t>>& brakes = {}) {
         model = std::make_shared<Model>();
         std::vector<uint8_t> pal;
         for (const Rgba& c : car_palette) pal.insert(pal.end(), { c.r, c.g, c.b, c.a });
@@ -1527,6 +1662,17 @@ namespace {
                 model->parts[i].hood = true;
             }
             source = rush2::track_cache::hash(hoods[k].data(), hoods[k].size(), source ^ 0x400Dull);
+        }
+        // Each scheme's brake lights (drawn only while braking, rush2::car2049::brake_marker).
+        for (size_t k = 0; k < brakes.size(); k++) {
+            if (brakes[k].empty()) continue;
+            size_t before = model->parts.size();
+            if (!parse_glb(brakes[k], *model, error)) return false;
+            for (size_t i = before; i < model->parts.size(); i++) {
+                model->parts[i].scheme = int(k);
+                model->parts[i].brake = true;
+            }
+            source = rush2::track_cache::hash(brakes[k].data(), brakes[k].size(), source ^ 0xB4A6Eull);
         }
         std::vector<uint8_t> blob;
         if (rush2::track_cache::load_blob(cache_name, source, blob) && blob.size() >= 8) {
@@ -1665,6 +1811,7 @@ namespace {
             for (const ModelMod& mm : list) {
                 all.push_back(&mm);
                 if (mm.hood) all.push_back(mm.hood.get());
+                if (mm.brake) all.push_back(mm.brake.get());
             }
             for (const ModelMod* m : all) {
                 const ModelMod& mm = *m;
@@ -1769,6 +1916,8 @@ namespace {
             int index = type < types ? first_car_asset + type : rush2::car2049::car_asset(type);
             // The hood camera's hood of each style (H0_L / H2_L, as a Rush 2049 car's HOOD): "hoods", by style.
             const nlohmann::json hoods = j.contains("hoods") && j["hoods"].is_array() ? j["hoods"] : nlohmann::json::array();
+            // Each style's brake lights (rush2::car2049::brake_switch): "brakes", by style.
+            const nlohmann::json brakes = j.contains("brakes") && j["brakes"].is_array() ? j["brakes"] : nlohmann::json::array();
             for (size_t si = 0; si < j["styles"].size(); si++) {
                 const auto& f = j["styles"][si];
                 std::string file = f.is_string() ? f.get<std::string>() : std::string();
@@ -1800,6 +1949,22 @@ namespace {
                     }
                     else {
                         fprintf(stderr, "[livery] %s in %s: %s\n", hood->file.c_str(), m.mod_id.c_str(),
+                                error.empty() ? "unreadable" : error.c_str());
+                    }
+                }
+                std::string brake_file = si < brakes.size() && brakes[si].is_string() ? brakes[si].get<std::string>() : "";
+                if (!brake_file.empty()) {
+                    auto brake = std::make_shared<ModelMod>();
+                    brake->mod_id = m.mod_id;
+                    brake->file = prefix + brake_file;
+                    std::vector<uint8_t> bglb;
+                    error.clear();
+                    if (brake_file.find_first_of("/\\") == std::string::npos && read_mod_file(m, brake->file, bglb) &&
+                        load_model_mod(bglb, *brake, error, true)) {
+                        mm.brake = brake;
+                    }
+                    else {
+                        fprintf(stderr, "[livery] %s in %s: %s\n", brake->file.c_str(), m.mod_id.c_str(),
                                 error.empty() ? "unreadable" : error.c_str());
                     }
                 }
@@ -1854,7 +2019,8 @@ namespace {
     // A new car's .json. schemes: its glbs (file names in rush2/new_cars/), the "schemes" list, empty without one.
     // hoods: the "hoods" list (the hood camera's hood per scheme, or of the car), empty without one.
     bool read_new_car(const std::vector<uint8_t>& text, rush2::car2049::ModCar& spec, std::vector<std::string>& schemes,
-                      std::vector<std::string>& hoods, std::string& error) {
+                      std::vector<std::string>& hoods, std::vector<std::string>& brakes, std::string& logo_file,
+                      std::string& error) {
         nlohmann::json j = nlohmann::json::parse(text.begin(), text.end(), nullptr, false);
         if (!j.is_object()) {
             error = "the .json isn't a JSON object";
@@ -1912,6 +2078,45 @@ namespace {
             return false;
         }
         for (float& s : spec.wheel_scale) s = std::clamp(s, 0.0f, 3.0f);
+        if (j.contains("no_wheels")) {
+            if (!j["no_wheels"].is_boolean()) {
+                error = "\"no_wheels\" is true or false";
+                return false;
+            }
+            spec.wheels_hidden = j["no_wheels"].get<bool>();
+        }
+        if (j.contains("no_wings")) {
+            if (!j["no_wings"].is_boolean()) {
+                error = "\"no_wings\" is true or false";
+                return false;
+            }
+            spec.wings_hidden = j["no_wings"].get<bool>();
+        }
+        for (const auto& [key, flag] : { std::pair<const char*, bool*>{ "no_skid_marks", &spec.marks_hidden },
+                                         std::pair<const char*, bool*>{ "no_wheel_dust", &spec.dust_hidden } }) {
+            if (!j.contains(key)) continue;
+            if (!j[key].is_boolean()) {
+                error = std::string("\"") + key + "\" is true or false";
+                return false;
+            }
+            *flag = j[key].get<bool>();
+        }
+        if (j.contains("round_shadow")) {
+            if (!j["round_shadow"].is_number() || j["round_shadow"].get<double>() < 0.0) {
+                error = "\"round_shadow\" is a radius in feet";
+                return false;
+            }
+            spec.shadow_radius = std::min(j["round_shadow"].get<float>(), 20.0f);
+        }
+        // The car select's name logo: a 128 x 32 image in rush2/new_cars/ (read by load_new_cars into spec.logo).
+        logo_file.clear();
+        if (j.contains("logo")) {
+            logo_file = j["logo"].is_string() ? j["logo"].get<std::string>() : std::string();
+            if (logo_file.empty() || logo_file.find_first_of("/\\") != std::string::npos) {
+                error = "\"logo\" is an image file name in rush2/new_cars/";
+                return false;
+            }
+        }
         if (j.contains("box")) {
             if (!vec(j["box"], spec.box, 4)) {
                 error = "\"box\" needs [front, rear, half width, height] in feet";
@@ -2048,6 +2253,24 @@ namespace {
                 hoods.push_back(file);
             }
         }
+        // The brake lights, drawn only while the car brakes: one glb per scheme, or one for the car.
+        brakes.clear();
+        if (j.contains("brakes")) {
+            const auto& list = j["brakes"];
+            size_t want = std::max<size_t>(1, schemes.size());
+            if (!list.is_array() || list.size() != want) {
+                error = "\"brakes\" needs a list of " + std::to_string(want) + " .glb files (one per scheme)";
+                return false;
+            }
+            for (const auto& f : list) {
+                std::string file = f.is_string() ? f.get<std::string>() : std::string();
+                if (file.find_first_of("/\\") != std::string::npos) {
+                    error = "\"brakes\" entries are .glb file names in rush2/new_cars/ (\"\" for none)";
+                    return false;
+                }
+                brakes.push_back(file);
+            }
+        }
         return true;
     }
 
@@ -2082,14 +2305,18 @@ namespace {
             }
             const std::string base = "rush2/new_cars/" + f.id;
             std::vector<uint8_t> text;
-            std::vector<std::vector<uint8_t>> glbs, hood_glbs;
-            std::vector<std::string> scheme_files, hood_files;
+            std::vector<std::vector<uint8_t>> glbs, hood_glbs, brake_glbs;
+            std::vector<std::string> scheme_files, hood_files, brake_files;
+            std::string logo_file;
             rush2::car2049::ModCar spec;
             std::string error;
             if (!read_mod_file(mods[f.mod], base + ".json", text)) {
                 error = "can't read " + f.id + ".json";
             }
-            else if (read_new_car(text, spec, scheme_files, hood_files, error)) {
+            else if (read_new_car(text, spec, scheme_files, hood_files, brake_files, logo_file, error)) {
+                if (!logo_file.empty() && !read_mod_file(mods[f.mod], "rush2/new_cars/" + logo_file, spec.logo)) {
+                    error = "can't read " + logo_file;
+                }
                 if (scheme_files.empty()) scheme_files.push_back(f.id + ".glb");
                 for (const std::string& file : scheme_files) {
                     glbs.emplace_back();
@@ -2101,6 +2328,13 @@ namespace {
                 for (const std::string& file : hood_files) {
                     hood_glbs.emplace_back();
                     if (!file.empty() && !read_mod_file(mods[f.mod], "rush2/new_cars/" + file, hood_glbs.back())) {
+                        error = "can't read " + file;
+                        break;
+                    }
+                }
+                for (const std::string& file : brake_files) {
+                    brake_glbs.emplace_back();
+                    if (!file.empty() && !read_mod_file(mods[f.mod], "rush2/new_cars/" + file, brake_glbs.back())) {
                         error = "can't read " + file;
                         break;
                     }
@@ -2119,9 +2353,11 @@ namespace {
             c.hash = rush2::track_cache::hash(text.data(), text.size(), 0);
             for (const auto& g : glbs) c.hash = rush2::track_cache::hash(g.data(), g.size(), c.hash);
             for (const auto& g : hood_glbs) c.hash = rush2::track_cache::hash(g.data(), g.size(), c.hash ^ 0x400Dull);
+            for (const auto& g : brake_glbs) c.hash = rush2::track_cache::hash(g.data(), g.size(), c.hash ^ 0xB4A6Eull);
+            c.hash = rush2::track_cache::hash(spec.logo.data(), spec.logo.size(), c.hash ^ 0x1060ull);
             c.key = c.mod_id + "/" + f.id + "/" + std::to_string(c.hash);
             if (!convert("NC" + std::to_string(n + 1), "newcar_" + std::to_string(n + 1), uint32_t(64 + n), glbs, c.model,
-                         c.car, c.stand_ins, error, true, hood_glbs)) {
+                         c.car, c.stand_ins, error, true, hood_glbs, brake_glbs)) {
                 fprintf(stderr, "[newcar] %s in %s: %s\n", f.id.c_str(), mods[f.mod].mod_id.c_str(), error.c_str());
                 slot--;
                 continue;
@@ -2286,6 +2522,9 @@ namespace {
                 if (s.scuffed != s.texels) scuffed[s.offset] = s.scuffed; // unpainted: nothing to scuff
             }
             size_t car_bytes = c.car.size();
+            rush2::car2049::set_mod_car_game(n, c.mod_id == rush2::arcade2049::car_mod_id ? rush2::car2049::ModGame::Rush2049
+                                                : c.mod_id == rush2::sfrush_ps1::mod_id    ? rush2::car2049::ModGame::SFRush
+                                                                                           : rush2::car2049::ModGame::Custom);
             rush2::car2049::set_mod_car(rdram, n, std::move(c.car), "NC" + std::to_string(n + 1), scuffed, c.spec);
             printf("[newcar] %s (%s) from %s as type %d: %zu triangles, %zu textures, %d scheme(s), %zu KB, based on %s\n",
                    c.spec.name.c_str(), c.id.c_str(), c.mod_id.c_str(), rush2::car_types::first_mod + n,

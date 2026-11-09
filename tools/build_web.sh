@@ -20,9 +20,9 @@
 #      rt64: what both add beside each other (Rush 2's present profiling mark beside the web's phase timer, its
 #      Variable frame rate's timeline kept per game frame where the web draws a frame's workloads together (the
 #      frame's rate its last workload's, its place on the timeline when that one came, the next frame there once it
-#      has ended or the queue is full, as the web's newerWorkloadQueued() has it), its car reflection and ambient
-#      occlusion shaders
-#      among the WGSL ones, its sampleTexture LOD arguments and coverage output beside the web's per-draw tiles and
+#      has ended or the queue is full, as the web's newerWorkloadQueued() has it), its car reflection, ambient
+#      occlusion and sky fog shaders among the WGSL ones, in rt64_rsp.cpp its Two-Sided Walls copy of a culled wall
+#      made before the web's test for triangles behind the camera, whose facing test leaves the copy unculled, its sampleTexture LOD arguments and coverage output beside the web's per-draw tiles and
 #      decal depth, the coverage output left out of a page's shaders, as RasterPS.hlsl says, and in CMakeLists.txt Rush 2's
 #      shaders without it for blended draws (NO_COVERAGE) built only where the build isn't WGSL's); in TextureSampler.hlsli the web's texel loads keep Rush 2's rule that a generated mipmap level
 #      and a region of a larger image are read by the tile, and that a filter neighbour past a region reads the

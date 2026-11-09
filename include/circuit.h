@@ -5,6 +5,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace recompui {
     class Element;
@@ -19,8 +21,8 @@ namespace rush2::ui {
 namespace rush2::circuit {
     constexpr int stock_length = 28;    // Rush 2's circuit: 28 races.
     // Track select ids a circuit can pick from: Rush 2 0-6, CRASH 8 and PIPE 9 (off by default), 2049 12-17, SF Rush
-    // 18-24, California Speed 64-79.
-    constexpr int course_ids = 80;
+    // 18-24, California Speed 64-79, the 2049 race tracks' Dreamcast versions 249-254 (custom tracks go by folder).
+    constexpr int course_ids = 255;
 
     // Registers the hidden choices (circuit.json). Call before recompui::config::finalize().
     void init_config();
@@ -33,9 +35,19 @@ namespace rush2::circuit {
     void add_section(recompui::Element* parent, const TextShower& text_shower,
                      std::shared_ptr<rush2::ui::ExpandPanel> panel = nullptr);
 
+    // The full name of race track t of Rush 2 (0-9), Rush 2049 (12-17), SF Rush (18-24) or California Speed (64-79),
+    // or "" for any other id (a Dreamcast version 249-254 too: it is its 2049 course's version).
+    std::string track_name(int t);
+
     // Game thread. The current circuit's (0x800D3E40's) length in races, and whether it may pick track t.
     int length(uint8_t* rdram);
     bool course_chosen(uint8_t* rdram, int t);
+    // Game thread. The races a circuit generated, kept with its record (custom tracks by folder) so they stay the same
+    // while the enabled mods change, or before they are loaded (an arcade mod rebuilt at launch): recorded_race gives
+    // race `race`'s track select id and direction bits (false when none is kept, its custom track isn't loaded, or the
+    // circuit is another machine's), record_races keeps races 0.. as (track, direction bits).
+    bool recorded_race(uint8_t* rdram, int race, int& track, int& direction);
+    void record_races(uint8_t* rdram, const std::vector<std::pair<int, int>>& races);
 
     // Accurate Circuit Review (General tab): the victory screen after a circuit shows its races, in order, each with
     // the car player 1 raced in it, racing or wrecked by the place there. Read when that screen starts.

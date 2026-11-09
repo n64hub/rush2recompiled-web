@@ -841,7 +841,7 @@ std::string pack_database(const std::vector<PackTexture>& textures) {
             out += first ? "\n        { \"path\": " : ",\n        { \"path\": ";
             first = false;
             append_json_string(out, path);
-            out += ", \"hashes\": { \"rt64\": \"" + key_name(hash) + "\" }, \"shift\": \"half\" }";
+            out += ", \"hashes\": { \"rt64\": \"" + key_name(hash) + "\" }, \"shift\": \"" + texture.shift + "\" }";
         }
     }
     out += "\n    ]\n}\n";

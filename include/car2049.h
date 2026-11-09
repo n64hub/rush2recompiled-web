@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,9 @@ namespace rush2::car2049 {
     void set_body_car(uint8_t* rdram, int type, std::vector<uint8_t> car, const std::string& prefix,
                       const std::map<uint32_t, std::vector<uint8_t>>& scuffed);
     void clear_body_car(uint8_t* rdram, int type, const std::vector<uint8_t>& own);
+    // Whether race car `car` (0-7) shows its damage as the port's generated dents (rush2_car49_dent): a one-body car
+    // (Rush 2049, California Speed, a mod car) or a car mod livery's body. False for Rush 2's panel cars. Game thread.
+    bool generated_damage(uint8_t* rdram, int car);
     // A car mod livery's body (src/car_mods.cpp, docs/car_mods.md#liveries): model `prefix`FRAME1 of car container
     // `car` and its sheen layers, damaged as a one-body car's (set_body_car) by the panels of a car showing it (the copy
     // rush2::car_mods::livery_body names): dented, and each texture load of the body (lists at loads_start..loads_end,
@@ -112,6 +116,19 @@ namespace rush2::car2049 {
     constexpr uint32_t scheme_marker(int scheme, bool end) {
         return 0x5C4E0000u | (uint32_t(scheme) << 1) | (end ? 1u : 0u);
     }
+    // A mod car's or livery's brake lights (its .json's "brakes", issue #44): each scheme's are a list of their own,
+    // named as a model so the loader rebases it (the mirror walk turns it over through that model once). The body's
+    // lists end the scheme's block with brake_switch: a G_NOOP (brake_marker(1)) that the car's copy turns into a
+    // G_DL call to that list while the car brakes (rush2_car49_dent), then a G_NOOP holding the list's file offset in
+    // its low 24 bits (brake_marker(2)). Both start off, so a copy just loaded and the car select's previews are unlit.
+    constexpr uint32_t brake_marker(int which) {
+        return 0x5C4F0000u | uint32_t(which);
+    }
+    inline std::array<std::pair<uint32_t, uint32_t>, 2> brake_switch(uint32_t list) {
+        return { { { 0u, brake_marker(1) }, { list & 0xFFFFFFu, brake_marker(2) } } };
+    }
+    // Opens the brake light blocks branched past for the mirror walk (begin), closes them again after.
+    void brake_mirror(uint8_t* rdram, bool begin);
     struct ModCar {
         std::string name;              // the car select logo's text
         int base = 0;                  // Rush 2 type 0-21
@@ -132,6 +149,12 @@ namespace rush2::car2049 {
         std::vector<std::pair<uint32_t, int>> table_bytes;     // per-type byte table (Rush 2 address), every row
         int top_gear = -1;             // descriptor +0xE0
         bool tires_2049 = false;       // Rush 2049's tire curves (front, rear) in place of the base car's
+        bool wheels_hidden = false;    // "no_wheels": no wheels drawn (the PS1 SF Rush UFO), whatever TIRE SIZE says
+        bool wings_hidden = false;     // "no_wings": the wings work but aren't drawn (src/rush2049/wings_render.cpp)
+        bool marks_hidden = false;     // "no_skid_marks": its wheels lay no tire marks (src/surface_fx.cpp)
+        bool dust_hidden = false;      // "no_wheel_dust": its wheels throw no dust, smoke or spray (src/surface_fx.cpp)
+        float shadow_radius = 0.0f;    // "round_shadow": a round shadow this many feet across the middle (src/mod_car_shadow.cpp); 0: the game's
+        std::vector<uint8_t> logo;     // "logo": the car select name logo, an encoded 128 x 32 image; empty: lettered
     };
     // Mod car n from the car container `car` (as set_body_car's), parts named `prefix` (at most 7 characters).
     void set_mod_car(uint8_t* rdram, int n, std::vector<uint8_t> car, const std::string& prefix,
@@ -140,6 +163,26 @@ namespace rush2::car2049 {
     int car_index(const std::string& name);
     // Takes mod car n off the car select (its mod was turned off).
     void clear_mod_car(uint8_t* rdram, int n);
+    // The game mod car n comes from: one of the app's own mods, matched by the mod's id so other mods can't claim it
+    // (src/car_mods.cpp sets it with the car): the Rush 2049 arcade car mod (rush2::arcade2049::car_mod_id), listed
+    // right after the 2049 cars (append_to_car_list) and filed under Rush 2049, or the PlayStation SF Rush mod
+    // (rush2::sfrush_ps1::mod_id), listed after Rush 2's cars and filed under SF Rush. Other mods' cars are Custom.
+    enum class ModGame { Custom, Rush2049, SFRush };
+    void set_mod_car_game(int n, ModGame game);
+    bool mod_car_from_2049(int type);
+    bool mod_car_from_sfrush(int type);
+    // Whether car type `type` is a mod car drawn without wheels (ModCar::wheels_hidden).
+    bool mod_car_wheels_hidden(int type);
+    // Car type `type`'s round shadow radius in feet (ModCar::shadow_radius), 0 for the game's own shadow.
+    float mod_car_shadow_radius(int type);
+    // Whether car type `type` is a mod car whose wings aren't drawn (ModCar::wings_hidden).
+    bool mod_car_wings_hidden(int type);
+    // Whether car type `type` is a mod car whose wheels lay no tire marks / throw no particles.
+    bool mod_car_marks_hidden(int type);
+    bool mod_car_dust_hidden(int type);
+    // Every car type in the car select's order: Rush 2's, the 2049 cars, the arcade car mod's, then the Cal Speed
+    // cars and the other mods' (append_to_car_list, and the unlock system's list, src/unlocks.cpp).
+    std::vector<int> list_order();
     // Mod car n's name, empty when no mod fills the slot.
     std::string mod_car_name(int n);
     // Online races (src/car_mods.cpp lend_slot, docs/online.md#mod-cars): a mod car's type number is part of the race's

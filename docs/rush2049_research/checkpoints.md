@@ -43,10 +43,98 @@ Civic forward is granted about 5% less than its real lanes' pace, and Marina for
 (179) has four equal lanes (92 s) and is fine. Presidio b lanes run 186-224 s, which still needs a look: some lanes
 may hold AI stop points.
 
+**Fix (2026-11-03, report: "Marina doesn't have long enough checkpoints"):** `path_race_time`
+(`src/rush2049/track2049.cpp`) now gives each stretch the time of its **slowest** lane: it walks every lane between
+the header copy's lane crossings (checkpoint +0x22 slots 1-4) at the mapped lane speeds, and each checkpoint's
+extensions are multiplied by max(the 139.3 scale, slowest lane ÷ lane 0) for that stretch; the start time by the same
+ratio over the whole lap. Rush 2's own paths are untouched (2049 tracks only), and where a path's lanes agree nothing
+changes. The average of the lanes was rejected: Marina f's three flat lanes pull it to 61 s, below the 62 s the 139.3
+scale already gave. Per lap before the difficulty factor, Rush 2 speeds:
+
+| path | forward | backward |
+|---|---|---|
+| Marina | 58 → 66 (+14%) | 0 |
+| Haight | 0 | 0 |
+| Civic | 82 → 90 (+10%) | 0 |
+| Metro | 114 → 132 (+16%) | 120 → 124 (+3%) |
+| Mission | 92 → 99 (+8%) | 0 |
+| Presidio | 214 → 216 (+1%) | 206 → 257 (+25%: lanes 1-3 hold a 26-28 mph stretch lane 0 skips) |
+
+Grip was checked too: capped to 3.3 g (what Rush 2's circuit lanes ask for) with 40 ft/s² braking, 2049 lanes lose
+2-5% a lap, Rush 2's circuits about 1% and its Alcatraz and LA about 6%, so the lanes' corner speeds aren't the
+shortfall. Scripts: `tmp/stretch_times.py`, `tmp/lane_g.py` (one-off).
+
 The arcade Civic (custom track `civic_arcade`, no scale, lane 0 = `AIPATH_lane1`) is granted 87 s per lap, the same
 as `AIPATH_main` and `lane4`. `lane2`/`lane3` lap in 106 s only because they hold a speed-1 AI stop point. Both
 Civics' real lanes average about 137-139 mph (Rush 2 mph), at the fast end of Rush 2's tracks (125-148), on a
 city layout whose lanes were tuned for 2049 cars.
+
+### 0.2 Measured: drone pace against the granted time (2026-11-05, report: "out of checkpoint time in 2nd or 3rd")
+
+`func_800924E4` in full: pass 1 writes each checkpoint's +0x1E from the arm checkpoint round to the finish, pass 2
+each +0x20 from the finish round to the finish, both as lane 0's time (point speed x 1.4666667 ft/s, truncated).
+The start time is the first checkpoint's +0x1E + 10 + (the sum of every +0x20) / 30, and that lap/30 share is also
+added to the arm checkpoint's +0x20. The difficulty factor f = 1 + (5 - d) x 0.075 is applied when time is added.
+
+Sim races (`tools/test_race.py T --drones 5 --laps 2 --turbo --config cheats.cheat_no_game_timer=true --config
+general.drone_catch_up=false`; drones' gate times from the samples' `next_cp`; granted times read with `--peek` on the
+header copy 0x8010BCE8, without which the watcher takes no samples). Difficulty 2 (JUST PLAY's default, f 1.225):
+
+| track | start (x f) | granted per lap | drone pace / granted | slack at drone pace (d 2) |
+|---|---|---|---|---|
+| Las Vegas (0) | 32 (39.2) | 116 | 1.04 slower | +18% |
+| Rush 2049 Marina (12) | 20 (24.5) | 68 (after §0.1) | 0.88 (faster) | +39% |
+| Marina Arcade (custom) | 23 (28.2) | 59 | 1.06 slower | +16% |
+| Cal Speed 64 (point to point) | 64 (78.4) | first stretch 45 | about 1.05 slower | about +17% |
+
+So the arcade lanes, after the converter's / 1.2, fit Rush 2 cars about as well as Rush 2's own lanes. At drone pace
+the slack is f / 1.06 - 1 on Marina Arcade: d 3 +8%, d 4 +1%, d 5 -6% (and -4% on Las Vegas). Cal Speed's large
+start is its long first stretch, not looser timing. With Drone Cheating on, drones ahead ease off toward the player,
+so being 2nd or 3rd doesn't mean the player is at the drones' pace.
+
+Presidio Arcade forward: all four arcade AI tables ran down from about 45 mph to 1-2 mph over lane points 330-430,
+then climbed back like a car accelerating from a stop. That was the arcade's grid: its lap is a run-in the converter
+had closed with a 6,000 ft straight (granted 183 s for the first stretch, and the drones turned about and wrecked at
+the junction). Fixed by converting it as a run-in circuit, and Civic Arcade's standing-start lane speeds (12-37 mph at
+points 1-3) lifted; see docs/arcade2049.md#dpathrom-the-drones-paths.
+
+### 0.9 One rule: the race time model
+
+(2026-11-05, supersedes §0's 139.3 scale and §0.1's slowest-lane rule, both removed.) Rush 2's rule grants lane 0's
+drive time at its own speeds, which on Rush 2's 14 paths is 0.978 (0.90-1.07) of the best lap Rush 2's average car
+can drive on lane 0 (tools/calspeed/ai_pace.py's model: STANDARD torque curve, the 21 cars' mean mass 108.36 slugs,
+torque scales 1.820 / 1.842 / 1.885, gears 3.095 / 1.754 / 1.254 / 0.956, final drive 3.3, 2.6 g on the lane's
+60 ft curve, 40 ft/s^2 braking). Other games' lanes give 0.78-1.15 (Rush 2049 / 1.2: 0.86-1.13; arcade: 0.87-1.15;
+California Speed / 1.2: 0.78-1.14). So every Rush 2049, California Speed and custom race track (not Rush 2's, not SF
+Rush's, not a custom track with its own `checkpoint_time`) is timed by `src/race_time_model.cpp`: each stretch gets
+0.978 x the model's time for it (/ 1.2 with Rush 2049 car speeds), then Rush 2's start rule. A lane whose ends are
+over 1,000 ft apart (run-in, point to point) starts from a standstill.
+
+func_800924E4's start rule in full: start = checkpoint 0's lap-1 time + 10 + (the loop's later-lap times summed) /
+30, and the arm checkpoint (header +6) also gets that 30th on its later-lap time; each stretch is truncated.
+
+Built with each track's conversion (`rush2::race_time::fill`, called by track2049.cpp, calspeed_convert.cpp and
+track_mod.cpp before `save_2049`) into `ConvertedTrack::lane_time` (cumulative seconds per lane 0 point, both
+directions), which the disk cache keeps (format 4): the launch's build pass makes it, a race only reads it
+(`rush2::race_time::apply` at 0x80093298). Log line per race: `[racetime] model lap ... start ..., checkpoints ...`.
+C++ model lap on Rush 2049 Marina forward 64.6 s against the Python model's 64.55.
+
+Sims (5 drones, catch-up off, difficulty 2), seconds before the 1.225 factor:
+
+| track | start before -> after | lap before -> after | drones' lap / stretches |
+|---|---|---|---|
+| Las Vegas (Rush 2, unchanged) | 32 | 116 | 0.96 of its grant |
+| Rush 2049 Marina | 20 -> 17 | 68 -> 60 | about 60 |
+| Marina Arcade | 23 -> 26 | 59 -> 61 | about 62.5 |
+| Rush 2049 Presidio | 38 -> 42 | 143 -> 126 (loop) | CP1-CP3 64 s (granted 68) |
+| Presidio Arcade | 42 -> 42 | 123 -> 127 (loop) | CP1-CP2 28-33 s (granted 32) |
+| Cal Speed track 1 (point to point) | 64 -> 56 | race 186 -> 181 | CP1-CP2 30.5-33.5 s (granted 34) |
+
+Known limit (accepted): the model's corners are flat at 2.6 g. On Rush 2049 Presidio's CP1-CP2 (flat in height) the
+drones corner at 4.5 g at the 90th percentile (2.2-2.5 g median), the Rush 2 car among them as much as the 2049 cars,
+so banking or wall contact lets them through corners the model takes at 84-102 mph at 130; the stretch is granted
+about 15% more than the drones need. Generous rather than tight, so left as is; reading bank angles from the
+collision at `fill` time would tighten it.
 
 ## 1. Summary (superseded by §0: the 90 / 45 values below are overwritten from the AI lanes; they are NOT the race times)
 

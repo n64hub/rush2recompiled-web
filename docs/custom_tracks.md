@@ -18,6 +18,7 @@ found and what is wrong (see [Checking your track](#checking-your-track)), so re
 - [track.toml](#tracktoml)
 - [Sky](#sky)
 - [Moving objects](#moving-objects)
+- [Finish banner](#finish-banner)
 - [Billboards and props](#billboards-and-props)
 - [Point to point](#point-to-point)
 - [Run-in circuits](#run-in-circuits)
@@ -219,6 +220,13 @@ direction, put it in the middle of the road, and scale its X so the red arrow ju
 scale is half the gate's width. Leave the Empty's Display Size at 1, because the exported file keeps the scale but not
 the display size. Move every marker into place: markers left at the origin are reported as errors.
 
+A car counts a gate when it crosses the marker's line within its half width (seen from above). If your track has a
+shortcut or a second road that passes beside a gate (a tunnel underneath, a rooftop alongside), give the marker a
+custom property `pass_radius`: how far from the marker, in meters, a car may cross its line and still count. The X
+scale still sets where the AI path is taken to cross it. Keep it short of any other stretch of road that crosses the
+line before the gate is due, or the gate counts early there; `python tools/gate_pass.py track.glb` replays the game's
+gate test along your AI path and lanes and reports gates counted on the wrong stretch (WIDE) or missed.
+
 | Name | What |
 |---|---|
 | `FINISH` | The start/finish line. The grid lines up behind it. On a point-to-point track, the finish line only. |
@@ -306,6 +314,7 @@ run_in      = false                   # true: starts on a run-in into the loop: 
 [race]
 # Timer (with checkpoints on). Leave these out and the game works it out from the AI path, as stock Rush 2 does.
 start_time      = 45                  # seconds on the clock at the start; crossing the finish line adds it again
+finish_time     = 40                  # optional: what crossing the finish line adds instead of start_time
 checkpoint_time = [[20, 18], [22, 20]] # per checkpoint, CHECKPOINT_1 first: seconds added [first lap, later laps]
 best_times      = [95, 100, 105]      # the records table's starting entries are made from the fastest
 
@@ -324,13 +333,15 @@ like = "dirt"
 drag = 14
 
 [audio]
-music = "track5"           # default song: "track1" to "track8" (left out: each race a random one of every song, any game's, switched on in the Sound tab); players can still change it
+music = "track5"           # the track's own song: see Music below (left out: each race a random one of every song, any game's, switched on in the Sound tab); players can still change it
 
 [menu]
 logo    = "logo.png"
 preview = "preview.png"
 diorama = "diorama.glb"
 after   = "rush2049"      # where the track select lists it: see Track select art
+# variant_of = "rush2049:marina"   # instead: a version of another track, sharing its entry: see Versions
+# variant    = "NIGHT"             # what the version button shows for it
 ```
 
 - `checkpoint_time` has one entry per checkpoint. Rush 2 keeps one time for the first lap and one for every lap
@@ -339,6 +350,30 @@ after   = "rush2049"      # where the track select lists it: see Track select ar
 - `[surfaces.mud]` and `[movers.lift]` above are examples: delete them, or use `COL_MUD_*` meshes and a `MOVE_lift`
   object in Blender.
 - The lap count and mirror mode are the players' choice and aren't set here.
+
+### Music
+
+`[audio] music` is the track's own song: the one its races play while the player's Race Music for Rush 2 (Settings >
+Sound) is Original. It can be a song file of your own in the track's folder, or a song the game already has.
+
+```toml
+[audio]
+music = "theme.ogg"                         # a file in the track's folder: Ogg Vorbis (.ogg) or WAV (.wav)
+# music = ["theme.ogg", "night.ogg"]        # several: the first is the track's song, SKIP TRACK plays the others
+# music = "track5"                          # Rush 2's songs, "track1" to "track8" in its track select order
+# music = "r49dc_5"                         # any song in the Sound tab, by its key (the song_<key> entries of sound.json)
+```
+
+- OGG files can be any sample rate, mono or stereo. WAV files can be 8, 16, 24 or 32-bit PCM or 32-bit float, mono,
+  stereo or 5.1 (folded to stereo). A song loops from its start, or from its `LOOPSTART` comment (in samples, as many
+  game music mods set it) in an OGG.
+- With a list, the first entry is the track's song and SKIP TRACK in the pause menu goes through the others (then
+  shuffles). Every file is listed in the Sound tab's Custom Tracks column (with a play button to hear it) and can come
+  up in Shuffle All.
+- A track that is a version of a course ([Versions](#versions)) plays its own song when it is raced, and its song
+  joins the course's: SKIP TRACK in the pause menu goes through the songs of the course's versions (N64, Dreamcast,
+  arcade, custom) before shuffling. A version without music plays the course's song.
+- Level your songs like the games' (about -16 LUFS integrated): the game plays them as they are.
 
 ## Sky
 
@@ -478,6 +513,19 @@ The report has a line per moving object (`MOVE_lift: 2 keys over 4.00 s, ride, 2
 it.`) and warns about a `MOVE_` object without an animation (it stays put, as ordinary track) and a `[movers.<name>]`
 with no object of that name.
 
+## Finish banner
+
+A banner over the finish line that reads CHECKPOINT and changes to FINISH on the last lap, as Rush 2's own tracks do:
+
+1. **Model the banner as a mesh named `FINISH_BANNER`** (or several, `FINISH_BANNER.001` ...), over the `FINISH` marker.
+2. **Give its sign faces a material named `CHKPNT`**: the picture shown until the last lap.
+3. **Add a material named `FINISH`** with the last lap's picture, laid out like CHKPNT's (same size; the faces keep
+   their UVs). Blender only exports materials in use, so put it on a mesh named `FINISH_BANNER_LAST`, which isn't drawn.
+
+When a player passes the last checkpoint before the finish on the last lap, the game draws FINISH's picture in place of CHKPNT's (Rush 2's
+track_finish_line_setup_8008F080, in both directions). The report says `Finish banner: ...`, and warns when CHKPNT or
+FINISH is missing or their pictures differ in size.
+
 ## Billboards and props
 
 ### Billboards
@@ -500,7 +548,8 @@ Meshes named `PROP_<kind>_<name>` react when a car hits them, the way Rush 2049'
 Put each prop's origin at its foot: a sign tips over about it. Its location, rotation and scale are kept. Give a prop
 a custom property `billboard` set to True (Object Properties > Custom Properties) to make it a billboard too: it faces
 the camera and keeps facing it as it flies off, which suits flat cones. Every prop is back in place at the start of
-each race. There are no collectibles (coins, keys) on custom tracks.
+each race. There are no collectibles (coins, keys) on custom tracks (the game's own arcade versions of the stock
+courses carry their course's: docs/arcade2049.md#coins-and-keys-on-the-arcade-versions).
 
 Props react only when the Rush 2049 ROM is set in the Games tab, because their movement and sounds come from
 Rush 2049. Without it they stand still and cars drive through them.
@@ -509,8 +558,9 @@ Rush 2049. Without it they stand still and cars drive through them.
 
 Set a material's Blend Mode to **Alpha Blend** (glTF BLEND) for glass, glows, smoke or soft clouds. It is drawn
 see-through by its texture's alpha after the solid scenery, the way Rush 2 draws its own windows. This works on
-scenery, billboards, props, moving objects and the `SKY`. See-through surfaces aren't sorted against each other, so
-two that overlap on screen can show in either order: keep them apart, or use Alpha Clip where hard edges will do.
+scenery, billboards, props, moving objects and the `SKY`. Their mostly solid parts (alpha of one half and up) hide
+what is behind them, so a soft-edged tree in front of a glow or a truss stays in front; the faint parts (soft edges,
+glow halos) aren't sorted against other see-through surfaces, so a far one drawn later can still show through them.
 
 ## Point to point
 
@@ -591,15 +641,16 @@ The track select shows a track's logo and a model of it, as it does for the stoc
 |---|---|---|
 | `logo.png` | 128 x 32 px, or any 4:1 picture (it is fitted) | No name is shown, so include one |
 | `diorama.glb` | Any size: it is fitted to the stock dioramas' size | Rush 2049's route preview |
-| `preview.png` | 128 x 128 px | The route preview has no picture behind it |
+| `preview.png` | Any shape, up to 512 x 256 px (larger is shrunk) | The route preview has no picture behind it |
 
 - **Logo:** your track's name as you want it to look, on a clear background (PNG with alpha). It is drawn in full color.
 - **Diorama:** a small model of the track, made by you, exported like the track (glb, textures embedded). It is fitted
   to the stock size (centered, standing on the turntable). Keep it under about 2,400 triangles, like the stock ones;
   the report warns above 4,000.
 - **Route preview:** without a diorama, the track select shows Rush 2049's kind of preview: the AI path as a small tube
-  with a light running round it in the race direction, in front of `preview.png` (a screenshot of your track, for
-  example).
+  with a light running round it in the race direction, in front of `preview.png` (a screenshot or map of your track,
+  for example). The picture keeps its own pixels (up to 512 x 256) and is shown as large as fits between the carousel
+  arrows (224 x 128 of the 320 x 240 screen), so a wide picture is shown wide.
 
 ### Where it is listed
 
@@ -613,9 +664,43 @@ Custom tracks come after the stock and added tracks, in the mod order. `after` i
 Several tracks after the same one keep the mod order. A name that matches nothing leaves the track at the end (the log
 says so). Only the order changes: records, ghosts and saved choices are kept under the track's folder name as before.
 
-For developers: the ids stay 38-63; `build_order` in src/rush2049/track2049_menu.cpp makes the display order, the
+For developers: the ids stay 38-63 and 80-248 (`mod_id`); `build_order` in src/rush2049/track2049_menu.cpp makes the display order, the
 carousel is put in that order once built (0x803AB878) and TRACK left / right takes the track at the new carousel
 position (0x803AC12C).
+
+### Versions
+
+A track can be another version of a course: a night edition, a reworked layout, a remake of a stock track. Its
+versions share one track select entry, and the version button switches between them: X (Square, or J on the
+keyboard), shown under the FILTER prompt with the version's name. The version shown is the one raced, and the last one
+picked is remembered per course.
+
+```toml
+[menu]
+variant_of = "rush2049:marina"   # the course this is a version of
+variant    = "NIGHT"             # what the version button shows for it (up to 6 characters)
+```
+
+| `variant_of =` | A version of |
+|---|---|
+| `"rush2:<name>"`, `"sfrush:<name>"`, `"rush2049:<name>"`, `"calspeed:<name>"` | that game's race track. The name is the track's full name in lower case, with each space or dot as `_`: `"rush2:las_vegas"`, `"rush2:lower_manhattan"`, `"sfrush:golden_gate"`, `"rush2049:presidio"`, `"calspeed:mt_shasta"` |
+| a custom track's folder name | that track (which can itself be a version of something: the chain ends at the course) |
+
+- The stock track's own version shows as STOCK, Rush 2049's and SF Rush's as N64 (and Rush 2049's Dreamcast version as DC, when
+  both the N64 ROM and the disc are installed and Settings > Games > Enabled Source is Both). A custom version without
+  `variant` shows its name, cut to 6 characters (what fits beside the button).
+- A version must be the same kind of track as its course: a race track's versions are race tracks, an arena's are
+  arenas.
+- `after` is ignored for a version: it is listed where its course is.
+- Each version is its own track everywhere else: its own records, ghosts and circuit course entry, kept under its
+  folder name. A version a player can't race (its mod off, the course locked, its game filtered out) leaves the button
+  to the others; the course shows on its own when nothing else is left, still naming its version (a locked Rush 2049
+  course shows ARCADE until it unlocks).
+- A `variant_of` that names nothing, or two tracks naming each other, leaves the track as a track of its own (the log
+  says so).
+
+The Rush 2049 Arcade Tracks mod (Settings > Games > Rush 2049 Arcade) uses this: its versions of the six Rush 2049
+race tracks are each `variant_of = "rush2049:<course>"`, `variant = "ARCADE"`.
 
 ## Textures
 
@@ -741,6 +826,7 @@ Every name, custom property and setting a track can use, on one page. Each links
 | `BILLBOARD_<name>` | Turns to face the camera ([Billboards](#billboards)) |
 | `PROP_KNOCK_*`, `PROP_TIP_*` | Knocked flying or tipped over by cars ([Props](#props)) |
 | `SKY` | Your own sky dome ([Your own sky](#your-own-sky)) |
+| `FINISH_BANNER`, `FINISH_BANNER_LAST` | The finish banner, CHKPNT turning to FINISH on the last lap ([Finish banner](#finish-banner)) |
 | `START_1` to `START_4`, `PICKUP_<kind>` | Arenas only ([Stunt and battle arenas](#stunt-and-battle-arenas)) |
 | `ROAD_SPLINES` | Spline road, for converter tools ([Spline road](#spline-road)) |
 
@@ -754,6 +840,7 @@ Attributes (tick Data > Mesh > Attributes when you export).
 | `COL_*` | `covered` | 0, 1, 2 | Shades the cars on it: 1 a tunnel, 2 lightly covered ([Collision surfaces](#collision-surfaces)) |
 | `MOVE_<name>` | `billboard` | True | Its meshes face the camera as it moves ([Moving billboards](#moving-billboards)) |
 | `PROP_*` | `billboard` | True | The prop faces the camera ([Props](#props)) |
+| `FINISH`, `START`, `CHECKPOINT_n` | `pass_radius` | meters | How far from the marker a car may cross its line and still count ([Markers](#markers)) |
 | `AIPATH_main` | `keep_height` | True | The path keeps its height over every gap ([The AI path](#the-ai-path)) |
 | `AIPATH_main`, `AIPATH_lane*` | attributes `_SPEED`, `_AI_MODE` | mph; 2 or 5 | The computer cars' speed and steering point by point ([The AI path](#the-ai-path)) |
 | `COL_*` | attribute `_SEGMENT` | segment number | Spline road, for converter tools ([Spline road](#spline-road)) |
@@ -764,12 +851,12 @@ Attributes (tick Data > Mesh > Attributes when you export).
 | Section | Settings | See |
 |---|---|---|
 | `[track]` | `name` (required), `author`, `version`, `description`, `type`, `gravity`, `road_hold`, `point_to_point`, `run_in`, `smooth_collision`, `smooth_fold` | [track.toml](#tracktoml), [Smooth collision](#smooth-collision) |
-| `[race]` | `start_time`, `checkpoint_time`, `best_times` | [track.toml](#tracktoml) |
+| `[race]` | `start_time`, `finish_time`, `checkpoint_time`, `best_times` | [track.toml](#tracktoml) |
 | `[look]` | `fog_color`, `sky`, `cloud_scroll`, `sky_parallax` | [Sky](#sky) |
 | `[movers.<name>]` | `mode`, `races`, `start`, `open`, `close`, `open_delay`, `close_delay`, `open_at_start` | [Moving objects](#moving-objects) |
 | `[surfaces.<name>]` | `like`, `drag` | [Custom surfaces](#custom-surfaces) |
 | `[audio]` | `music` | [track.toml](#tracktoml) |
-| `[menu]` | `logo`, `preview`, `diorama`, `after` | [Track select art](#track-select-art) |
+| `[menu]` | `logo`, `preview`, `diorama`, `after`, `variant_of`, `variant` | [Track select art](#track-select-art), [Versions](#versions) |
 
 ## Size limits
 
@@ -781,7 +868,8 @@ Attributes (tick Data > Mesh > Attributes when you export).
 | Track size | about 10 km (32,000 ft) from the origin in any direction | Positions are stored as 16-bit numbers. |
 | Checkpoints | 9 | The game has 10 gates including the finish line. |
 | Custom surfaces | 12 | The collision format's surface slots. |
-| Custom tracks | 26 across all enabled mods | Track select slots. |
+| Custom tracks | 195 across all enabled mods (in mod order; the rest are left out, the log says how many) | The game keeps the track select id in one byte: ids 0-254, and the stock and other games' tracks take 60 of them. |
+| Track select art | about 3.3 MB for all custom tracks' logos and dioramas | The art is loaded into the game's memory with the track select. A logo takes 4.5 KB and a route preview about 10 KB, so 195 tracks fit; authored dioramas can be much larger. Past the room, the later tracks (in mod order) show their logo with no diorama, and the log says how many. |
 
 Vertex counts per object, the number of objects or materials, and name lengths don't matter: the converter splits,
 merges and renames as needed.
@@ -810,10 +898,20 @@ merges and renames as needed.
   `track_mod.cpp` (finding the tracks, the disk cache, full-size textures). `include/track_mod.h` and
   `include/track_mod_runtime.h` hold the interfaces.
 - **Hosting:** a custom track is raced in the HAWAII slot like a Rush 2049 track (`src/rush2049/track2049.cpp`,
-  track cache key 1000 + a hash of the folder), with track select ids 38-63 (`src/rush2049/track2049_menu.cpp`, the
-  tables moved to 0x80310000; the circuit review screen's diorama instances at 0x80311600). Circuits choose custom
+  track cache key 1000 + a hash of the folder), with track select ids 38-63 and 80-248 (`include/track2049.h`
+  `mod_id`/`mod_index`; `src/rush2049/track2049_menu.cpp`, the tables moved to 0x80310000 with room for 256; the
+  circuit review screen's diorama instances at 0x80312C00). The game reads the id byte 0x8010C3F0 unsigned (us.toml
+  turns its lb into lbu, listed by `tools/byte_reads.py 8010C3F0`), so ids past 127 work in its menu code. The carousel's entries keep their place relative to the shown track
+  in a byte too (entry +0x14, up to 254 with more than 128 tracks on one select): its loads at 0x803AB718, 0x803ABB30
+  and 0x803ABB38 are lbu as well, and `rush2_track49_carousel_place` wraps the place the setup stores before reading it
+  (it relied on a signed read going negative). The route
+  previews' spare animation buffers aren't kept in the track select's art (asset 3): the previews on screen borrow them
+  from a pool at 0x80320000 (`lend_buffers`), so 195 previews fit the game heap (`mod_art_room`). Circuits choose custom
   tracks by folder (`src/circuit.cpp`: the config keeps the folders turned off, each circuit the folders it started
-  with). Records: `src/rush2049/track2049_records.cpp` (`{"mod": folder}` courses). Ghosts:
+  with, and the races it generated, custom tracks by folder, so they stay put while the enabled mods change:
+  docs/rush2049_research/menus.md#circuit-races-kept-with-the-circuit). Without an authored diorama, the circuit
+  review's window shows the route turning, without the preview picture
+  (docs/rush2049_research/menus.md#circuit-review-screen-the-diorama-window). Records: `src/rush2049/track2049_records.cpp` (`{"mod": folder}` courses). Ghosts:
   `src/ghost.cpp` (`mod-<folder>` keys).
 - **Arenas:** track.toml `type` (`rush2::track_mod::RaceType`, `race_type()`) puts a custom stunt or battle arena in
   the STUNT1 slot (`stunt_host_slot`) and on the STUNT or BATTLE track select (`mod_type`, `is_arena` in
@@ -952,7 +1050,7 @@ merges and renames as needed.
   itself has since moved (see Scene node table below).
 - **Scene node table:** every section, billboard, prop and moving object's record gets a scene node, and so do the
   cars. The game's table at 0x800D9E90 holds 1,000 (0x38 bytes each, count `scene_node_table_count_800FAE58`, appended
-  with no bound). The arcade Haight (Rush 2049 Arcade, Alcatraz Only off) made 1,045 with its 167 billboards, 80 props
+  with no bound). The arcade Haight (Rush 2049 Arcade) made 1,045 with its 167 billboards, 80 props
   and 117 moving objects: the extra nodes ran over `text_state_stack_a_800E7C50`, whose handler the loading screen
   calls, so its race start jumped to 0x300 and quit every time (and the texture deriver's thread then crashed on the
   exit, which is what the dumps show). The arcade Metro makes 944 and Marina 831 (`race_watch.py --peek 800FAE58
@@ -961,7 +1059,7 @@ merges and renames as needed.
   func_800BC888 through another pointer are excluded), and the game heap starts at 0x80420000 (`src/assets.cpp`;
   3 MB of it was still free in the arcade Metro's race). Interpolation keeps state for every node and its matrix IDs
   hold 12 bits of node index (`src/interpolation.cpp` node_id).
-- **A big track and the heap:** the arcade Presidio (Rush 2049 Arcade, Alcatraz Only off) fills the heap to about
+- **A big track and the heap:** the arcade Presidio (Rush 2049 Arcade) fills the heap to about
   0x80A5EAA0 (`test_race.py --peek 8010C438 --peek 8010C454`: heap low and high). Two things broke there (issue 27).
   `race_preload_car_assets_800A37F4` loads a car's model only if the free heap holds its asset + 0x200, else a smaller
   Rush 2 type's. Its checks read the size table at asset 0x1D + type, which for a Rush 2049 type is a track asset
@@ -972,7 +1070,13 @@ merges and renames as needed.
 - **See-through materials:** BLEND triangles get their own sections (the grid cell is keyed by translucency too),
   whose records have the late-pass flag 0x40000 (drawn after the opaque nodes, as Rush 2's own transparent ones). Every
   list draws its translucent materials last with render mode 0xC8104A50 (fog, then AA z-buffered translucent: Rush 2's
-  own); the SKY list uses 0x00504240 (G_RM_XLU_SURF, both cycles). A stand-in (RGBA16) holds 1-bit alpha only, so
+  own); the SKY list uses 0x00504240 (G_RM_XLU_SURF, both cycles). Outside the SKY each translucent batch is drawn
+  twice (2026-11-05): first `mode_blend_depth` (0xC8104270: the same blend in the opaque z mode with Z_UPD) under alpha
+  compare (G_SETOTHERMODE_L 0xE2001E01 = 1, threshold G_SETBLENDCOLOR alpha 0x80), so its solid texels write depth, then
+  0xC8104A50 with alpha compare off for the soft edges; the list puts the blend color back to Rush 2's 0x10 (the HUD's
+  threshold). Without it, late sections drawn in no order let the arcade Mission's trusses and light strips (BLEND
+  RK_EXPLR_BEAM2, AL_STRTBLUE) paint over nearer soft-edged trees (SPRUCE_01, LUCKYTREE1: BLEND by >5% soft texels).
+  A stand-in (RGBA16) holds 1-bit alpha only, so
   `Texture::blend` makes the full-size image keep its alpha (`track_mod.cpp`; the stand-ins' cache records hold the
   flag from converter version 15).
 - **Far moving objects:** a `MOVE_` object without collision whose mesh reaches past `vertex_reach` (2,000 ft) is
@@ -1020,8 +1124,19 @@ merges and renames as needed.
   arrows, or a 150 ft circle from FINISH; the path's own height and off-road warnings are then left out) or is left
   out past a limit (far or excess collision polygons, oversized triangles, sections past 900). Thin or upright ribbons
   are used as they are (the AI drives the center line).
-- **Full-size textures:** the converter's RGBA16 stand-ins are keyed by `rush2::upscale::rgba16_key`, cached as
-  `trackmod_textures_<key>`, and published through `rush2::derive::set_mod_textures("tracks", ...)`.
+- **Full-size textures:** each RGBA16 stand-in is replaced on screen by its glb image through a texture pack on the
+  disk, written with the conversion (so in the launch build pass), never when a track is entered.
+  `write_textures` (src/track_mod/track_mod.cpp) puts one DDS per stand-in (the image tinted and cut out as the
+  stand-in was, mipmapped, decoded on every core) in `<config>/track_cache/track_textures/<cache key>/`, named by the
+  stand-in's RT64 hash: `rush2::rom2049::dc::replacement_hash`, the hash of the LOADBLOCK `texture_load` draws it with
+  (the Dreamcast pack's load). Its `textures.json` lists hash and file, its `stamp` holds the track's source hash and
+  the build; a cache hit needs a matching stamp (`textures_current`), else the track is converted again.
+  `publish_textures` merges the enabled tracks' lists into `track_textures/rt64.json` (shift `center`, as car mods'
+  images) and hands the folder to RT64 as the generated pack `"tracks"` (`recompui::renderer::set_generated_texture_pack`
+  with an id), which is not a mod: it isn't in the mods menu and can't be turned off. RT64 streams the images from the
+  disk as they're drawn. Until 2026-11-09 the texture deriver made them when first drawn
+  (`set_mod_textures("tracks")`): entering a track threw away every derived replacement, re-read every pack and
+  decoded the track's images one by one, so a track's first race came in low-res for seconds.
 - **Spline road:** `ROAD_SPLINES`' `segments` go into the collision file's SEG section as written (big-endian
   floats, header word 0 = their count); a face whose first vertex's `_SEGMENT` names one gets `CollisionTri::seg`,
   merges only with faces of the same segment, and its polygon gets flag 0x1000 and the segment index after its

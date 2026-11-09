@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 79dfc38..6527f6c 100644
+index 79dfc38..8f33330 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -504,6 +504,8 @@ build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/
@@ -19,7 +19,7 @@ index 79dfc38..6527f6c 100644
  build_compute_shader(rt64 "src/shaders/RSPVertexTestZCS.hlsl")
  build_compute_shader(rt64 "src/shaders/RSPVertexTestZCS.hlsl" "src/shaders/RSPVertexTestZCSMS.hlsl" "-D MULTISAMPLING")
  build_pixel_shader(  rt64 "src/shaders/RtCopyColorToDepthPS.hlsl")
-@@ -550,7 +553,13 @@ build_pixel_shader(  rt64 "src/shaders/VideoInterfacePS.hlsl" "src/shaders/Video
+@@ -550,7 +553,16 @@ build_pixel_shader(  rt64 "src/shaders/VideoInterfacePS.hlsl" "src/shaders/Video
  build_pixel_shader(  rt64 "src/shaders/VideoInterfacePS.hlsl" "src/shaders/VideoInterfacePSPixel.hlsl" "-D PIXEL_ANTIALIASING")
  build_vertex_shader( rt64 "src/shaders/FullScreenVS.hlsl")
  build_vertex_shader( rt64 "src/shaders/Im3DVS.hlsl")
@@ -30,25 +30,31 @@ index 79dfc38..6527f6c 100644
 +build_pixel_shader(  rt64 "src/shaders/AmbientOcclusionPS.hlsl" "src/shaders/AmbientOcclusionPSMS.hlsl" "-D MULTISAMPLING")
 +build_pixel_shader(  rt64 "src/shaders/AmbientOcclusionApplyPS.hlsl")
 +build_pixel_shader(  rt64 "src/shaders/CarReflectionPS.hlsl")
++# Rush 2 recomp: sky fog.
++build_pixel_shader(  rt64 "src/shaders/SkyFogPS.hlsl")
++build_pixel_shader(  rt64 "src/shaders/SkyFogPS.hlsl" "src/shaders/SkyFogPSMS.hlsl" "-D MULTISAMPLING")
  build_pixel_shader(  rt64 "src/shaders/DebugPS.hlsl")
  build_pixel_shader(  rt64 "src/shaders/Im3DPS.hlsl")
  build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
 diff --git a/include/rt64_extended_gbi.h b/include/rt64_extended_gbi.h
-index d387090..112d14d 100644
+index d387090..030f145 100644
 --- a/include/rt64_extended_gbi.h
 +++ b/include/rt64_extended_gbi.h
-@@ -80,7 +80,9 @@
+@@ -80,7 +80,12 @@
  #define G_EX_SETVERTEXSEGMENT_V1        0x000031
  #define G_EX_SETTEXCOORDWRAPPOINT_V1    0x000032
  #define G_EX_SETRECTASPECT_V1           0x000033
 -#define G_EX_MAX                        0x000034
 +#define G_EX_SETFOGFLOAT_V1             0x000034
 +#define G_EX_SETCARREFLECTION_V1        0x000035
-+#define G_EX_MAX                        0x000036
++#define G_EX_SETSKYFOG_V1               0x000036
++#define G_EX_SETSKYDRAW_V1              0x000037
++#define G_EX_SETTWOSIDEDWALLS_V1        0x000038
++#define G_EX_MAX                        0x000039
  
  #define G_EX_ORIGIN_NONE            0x800
  #define G_EX_ORIGIN_LEFT            0x0
-@@ -579,4 +581,23 @@ typedef union {
+@@ -579,4 +584,51 @@ typedef union {
          PARAM(aspect, 2, 0) \
      )
  
@@ -69,6 +75,34 @@ index d387090..112d14d 100644
 +    G_EX_COMMAND1(cmd, \
 +        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETCARREFLECTION_V1, 24, 0), \
 +        PARAM(group, 8, 0) \
++    )
++
++// Marks the 3D draws that follow as a view whose sky is hazed toward the fog color by how much fog a ray at that angle
++// above the horizon passes through (FramebufferRenderer, submitSkyFog): right after the view's last sky draw
++// (gEXSetSkyDraw), every pixel then still at the depth clear. haze is the fog's vertical optical depth (density at the
++// camera times the fog's scale height) in thousandths, 0 to end. Lasts until the next sky fog command.
++#define gEXSetSkyFog(cmd, haze) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETSKYFOG_V1, 24, 0), \
++        PARAM(haze, 16, 0) \
++    )
++
++// Marks the draws that follow as the sky (on = 1) or not (0), for gEXSetSkyFog. Lasts until the next sky draw command.
++#define gEXSetSkyDraw(cmd, on) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETSKYDRAW_V1, 24, 0), \
++        PARAM(on, 1, 0) \
++    )
++
++// Rush 2 recomp: while on (1), each triangle drawn with back-face culling whose face is within about 17 degrees of
++// vertical in the modelview's axes (y up) is also drawn wound the other way, so it shows its texture from behind too
++// (open-backed facades and walls seen past the original 4:3 view), unless the frame has something else on its plane
++// that is seen from behind (RSP::drawIndexedTri). 2: the draws only count as that something else (no copies of
++// their own). 0: off. Lasts until the next two-sided walls command.
++#define gEXSetTwoSidedWalls(cmd, on) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETTWOSIDEDWALLS_V1, 24, 0), \
++        PARAM(on, 2, 0) \
 +    )
 +
  #endif // RT64_EXTENDED_GBI
@@ -130,10 +164,10 @@ index 9ac8087..ea7e4db 100644
              bool reinterpretFixULS;
 diff --git a/src/common/rt64_live_textures.h b/src/common/rt64_live_textures.h
 new file mode 100644
-index 0000000..c8ad7b6
+index 0000000..23c80df
 --- /dev/null
 +++ b/src/common/rt64_live_textures.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,78 @@
 +//
 +// RT64
 +//
@@ -185,8 +219,10 @@ index 0000000..c8ad7b6
 +    // share one replacement image (contentKey, any value the host picks that identifies the image's contents), which
 +    // is uploaded once. fileBytes holds a DDS or PNG file; it can be left empty when hasLiveReplacementContent says
 +    // the content is already known. These do nothing (and return false) while no renderer is running.
-+    // region is the part of the image the hash's texture is (see ReplacementRegion).
-+    bool addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, ReplacementRegion region = {});
++    // region is the part of the image the hash's texture is (see ReplacementRegion). centered (Rush 2 recomp): the
++    // image is sampled with ReplacementShift::Center instead of Half (each texel of the texture on the middle of its
++    // block of the image), for an image the texture was scaled down from.
++    bool addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, ReplacementRegion region = {}, bool centered = false);
 +    bool hasLiveReplacementContent(uint64_t contentKey);
 +    void removeLiveReplacement(uint64_t hash);
 +    void clearLiveReplacements();
@@ -210,6 +246,35 @@ index 0000000..c8ad7b6
 +    // Whether the texture cache holds the texture with this hash now.
 +    bool hasCachedTexture(uint64_t hash);
 +};
+diff --git a/src/common/rt64_replacement_database.h b/src/common/rt64_replacement_database.h
+index 3f74ea2..ea41ec9 100644
+--- a/src/common/rt64_replacement_database.h
++++ b/src/common/rt64_replacement_database.h
+@@ -26,10 +26,16 @@ namespace RT64 {
+         Auto,
+     };
+ 
++    // None samples the replacement at the game's coordinate times its scale. Half adds half a texel of the game's
++    // texture first (how the console's filter places an upscale). Center (Rush 2 recomp) then takes half a texel of
++    // the replacement back off: each of the game's texels lands on the middle of its block of the replacement, so a
++    // replacement whose texels are centered as the game's (an image the game's texture was scaled down from, sampled
++    // at the same normalized coordinates) is filtered at the same places at any scale.
+     enum class ReplacementShift {
+         None,
+         Half,
+         Auto,
++        Center,
+     };
+ 
+     enum class ReplacementAutoPath {
+@@ -48,6 +54,7 @@ namespace RT64 {
+         { ReplacementShift::None, "none" },
+         { ReplacementShift::Half, "half" },
+         { ReplacementShift::Auto, "auto" },
++        { ReplacementShift::Center, "center" },
+     });
+ 
+     NLOHMANN_JSON_SERIALIZE_ENUM(ReplacementAutoPath, {
 diff --git a/src/common/rt64_user_configuration.h b/src/common/rt64_user_configuration.h
 index 4857f22..5646b55 100644
 --- a/src/common/rt64_user_configuration.h
@@ -234,7 +299,7 @@ index 4857f22..5646b55 100644
  
      NLOHMANN_JSON_SERIALIZE_ENUM(UserConfiguration::InternalColorFormat, {
 diff --git a/src/gbi/rt64_gbi_extended.cpp b/src/gbi/rt64_gbi_extended.cpp
-index 20c0d4d..68cbeef 100644
+index 20c0d4d..50a4dc9 100644
 --- a/src/gbi/rt64_gbi_extended.cpp
 +++ b/src/gbi/rt64_gbi_extended.cpp
 @@ -4,6 +4,8 @@
@@ -246,7 +311,7 @@ index 20c0d4d..68cbeef 100644
  #include "../include/rt64_extended_gbi.h"
  
  namespace RT64 {
-@@ -331,6 +333,21 @@ namespace RT64 {
+@@ -331,6 +333,34 @@ namespace RT64 {
              state->rdp->setRectAspect(aspect);
          }
  
@@ -265,18 +330,88 @@ index 20c0d4d..68cbeef 100644
 +            state->rdp->setCarReflection(group);
 +        }
 +
++        void setSkyFogV1(State *state, DisplayList **dl) {
++            const uint16_t haze = (*dl)->p1(0, 16);
++            state->rdp->setSkyFog(haze);
++        }
++
++        void setSkyDrawV1(State *state, DisplayList **dl) {
++            state->rdp->setSkyDraw((*dl)->p1(0, 1) != 0);
++        }
++
++        void setTwoSidedWallsV1(State *state, DisplayList **dl) {
++            state->rsp->extended.twoSidedWalls = uint8_t((*dl)->p1(0, 2));
++        }
++
          void noOpHook(State *state, DisplayList **dl) {
              uint32_t magicNumber = (*dl)->p0(0, 24);
              if (magicNumber == RT64_HOOK_MAGIC_NUMBER) {
-@@ -439,6 +456,8 @@ namespace RT64 {
+@@ -439,6 +469,11 @@ namespace RT64 {
              Map[G_EX_SETVERTEXSEGMENT_V1] = &setVertexSegmentV1;
              Map[G_EX_SETTEXCOORDWRAPPOINT_V1] = &setTexcoordWrapPointV1;
              Map[G_EX_SETRECTASPECT_V1] = &setRectAspectV1;
 +            Map[G_EX_SETFOGFLOAT_V1] = &setFogFloatV1;
 +            Map[G_EX_SETCARREFLECTION_V1] = &setCarReflectionV1;
++            Map[G_EX_SETSKYFOG_V1] = &setSkyFogV1;
++            Map[G_EX_SETSKYDRAW_V1] = &setSkyDrawV1;
++            Map[G_EX_SETTWOSIDEDWALLS_V1] = &setTwoSidedWallsV1;
              MapInitialized = true;
          }
      }
+diff --git a/src/gbi/rt64_gbi_f3d.cpp b/src/gbi/rt64_gbi_f3d.cpp
+index cf05674..5bc921b 100644
+--- a/src/gbi/rt64_gbi_f3d.cpp
++++ b/src/gbi/rt64_gbi_f3d.cpp
+@@ -79,11 +79,15 @@ namespace RT64 {
+             }
+ 
+             const uint32_t rdramAddress = state->rsp->fromSegmentedMasked((*dl)->w1);
++            state->recordDisplayListJump(*dl, rdramAddress, uint8_t((*dl)->w0 >> 24));
+             *dl = reinterpret_cast<DisplayList *>(state->fromRDRAM(rdramAddress)) - 1;
+         }
+ 
+         void endDl(State *state, DisplayList **dl) {
++            const DisplayList *from = *dl;
+             *dl = state->popReturnAddress();
++            const uint32_t to = (*dl != nullptr) ? uint32_t(reinterpret_cast<const uint8_t *>(*dl) - state->RDRAM) : 0;
++            state->recordDisplayListJump(from, to, uint8_t(from->w0 >> 24));
+         }
+ 
+         void sprite2DBase(State *state, DisplayList **dl) {
+diff --git a/src/gbi/rt64_gbi_f3dex.cpp b/src/gbi/rt64_gbi_f3dex.cpp
+index 4eabdee..45da102 100644
+--- a/src/gbi/rt64_gbi_f3dex.cpp
++++ b/src/gbi/rt64_gbi_f3dex.cpp
+@@ -43,10 +43,15 @@ namespace RT64 {
+         }
+ 
+         void branchZ(State *state, DisplayList **dl) {
++            DisplayList *from = *dl;
+             state->rsp->branchZ(state->microcode.half1, (*dl)->p0(1, 11), (*dl)->w1, dl);
++            if (*dl != from) {
++                state->recordDisplayListJump(from, uint32_t(reinterpret_cast<const uint8_t *>(*dl + 1) - state->RDRAM), uint8_t(from->w0 >> 24));
++            }
+         }
+-        
++
+         void loadUCode(State *state, DisplayList **dl) {
++            state->recordDisplayListJump(*dl, (*dl)->w1, uint8_t((*dl)->w0 >> 24));
+             state->ext.interpreter->loadUCodeGBI((*dl)->w1, state->microcode.half1, false);
+         }
+ 
+diff --git a/src/gui/rt64_debugger_inspector.cpp b/src/gui/rt64_debugger_inspector.cpp
+index 3298c06..1d47c1c 100644
+--- a/src/gui/rt64_debugger_inspector.cpp
++++ b/src/gui/rt64_debugger_inspector.cpp
+@@ -334,7 +334,7 @@ namespace RT64 {
+                 int shift = int(resolvedPath.originalShift);
+                 int operation = int(resolvedPath.originalOperation);
+                 ImGui::Text("Replacement: %s", resolvedPath.relativePath.c_str());
+-                if (ImGui::Combo("Shift", &shift, "None\0Half\0Auto\0")) {
++                if (ImGui::Combo("Shift", &shift, "None\0Half\0Auto\0Center\0")) {
+                     textureCache.setReplacementShift(replacementHash, ReplacementShift(shift));
+                 }
+ 
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
 index 785de27..3c40137 100644
 --- a/src/hle/rt64_application.cpp
@@ -303,16 +438,20 @@ index 785de27..3c40137 100644
          rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads, ubershaderThreads);
          rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
 diff --git a/src/hle/rt64_draw_call.h b/src/hle/rt64_draw_call.h
-index 0e62be1..35ed6a6 100644
+index 0e62be1..d237c4e 100644
 --- a/src/hle/rt64_draw_call.h
 +++ b/src/hle/rt64_draw_call.h
-@@ -65,6 +65,9 @@ namespace RT64 {
+@@ -65,6 +65,13 @@ namespace RT64 {
          uint32_t forceUpscale2D : 1;
          uint32_t forceTrueBilerp : 2;
          uint32_t forceScaleLOD : 1;
 +        // Rush 2 recomp: the car whose paint these triangles are (its number + 1), drawn as a reflection
 +        // (gEXSetCarReflection), or 0.
 +        uint32_t carReflection : 8;
++        // Rush 2 recomp: the view's sky haze in thousandths (gEXSetSkyFog), or 0.
++        uint32_t skyFog : 16;
++        // Rush 2 recomp: drawn as the sky (gEXSetSkyDraw).
++        uint32_t skyDraw : 1;
      };
  
      struct DrawCall {
@@ -354,6 +493,123 @@ index 87392d0..67fce6b 100644
                  }
              }
  
+diff --git a/src/hle/rt64_interpreter.cpp b/src/hle/rt64_interpreter.cpp
+index dccaa87..c50507a 100644
+--- a/src/hle/rt64_interpreter.cpp
++++ b/src/hle/rt64_interpreter.cpp
+@@ -4,12 +4,73 @@
+ 
+ #include "rt64_interpreter.h"
+ 
++#include <algorithm>
++#include <atomic>
+ #include <cassert>
++#include <mutex>
+ 
+ //#define DUMP_DISPLAY_LISTS
+ 
+ namespace RT64 {
+     static FILE *displayListFp = nullptr;
++    static std::mutex FaultReportMutex;
++    static std::filesystem::path FaultReportDirectory;
++    static std::atomic<bool> FaultReported = false;
++
++    void Interpreter::setFaultReportDirectory(const std::filesystem::path &directory) {
++        const std::scoped_lock lock(FaultReportMutex);
++        FaultReportDirectory = directory;
++    }
++
++    // A display list ran into memory that isn't one: it loaded microcode RT64 doesn't know (G_LOAD_UCODE read from
++    // garbage), so there is no command table to go on with. Writes the interpreter's last jumps and the first 16 MB of
++    // RDRAM (host word order) so the list that jumped there can be found offline, once per session.
++    void Interpreter::reportFault(uint32_t dlStartAddress, const DisplayList *dl) {
++        const uint32_t dlAddress = uint32_t(reinterpret_cast<const uint8_t *>(dl) - state->RDRAM);
++        const char *reason = (state->displayListFault != nullptr) ? state->displayListFault : "unknown microcode loaded";
++        fprintf(stderr, "[RT64] Display list fault: %s at 0x%08X (task list 0x%08X); list ended.\n", reason, dlAddress, dlStartAddress);
++        std::filesystem::path directory;
++        {
++            const std::scoped_lock lock(FaultReportMutex);
++            directory = FaultReportDirectory;
++        }
++
++        if (directory.empty() || FaultReported.exchange(true)) {
++            return;
++        }
++
++        FILE *fp = fopen((directory / "dl_fault.txt").string().c_str(), "w");
++        if (fp != nullptr) {
++            fprintf(fp, "Display list fault: %s; the list was ended at 0x%08X.\n", reason, dlAddress);
++            fprintf(fp, "Task display list: 0x%08X. Display list counter: %llu.\n", dlStartAddress, (unsigned long long)(state->displayListCounter));
++            fprintf(fp, "Microcode text 0x%08X data 0x%08X. RDPHALF_1: 0x%08X.\n", UCode.textAddress, UCode.dataAddress, state->microcode.half1);
++            fprintf(fp, "\nLast jumps, oldest first (from -> to, opcode; 00 = a task's start):\n");
++            const uint32_t count = std::min(state->displayListJumpCursor, State::DisplayListJumpCount);
++            for (uint32_t i = state->displayListJumpCursor - count; i < state->displayListJumpCursor; i++) {
++                const State::DisplayListJump &jump = state->displayListJumps[i % State::DisplayListJumpCount];
++                fprintf(fp, "  0x%08X -> 0x%08X  %02X\n", jump.from, jump.to, jump.opCode);
++            }
++
++            fprintf(fp, "\nReturn stack, innermost last:\n");
++            for (const DisplayList *ret : state->returnAddressStack) {
++                fprintf(fp, "  0x%08X\n", uint32_t(reinterpret_cast<const uint8_t *>(ret) - state->RDRAM));
++            }
++
++            fprintf(fp, "\nSegments:\n");
++            for (size_t i = 0; i < state->rsp->segments.size(); i++) {
++                fprintf(fp, "  %2zu 0x%08X\n", i, state->rsp->segments[i]);
++            }
++
++            fprintf(fp, "\nRDRAM snapshot: dl_fault_rdram.bin (0x1000000 bytes from 0x80000000, 32-bit words in host order).\n");
++            fclose(fp);
++        }
++
++        fp = fopen((directory / "dl_fault_rdram.bin").string().c_str(), "wb");
++        if (fp != nullptr) {
++            fwrite(state->RDRAM, 0x1000000, 1, fp);
++            fclose(fp);
++        }
++    }
+ 
+     // Interpreter
+ 
+@@ -169,7 +230,22 @@ namespace RT64 {
+         DisplayList *dl = dlStart;
+         uint8_t opCode;
+         GBIFunction func;
++        state->recordDisplayListJump(nullptr, dlStartAdddress, 0);
+         while (dl != nullptr) {
++            // A G_LOAD_UCODE with microcode RT64 doesn't know (read from memory that isn't a display list) leaves no
++            // command table: end the list instead of crashing.
++            // The same for a command only garbage holds (State::displayListFault): the command before dl set it.
++            if ((hleGBI == nullptr) || (state->displayListFault != nullptr)) {
++                if (state->displayListFault != nullptr) {
++                    dl--;
++                }
++                reportFault(dlStartAdddress, dl);
++                state->displayListFault = nullptr;
++                // The lists it was called from are abandoned too: the next task's last G_ENDDL must not return into them.
++                state->returnAddressStack.clear();
++                break;
++            }
++
+             opCode = (dl->w0 >> 24);
+ 
+             if ((extendedOpCode != 0) && (opCode == extendedOpCode)) {
+diff --git a/src/hle/rt64_interpreter.h b/src/hle/rt64_interpreter.h
+index c29e4b2..f865c16 100644
+--- a/src/hle/rt64_interpreter.h
++++ b/src/hle/rt64_interpreter.h
+@@ -24,6 +24,11 @@ namespace RT64 {
+ 
+         Interpreter();
+         void setup(State *state);
++
++        // Where a display list fault (a list that ran into memory that isn't one and loaded microcode RT64 doesn't
++        // know) writes its report: the interpreter's last jumps and an RDRAM snapshot, once per session. Empty: none.
++        static void setFaultReportDirectory(const std::filesystem::path &directory);
++        void reportFault(uint32_t dlStartAddress, const DisplayList *dl);
+         void loadUCodeGBI(uint32_t textAddress, uint32_t dataAddress, bool resetFromTask);
+         void processRDPLists(uint32_t dlStartAdddress, DisplayList* dlStart, DisplayList* dlEnd);
+         void processDisplayLists(uint32_t dlStartAdddress, DisplayList *dlStart);
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 index 3227ab1..883cf36 100644
 --- a/src/hle/rt64_present_queue.cpp
@@ -397,10 +653,24 @@ index 3227ab1..883cf36 100644
  
          ext.sharedResources->interpolatedCondition.notify_all();
 diff --git a/src/hle/rt64_rdp.cpp b/src/hle/rt64_rdp.cpp
-index a10c11a..04c2a31 100644
+index a10c11a..e05eb8d 100644
 --- a/src/hle/rt64_rdp.cpp
 +++ b/src/hle/rt64_rdp.cpp
-@@ -1076,6 +1076,12 @@ namespace RT64 {
+@@ -785,6 +785,13 @@ namespace RT64 {
+         t.lrs = lrs;
+         t.lrt = lrt;
+ 
++        // A reversed range, as LOADTILE and LOADBLOCK ignore. Loaded, its count wraps to billions of words and the
++        // copy runs off the end of RDRAM; no game writes one, so the list has run into memory that isn't a list.
++        if ((t.uls > t.lrs) || (t.ult > t.lrt)) {
++            state->displayListFault = "LOADTLUT with a reversed range";
++            return;
++        }
++
+ #   ifdef ASSERT_LOAD_METHODS
+         assert((texture.siz == G_IM_SIZ_16b) && "Non-16 bit textures are not currently supported.");
+         assert((t.siz == G_IM_SIZ_4b) && "Non-4 bit tiles are not currently supported.");
+@@ -1076,6 +1083,23 @@ namespace RT64 {
          state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
      }
  
@@ -410,18 +680,31 @@ index a10c11a..04c2a31 100644
 +        state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
 +    }
 +
++    // Rush 2 recomp: sky fog (gEXSetSkyFog).
++    void RDP::setSkyFog(uint16_t haze) {
++        extended.drawExtendedFlags.skyFog = haze;
++        state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
++    }
++
++    void RDP::setSkyDraw(bool on) {
++        extended.drawExtendedFlags.skyDraw = on;
++        state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
++    }
++
      void RDP::clearExtended() {
          extended.scissorLeftOriginStack[0] = G_EX_ORIGIN_NONE;
          extended.scissorRightOriginStack[0] = G_EX_ORIGIN_NONE;
 diff --git a/src/hle/rt64_rdp.h b/src/hle/rt64_rdp.h
-index 84f4e7c..eeab022 100644
+index 84f4e7c..df5ff15 100644
 --- a/src/hle/rt64_rdp.h
 +++ b/src/hle/rt64_rdp.h
-@@ -199,6 +199,7 @@ namespace RT64 {
+@@ -199,6 +199,9 @@ namespace RT64 {
          void forceUpscale2D(bool force);
          void forceTrueBilerp(uint8_t mode);
          void forceScaleLOD(bool force);
 +        void setCarReflection(uint8_t group);
++        void setSkyFog(uint16_t haze);
++        void setSkyDraw(bool on);
          void clearExtended();
  
          // The expected size and order for the elements in each array are:
@@ -468,10 +751,21 @@ index 6051f4e..690d3b2 100644
  
          // Dump memory contents into a file if the process is active.
 diff --git a/src/hle/rt64_rsp.cpp b/src/hle/rt64_rsp.cpp
-index ee2030b..cbd0ad5 100644
+index ee2030b..bca4525 100644
 --- a/src/hle/rt64_rsp.cpp
 +++ b/src/hle/rt64_rsp.cpp
-@@ -992,6 +992,12 @@ namespace RT64 {
+@@ -4,7 +4,10 @@
+ 
+ #include "rt64_rsp.h"
+ 
++#include <algorithm>
+ #include <cassert>
++#include <cmath>
++#include <cstring>
+ 
+ #include "../include/rt64_extended_gbi.h"
+ #include "common/rt64_common.h"
+@@ -992,6 +995,12 @@ namespace RT64 {
          fog.offset = offset;
          fogChanged = true;
      }
@@ -484,11 +778,221 @@ index ee2030b..cbd0ad5 100644
      
      void RSP::setTexture(uint8_t tile, uint8_t level, uint8_t on, uint16_t sc, uint16_t tc) {
          textureState.tile = tile;
+@@ -1128,8 +1137,158 @@ namespace RT64 {
+             maxMatrix = std::max(maxMatrix, worldIndices[globalIndex]);
+         }
+ 
++        // Rush 2 recomp: Two-Sided Walls (gEXSetTwoSidedWalls). A culled triangle standing near vertical in the
++        // modelview's axes (the game keeps the view's rotation in the projection, so these are the world's, y up) is
++        // drawn again wound the other way, with the same vertices: whichever side faces the camera survives the
++        // culling, with the front's texture and colors. Only where nothing else is already there to be seen from
++        // behind: no copy for a triangle with any of these on its plane over it (all the frame's marked draws, in any
++        // order: a copy made before one turns up is made degenerate, drawing nothing, so the count stays the same
++        // every frame for interpolation's matching):
++        // - a modeled back: a triangle facing the other way within 16 units (1 ft) of its plane, culled or not;
++        // - a two-sided surface: a triangle drawn without culling, either way it faces, within 16 units;
++        // - a layered face: a triangle facing the same way on the same plane (within 2 units) overlapping it with
++        //   area (an arrow over a sign board): their copies would fight each other from behind.
++        bool twoSidedCopy = false;
++        if ((extended.twoSidedWalls != 0) && !rawGlobalIndices) {
++            const auto &posFloats = workload.drawData.posFloats;
++            const auto &worldTransforms = workload.drawData.worldTransforms;
++            float w[3][3];
++            for (int i = 0; i < 3; i++) {
++                const uint32_t g = globalIndices[i];
++                const interop::float4x4 &m = worldTransforms[worldIndices[g]];
++                for (int k = 0; k < 3; k++) {
++                    w[i][k] = posFloats[g * 3 + 0] * m[0][k] + posFloats[g * 3 + 1] * m[1][k] + posFloats[g * 3 + 2] * m[2][k] + m[3][k];
++                }
++            }
++            const float e1[3] = { w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2] };
++            const float e2[3] = { w[2][0] - w[0][0], w[2][1] - w[0][1], w[2][2] - w[0][2] };
++            const float nx = e1[1] * e2[2] - e1[2] * e2[1];
++            const float ny = e1[2] * e2[0] - e1[0] * e2[2];
++            const float nz = e1[0] * e2[1] - e1[1] * e2[0];
++            const float lengthSq = nx * nx + ny * ny + nz * nz;
++            // |n.y| / |n| under 0.3: the face is within about 17 degrees of vertical.
++            if ((lengthSq > 1e-12f) && (ny * ny < 0.09f * lengthSq)) {
++                if ((extended.twoSidedWorkload != workloadCursor) || (faceIndices.size() < extended.twoSidedFaceCount)) {
++                    extended.twoSidedSeen.clear();
++                    extended.twoSidedWorkload = workloadCursor;
++                }
++
++                const bool culled = (geometryMode & cullBothMask) != 0;
++                const float length = std::sqrt(lengthSq);
++                const float un[3] = { nx / length, ny / length, nz / length };
++                const float distance = un[0] * w[0][0] + un[1] * w[0][1] + un[2] * w[0][2];
++                const float twoPi = 6.28318530718f;
++                const int32_t yaw = int32_t(std::floor((std::atan2(un[2], un[0]) + twoPi / 2.0f) / twoPi * 128.0f)) & 127;
++                const float bucket = 8.0f;
++                auto planeKey = [](int32_t y, int32_t d) { return (uint64_t(uint32_t(y & 127)) << 32) | uint64_t(uint32_t(d)); };
++                decltype(extended.twoSidedSeen)::mapped_type::value_type entry;
++                memcpy(entry.v, w, sizeof(w));
++                entry.distance = distance;
++                entry.culled = culled;
++                entry.copyAt = UINT32_MAX;
++
++                // Triangles in this one's plane: across (horizontal, along the face) and up.
++                const float tl = std::sqrt(un[0] * un[0] + un[2] * un[2]);
++                const float tx = un[2] / tl, tz = -un[0] / tl;
++                auto project = [&](const float (*p)[3], float out[3][2]) {
++                    for (int i = 0; i < 3; i++) {
++                        out[i][0] = p[i][0] * tx + p[i][2] * tz;
++                        out[i][1] = p[i][1];
++                    }
++                };
++                // Overlapping in the plane: no separating edge with a gap of `slack` or more (slack < 0: they must
++                // overlap by more than -slack along every edge).
++                auto overlaps = [](const float (*a)[2], const float (*b)[2], float slack) {
++                    const float (*tris[2])[2] = { a, b };
++                    for (const float (*t)[2] : tris) {
++                        for (int e = 0; e < 3; e++) {
++                            float ax = -(t[(e + 1) % 3][1] - t[e][1]), ay = t[(e + 1) % 3][0] - t[e][0];
++                            float len = std::sqrt(ax * ax + ay * ay);
++                            if (len < 1e-6f) {
++                                continue;
++                            }
++
++                            ax /= len;
++                            ay /= len;
++                            float minA = 1e30f, maxA = -1e30f, minB = 1e30f, maxB = -1e30f;
++                            for (int i = 0; i < 3; i++) {
++                                float pa = a[i][0] * ax + a[i][1] * ay, pb = b[i][0] * ax + b[i][1] * ay;
++                                minA = std::min(minA, pa);
++                                maxA = std::max(maxA, pa);
++                                minB = std::min(minB, pb);
++                                maxB = std::max(maxB, pb);
++                            }
++
++                            if (std::max(minB - maxA, minA - maxB) >= slack) {
++                                return false;
++                            }
++                        }
++                    }
++
++                    return true;
++                };
++
++                float mine[3][2];
++                project(w, mine);
++                bool blocked = false;
++                // facing: +1 the same way, -1 the other way. A two-sided triangle's entries are kept under both.
++                auto search = [&](int32_t keyYaw, float keyDistance, int32_t facing) {
++                    const int32_t center = int32_t(std::floor(keyDistance / bucket));
++                    for (int32_t dy = -1; dy <= 1; dy++) {
++                        for (int32_t dd = -3; dd <= 3; dd++) {
++                            auto it = extended.twoSidedSeen.find(planeKey(keyYaw + dy, center + dd));
++                            if (it == extended.twoSidedSeen.end()) {
++                                continue;
++                            }
++
++                            for (auto &other : it->second) {
++                                // other.distance is along its own normal: the same plane facing the other way is at
++                                // -distance.
++                                const bool layered = (facing > 0) && culled && other.culled;
++                                if (std::fabs(other.distance - keyDistance) > (layered ? 2.0f : 16.0f)) {
++                                    continue;
++                                }
++
++                                float theirs[3][2];
++                                project(other.v, theirs);
++                                if (!overlaps(mine, theirs, layered ? -0.5f : 1.0f)) {
++                                    continue;
++                                }
++
++                                blocked = true;
++                                if (other.copyAt != UINT32_MAX) {
++                                    faceIndices[other.copyAt + 1] = faceIndices[other.copyAt];
++                                    faceIndices[other.copyAt + 2] = faceIndices[other.copyAt];
++                                    other.copyAt = UINT32_MAX;
++                                }
++                            }
++                        }
++                    }
++                };
++
++                search(yaw, distance, 1);
++                search(yaw + 64, -distance, -1);
++                if (culled && !blocked && (extended.twoSidedWalls == 1)) {
++                    entry.copyAt = uint32_t(faceIndices.size());
++                    faceIndices.push_back(globalIndices[2]);
++                    faceIndices.push_back(globalIndices[1]);
++                    faceIndices.push_back(globalIndices[0]);
++                    twoSidedCopy = true;
++                }
++
++                extended.twoSidedSeen[planeKey(yaw, int32_t(std::floor(distance / bucket)))].push_back(entry);
++                if (!culled) {
++                    auto flipped = entry;
++                    flipped.distance = -distance;
++                    extended.twoSidedSeen[planeKey(yaw + 64, int32_t(std::floor(-distance / bucket)))].push_back(flipped);
++                }
++
++                extended.twoSidedFaceCount = faceIndices.size();
++            }
++        }
++
+         bool visibleTri = true;
+-        const bool usesCulling = geometryMode & cullBothMask;
++        const bool usesCulling = (geometryMode & cullBothMask) && !twoSidedCopy;
+         if (usesCulling) {
+             const hlslpp::float3 U = posScreen[globalIndices[1]] - posScreen[globalIndices[0]];
+             const hlslpp::float3 V = posScreen[globalIndices[2]] - posScreen[globalIndices[0]];
+@@ -1159,7 +1318,7 @@ namespace RT64 {
+             }
+         }
+ 
+-        drawCall.triangleCount++;
++        drawCall.triangleCount += twoSidedCopy ? 2 : 1;
+     }
+ 
+     void RSP::drawIndexedTri(uint32_t a, uint32_t b, uint32_t c) {
+@@ -1291,6 +1450,10 @@ namespace RT64 {
+         extended.baseSegmentAddresses = {};
+         extended.vertexSegmentEnabled = {};
+         extended.forceBranch = false;
++        extended.twoSidedWalls = 0;
++        extended.twoSidedSeen.clear();
++        extended.twoSidedWorkload = -1;
++        extended.twoSidedFaceCount = 0;
+     }
+ 
+     void RSP::setGBI(GBI *gbi) {
 diff --git a/src/hle/rt64_rsp.h b/src/hle/rt64_rsp.h
-index 61bb3b1..bce1d31 100644
+index 61bb3b1..61511c0 100644
 --- a/src/hle/rt64_rsp.h
 +++ b/src/hle/rt64_rsp.h
-@@ -280,6 +280,7 @@ namespace RT64 {
+@@ -6,6 +6,8 @@
+ 
+ #include <array>
+ #include <bitset>
++#include <unordered_map>
++#include <vector>
+ #include <stdint.h>
+ 
+ #include "common/rt64_common.h"
+@@ -227,6 +229,20 @@ namespace RT64 {
+             std::array<uint32_t, G_EX_VERTEX_MAX> baseSegmentAddresses;
+             std::array<bool, G_EX_VERTEX_MAX> vertexSegmentEnabled;
+             bool forceBranch;
++            // Rush 2 recomp: gEXSetTwoSidedWalls. This frame's near-vertical triangles in marked draws by their plane
++            // (the facing's yaw in 128 steps, the plane's distance in steps of 8 units; one drawn without culling also
++            // under the other facing), each with its corners and where its copy's indices are in the workload's
++            // faceIndices (UINT32_MAX: none, or cancelled).
++            uint8_t twoSidedWalls;
++            struct TwoSidedEntry {
++                uint32_t copyAt;
++                float v[3][3];
++                float distance;
++                bool culled;
++            };
++            std::unordered_map<uint64_t, std::vector<TwoSidedEntry>> twoSidedSeen;
++            int twoSidedWorkload;
++            size_t twoSidedFaceCount;
+         } extended;
+ 
+         RSP(State *state);
+@@ -280,6 +296,7 @@ namespace RT64 {
          void setLookAt(uint8_t index, uint32_t address);
          void setLookAtVectors(interop::float3 x, interop::float3 y);
          void setFog(int16_t mul, int16_t offset);
@@ -510,7 +1014,7 @@ index 8858dac..904b1af 100644
      };
  
 diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
-index 2970e71..6d69ca3 100644
+index 2970e71..617a8ae 100644
 --- a/src/hle/rt64_state.cpp
 +++ b/src/hle/rt64_state.cpp
 @@ -13,6 +13,7 @@
@@ -562,6 +1066,50 @@ index 2970e71..6d69ca3 100644
                      const bool manualRefreshRate = (userConfig.refreshRate == UserConfiguration::RefreshRate::Manual);
                      if (manualRefreshRate) {
                          genConfigChanged = ImGui::InputInt("Refresh Rate Target", &userConfig.refreshRateTarget) || genConfigChanged;
+@@ -2705,6 +2713,14 @@ namespace RT64 {
+         returnAddressStack.push_back(dl);
+     }
+ 
++    void State::recordDisplayListJump(const DisplayList *from, uint32_t to, uint8_t opCode) {
++        DisplayListJump &jump = displayListJumps[displayListJumpCursor % DisplayListJumpCount];
++        jump.from = (from != nullptr) ? uint32_t(reinterpret_cast<const uint8_t *>(from) - RDRAM) : 0;
++        jump.to = to;
++        jump.opCode = opCode;
++        displayListJumpCursor++;
++    }
++
+     DisplayList *State::popReturnAddress() {
+         if (returnAddressStack.empty()) {
+             return nullptr;
+diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
+index 7a8c13b..c1aaabd 100644
+--- a/src/hle/rt64_state.h
++++ b/src/hle/rt64_state.h
+@@ -90,6 +90,24 @@ namespace RT64 {
+         std::vector<FramebufferOperation> drawFbOperations;
+         std::vector<uint32_t> drawFbDiscards;
+         std::vector<DisplayList *> returnAddressStack;
++
++        // The last jumps the display list interpreter took (G_DL, G_ENDDL, a taken G_BRANCH_Z, G_LOAD_UCODE and each
++        // task's start), RDRAM offsets, for Interpreter's report when a list runs into memory that isn't one.
++        struct DisplayListJump {
++            uint32_t from = 0;
++            uint32_t to = 0;
++            uint8_t opCode = 0;
++        };
++
++        static constexpr uint32_t DisplayListJumpCount = 64;
++        std::array<DisplayListJump, DisplayListJumpCount> displayListJumps;
++        uint32_t displayListJumpCursor = 0;
++        void recordDisplayListJump(const DisplayList *from, uint32_t to, uint8_t opCode);
++
++        // Set by a command that can only come from memory that isn't a display list (a LOADTLUT with a reversed
++        // range): the interpreter ends the task's list there and reports it, as for unknown microcode.
++        const char *displayListFault = nullptr;
++
+         std::vector<Framebuffer *> differentFbs;
+         GameConfiguration gameConfig;
+         uint32_t displayListAddress;
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
 index 5a331aa..35ab5c9 100644
 --- a/src/hle/rt64_workload_queue.cpp
@@ -849,7 +1397,7 @@ index 69a82ac..df03596 100644
          uint32_t TMEM;
          uint32_t RGBA32;
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
-index 9fae0d4..3d09a09 100644
+index 9fae0d4..546f8f3 100644
 --- a/src/render/rt64_framebuffer_renderer.cpp
 +++ b/src/render/rt64_framebuffer_renderer.cpp
 @@ -4,14 +4,20 @@
@@ -889,31 +1437,34 @@ index 9fae0d4..3d09a09 100644
      RenderRect convertFixedRect(FixedRect rect, hlslpp::float2 resScale, int32_t fbWidth, float aspectRatioScale, float extOriginPercentage, int32_t horizontalMisalignment, uint16_t leftOrigin, uint16_t rightOrigin) {
          if (!rect.isNull()) {
              auto computeOrigin = [=](uint16_t origin) {
-@@ -169,6 +181,8 @@ namespace RT64 {
+@@ -169,6 +181,9 @@ namespace RT64 {
      
      void FramebufferRenderer::resetFramebuffers(RenderWorker *worker, bool ubershadersVisible, float ditherNoiseStrength, const RenderMultisampling &multisampling) {
          instanceDrawCallVector.clear();
 +        occlusionParamsVector.clear();
 +        carReflectionScenes.clear();
++        skyFogPasses.clear();
          hitGroupVector.clear();
          renderIndicesVector.clear();
          rspSmoothNormalVector.clear();
-@@ -250,6 +264,8 @@ namespace RT64 {
+@@ -250,6 +265,9 @@ namespace RT64 {
                      gpuTile.flags.fromCopy = true;
                      gpuTile.flags.rawTMEM = false;
                      gpuTile.flags.hasMipmaps = false;
 +                    gpuTile.flags.generatedMipmaps = false;
 +                    gpuTile.flags.sourceRegion = false;
++                    gpuTile.flags.centered = false;
                  }
              }
              else {
-@@ -258,20 +274,29 @@ namespace RT64 {
+@@ -258,20 +276,31 @@ namespace RT64 {
                  bool textureReplaced = false;
                  bool hasMipmaps = false;
                  bool shiftedByHalf = false;
 -                textureCache->useTexture(callTile.tmemHashOrID, submissionFrame, textureIndex, gpuTile.tcScale, gpuTile.textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
++                bool centered = false;
 +                bool sourceRegion = false;
-+                textureCache->useTexture(callTile.tmemHashOrID, submissionFrame, textureIndex, gpuTile.tcScale, gpuTile.textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf, gpuTile.texelShift, sourceRegion);
++                textureCache->useTexture(callTile.tmemHashOrID, submissionFrame, textureIndex, gpuTile.tcScale, gpuTile.textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf, centered, gpuTile.texelShift, sourceRegion);
  
 -                // Describe the GPU tile for a regular texture.
 +                // Describe the GPU tile for a regular texture. texelShift is a region's origin in its image.
@@ -934,6 +1485,7 @@ index 9fae0d4..3d09a09 100644
                  gpuTile.flags.hasMipmaps = hasMipmaps;
 -                gpuTile.flags.shiftedByHalf = shiftedByHalf;
 +                gpuTile.flags.shiftedByHalf = higherRes && shiftedByHalf;
++                gpuTile.flags.centered = higherRes && centered;
 +                gpuTile.flags.sourceRegion = sourceRegion;
 +                gpuTile.flags.anisotropy = GeneratedMipmapsAnisotropy;
 +
@@ -942,7 +1494,7 @@ index 9fae0d4..3d09a09 100644
              }
          }
      }
-@@ -508,14 +533,100 @@ namespace RT64 {
+@@ -508,14 +537,180 @@ namespace RT64 {
              }
          };
  
@@ -1021,6 +1573,62 @@ index 9fae0d4..3d09a09 100644
 +            switchToGraphicsPipeline();
 +        };
 +
++        // Rush 2 recomp: sky fog. A view's pass runs once, right after its last sky draw, over the area its marked draws
++        // covered so far: it blends the fog color over the pixels still at the depth clear (SkyFogPS.hlsl). Running
++        // there, not after the view's last draw, keeps see-through things drawn later without depth writes (sails,
++        // smoke) out of it.
++        int32_t dueSkyFog = -1;
++        auto submitSkyFog = [&]() {
++            const int32_t skyFogIndex = dueSkyFog;
++            dueSkyFog = -1;
++            RenderTarget *colorTarget = fbStorage->colorTarget;
++            RenderTarget *depthTarget = fbStorage->depthTarget;
++            if ((skyFogIndex < 0) || (colorTarget == nullptr) || (depthTarget == nullptr)) {
++                return;
++            }
++
++            SkyFogPass &pass = skyFogPasses[skyFogIndex];
++            if (pass.done || !pass.fogged || !pass.hasSky || !pass.rectSet || (pass.cb.haze <= 0.0f)) {
++                return;
++            }
++
++            pass.done = true;
++            const RenderRect rect(std::max(pass.rect.left, 0), std::max(pass.rect.top, 0),
++                std::min(pass.rect.right, int32_t(colorTarget->width)), std::min(pass.rect.bottom, int32_t(colorTarget->height)));
++            if (rect.isEmpty()) {
++                return;
++            }
++
++            RenderDevice *device = worker->device;
++            if (fbStorage->colorOnly == nullptr) {
++                const RenderTexture *colorTexture = colorTarget->texture.get();
++                fbStorage->colorOnly = device->createFramebuffer(RenderFramebufferDesc(&colorTexture, 1));
++            }
++
++            if (fbStorage->occlusionDepthSet == nullptr) {
++                fbStorage->occlusionDepthSet = std::make_unique<TextureCopyDescriptorSet>(device);
++                fbStorage->occlusionDepthSet->setTexture(fbStorage->occlusionDepthSet->gInput, depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, depthTarget->textureView.get());
++            }
++
++            const RenderViewport targetViewport(0.0f, 0.0f, float(colorTarget->width), float(colorTarget->height));
++            const bool depthMS = (depthTarget->multisampling.sampleCount > 1);
++            const ShaderRecord &skyFogShader = depthMS ? shaderLibrary->skyFogMS : shaderLibrary->skyFog;
++            submitDepthAccess(worker, fbStorage, true, depthState);
++            worker->commandList->setFramebuffer(fbStorage->colorOnly.get());
++            worker->commandList->setViewports(targetViewport);
++            worker->commandList->setScissors(rect);
++            worker->commandList->setPipeline(skyFogShader.pipeline.get());
++            worker->commandList->setGraphicsPipelineLayout(skyFogShader.pipelineLayout.get());
++            worker->commandList->setGraphicsDescriptorSet(fbStorage->occlusionDepthSet->get(), 0);
++            worker->commandList->setGraphicsPushConstants(0, &pass.cb);
++            worker->commandList->setVertexBuffers(0, nullptr, 0, nullptr);
++            worker->commandList->drawInstanced(3, 1, 0, 0);
++
++            // Back to the scene's framebuffer, with the depth buffer still read only.
++            worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
++            switchToGraphicsPipeline();
++        };
++
          if (fbStorage->colorTarget != nullptr) {
              switchToGraphicsPipeline();
          }
@@ -1028,6 +1636,30 @@ index 9fae0d4..3d09a09 100644
 +
          for (uint32_t i : rasterScene.instanceIndices) {
              const InstanceDrawCall &drawCall = instanceDrawCallVector[i];
++            if (dueSkyFog >= 0) {
++                submitSkyFog();
++            }
++
++            if ((drawCall.type == InstanceDrawCall::Type::IndexedTriangles) && (drawCall.triangles.skyFogIndex >= 0) && !drawCall.triangles.scissor.isEmpty()) {
++                SkyFogPass &pass = skyFogPasses[drawCall.triangles.skyFogIndex];
++                const RenderRect &scissor = drawCall.triangles.scissor;
++                if (!pass.rectSet) {
++                    pass.rect = scissor;
++                    pass.rectSet = true;
++                }
++                else {
++                    pass.rect.left = std::min(pass.rect.left, scissor.left);
++                    pass.rect.top = std::min(pass.rect.top, scissor.top);
++                    pass.rect.right = std::max(pass.rect.right, scissor.right);
++                    pass.rect.bottom = std::max(pass.rect.bottom, scissor.bottom);
++                }
++            }
++
++            if ((drawCall.type == InstanceDrawCall::Type::IndexedTriangles) && (drawCall.triangles.skyFogIndex >= 0) &&
++                skyFogPasses[drawCall.triangles.skyFogIndex].hasSky && (skyFogPasses[drawCall.triangles.skyFogIndex].lastInstance == i)) {
++                dueSkyFog = drawCall.triangles.skyFogIndex;
++            }
++
 +            if (pendingOcclusion >= 0) {
 +                const bool endsOcclusion =
 +                    ((drawCall.type == InstanceDrawCall::Type::IndexedTriangles) && !drawCall.triangles.perspective) ||
@@ -1045,7 +1677,7 @@ index 9fae0d4..3d09a09 100644
              case InstanceDrawCall::Type::RawTriangles:
              case InstanceDrawCall::Type::RegularRect: {
                  assert(fbStorage->colorTarget != nullptr);
-@@ -550,6 +661,23 @@ namespace RT64 {
+@@ -550,6 +745,23 @@ namespace RT64 {
                      continue;
                  }
  
@@ -1069,7 +1701,7 @@ index 9fae0d4..3d09a09 100644
                  // A new pass must be started if decals are required and something wrote to the depth buffer before this call.
                  const interop::OtherMode otherMode = triangles.shaderDesc.otherMode;
                  bool depthDecal = (otherMode.zMode() == ZMODE_DEC);
-@@ -578,6 +706,20 @@ namespace RT64 {
+@@ -578,6 +790,20 @@ namespace RT64 {
  
                  drawCallTriangles(drawCall);
  
@@ -1090,16 +1722,17 @@ index 9fae0d4..3d09a09 100644
                  // Simulate dither noise.
                  if (triangles.postBlendDitherNoise) {
                      if (triangles.postBlendDitherNoiseNegative) {
-@@ -638,6 +780,8 @@ namespace RT64 {
+@@ -638,6 +864,9 @@ namespace RT64 {
              }
          }
  
++        submitSkyFog();
 +        submitOcclusion();
 +
          // Mark targets for resolve.
          if (fbStorage->colorTarget != nullptr) {
              fbStorage->colorTarget->markForResolve();
-@@ -1316,6 +1460,533 @@ namespace RT64 {
+@@ -1316,6 +1545,533 @@ namespace RT64 {
      }
  #endif
  
@@ -1633,7 +2266,7 @@ index 9fae0d4..3d09a09 100644
      void FramebufferRenderer::addFramebuffer(const DrawParams &p) {
          assert(p.fbStorage != nullptr);
          
-@@ -1450,8 +2121,17 @@ namespace RT64 {
+@@ -1450,8 +2206,18 @@ namespace RT64 {
          uint32_t vertexTestZFaceIndicesStart = 0;
          int32_t vertexTestZCallIndex = -1;
          RenderViewport viewportClip;
@@ -1645,13 +2278,14 @@ index 9fae0d4..3d09a09 100644
 +        std::vector<std::vector<const GameCall *>> reflectionMarkedCalls(fbPair.projectionCount);
 +        std::vector<RenderColor> reflectionClearColors(fbPair.projectionCount, RenderColor(0.5f, 0.5f, 0.5f, 1.0f));
 +        RenderColor lastFillColor(0.5f, 0.5f, 0.5f, 1.0f);
++        const uint32_t skyFogPassStart = uint32_t(skyFogPasses.size());
          for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
              const Projection &proj = fbPair.projections[pr];
 +            reflectionClearColors[pr] = lastFillColor;
              if (proj.scissorRect.isNull()) {
                  continue;
              }
-@@ -1506,6 +2186,52 @@ namespace RT64 {
+@@ -1506,6 +2272,135 @@ namespace RT64 {
                  viewportClip = convertViewportRect(viewport.rect(viewportClipRatios), p.resolutionScale, p.fbWidth, projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
              }
  
@@ -1701,10 +2335,93 @@ index 9fae0d4..3d09a09 100644
 +                }
 +            }
 +
++            // Rush 2 recomp: the sky fog pass of this projection's view, made on its first draw marked with
++            // gEXSetSkyFog. Projections with the same viewport in this framebuffer pair are one view and share it.
++            // A pixel's direction is (ndc.x, ndc.y, 1) times the inverse of the view projection's x, y and w columns
++            // (what the GPU used, interpolated frames included), and ndc comes from the pixel through the viewport.
++            int32_t projSkyFogIndex = -2;
++            auto skyFogPassOf = [&](uint16_t haze) -> int32_t {
++                if (projSkyFogIndex != -2) {
++                    return projSkyFogIndex;
++                }
++
++                projSkyFogIndex = -1;
++                if (!perspectiveProj || (projDepthB == 0.0f)) {
++                    return -1;
++                }
++
++                const interop::RSPViewport &viewport = drawData.rspViewports[proj.transformsIndex];
++                const int16_t viewportEdges[4] = { 1, 1, -1, -1 };
++                const RenderViewport viewportRect = convertViewportRect(viewport.rect(viewportEdges), p.resolutionScale, p.fbWidth, projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
++                if ((viewportRect.width <= 0.0f) || (viewportRect.height <= 0.0f) || (viewport.scale.x == 0.0f) || (viewport.scale.y == 0.0f)) {
++                    return -1;
++                }
++
++                for (uint32_t s = skyFogPassStart; s < skyFogPasses.size(); s++) {
++                    const RenderViewport &other = skyFogPasses[s].viewport;
++                    if ((other.x == viewportRect.x) && (other.y == viewportRect.y) && (other.width == viewportRect.width) && (other.height == viewportRect.height)) {
++                        projSkyFogIndex = int32_t(s);
++                        return projSkyFogIndex;
++                    }
++                }
++
++                const interop::float4x4 &viewProj = (proj.transformsIndex < drawData.modViewProjTransforms.size()) ? drawData.modViewProjTransforms[proj.transformsIndex] : drawData.viewProjTransforms[proj.transformsIndex];
++                const uint32_t clipColumns[3] = { 0, 1, 3 };
++                float g[3][3];
++                for (uint32_t j = 0; j < 3; j++) {
++                    for (uint32_t i = 0; i < 3; i++) {
++                        g[i][j] = viewProj[i][clipColumns[j]];
++                    }
++                }
++
++                const float det =
++                    g[0][0] * (g[1][1] * g[2][2] - g[1][2] * g[2][1]) -
++                    g[0][1] * (g[1][0] * g[2][2] - g[1][2] * g[2][0]) +
++                    g[0][2] * (g[1][0] * g[2][1] - g[1][1] * g[2][0]);
++                if (std::abs(det) < 1e-20f) {
++                    return -1;
++                }
++
++                const float invDet = 1.0f / det;
++                float gi[3][3];
++                gi[0][0] = (g[1][1] * g[2][2] - g[1][2] * g[2][1]) * invDet;
++                gi[0][1] = (g[0][2] * g[2][1] - g[0][1] * g[2][2]) * invDet;
++                gi[0][2] = (g[0][1] * g[1][2] - g[0][2] * g[1][1]) * invDet;
++                gi[1][0] = (g[1][2] * g[2][0] - g[1][0] * g[2][2]) * invDet;
++                gi[1][1] = (g[0][0] * g[2][2] - g[0][2] * g[2][0]) * invDet;
++                gi[1][2] = (g[0][2] * g[1][0] - g[0][0] * g[1][2]) * invDet;
++                gi[2][0] = (g[1][0] * g[2][1] - g[1][1] * g[2][0]) * invDet;
++                gi[2][1] = (g[0][1] * g[2][0] - g[0][0] * g[2][1]) * invDet;
++                gi[2][2] = (g[0][0] * g[1][1] - g[0][1] * g[1][0]) * invDet;
++
++                // screen = (clip.x / w, -clip.y / w) * scale + translate (RSPProcessCS.hlsl flips y), so clip / w is
++                // (pixel - center) / half size, signed like the scale and with y turned over.
++                const float ax = ((viewport.scale.x < 0.0f) ? -1.0f : 1.0f) / (viewportRect.width / 2.0f);
++                const float ay = ((viewport.scale.y < 0.0f) ? 1.0f : -1.0f) / (viewportRect.height / 2.0f);
++                const float bx = -ax * (viewportRect.x + viewportRect.width / 2.0f);
++                const float by = -ay * (viewportRect.y + viewportRect.height / 2.0f);
++                SkyFogPass pass;
++                pass.viewport = viewportRect;
++                pass.cb.dirX = interop::float4(ax * gi[0][0], ax * gi[0][1], ax * gi[0][2], 0.0f);
++                pass.cb.dirY = interop::float4(ay * gi[1][0], ay * gi[1][1], ay * gi[1][2], 0.0f);
++                pass.cb.dirW = interop::float4(
++                    bx * gi[0][0] + by * gi[1][0] + gi[2][0],
++                    bx * gi[0][1] + by * gi[1][1] + gi[2][1],
++                    bx * gi[0][2] + by * gi[1][2] + gi[2][2], 0.0f);
++                pass.cb.fogColor = interop::float4(0.0f, 0.0f, 0.0f, 1.0f);
++                pass.cb.depthA = projDepthA;
++                pass.cb.depthB = projDepthB;
++                pass.cb.haze = haze / 1000.0f;
++                pass.cb.padding = 0.0f;
++                projSkyFogIndex = int32_t(skyFogPasses.size());
++                skyFogPasses.push_back(pass);
++                return projSkyFogIndex;
++            };
++
              for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                  const GameCall &call = proj.gameCalls[d];
                  renderIndices.instanceIndex = call.callDesc.callIndex;
-@@ -1623,6 +2349,18 @@ namespace RT64 {
+@@ -1623,6 +2518,19 @@ namespace RT64 {
                          triangles.vertexTestZ = (vertexTestZCallIndex >= 0);
                          triangles.postBlendDitherNoise = false;
  
@@ -1715,6 +2432,7 @@ index 9fae0d4..3d09a09 100644
 +                        triangles.occlusionIndex = -1;
 +                        triangles.reflectionIndex = -1;
 +                        triangles.reflectionCar = -1;
++                        triangles.skyFogIndex = -1;
 +                        if (perspectiveProj && !callCopyMode && (callOtherMode.zMode() != ZMODE_DEC) && callOtherMode.zUpd() &&
 +                            !interop::Blender::usesAlphaBlend(callOtherMode)) {
 +                            triangles.occlusionIndex = projOcclusionIndex;
@@ -1723,7 +2441,7 @@ index 9fae0d4..3d09a09 100644
                          float invRatioScale = 1.0f / aspectRatioScale;
                          float horizontalMisalignment = 0.0f;
                          switch (proj.type) {
-@@ -1747,6 +2485,19 @@ namespace RT64 {
+@@ -1747,6 +2655,41 @@ namespace RT64 {
  #           endif
                  {
                      rasterScene.instanceIndices.push_back(instanceIndex);
@@ -1739,11 +2457,33 @@ index 9fae0d4..3d09a09 100644
 +                        else {
 +                            reflectionCubeInstances[pr].push_back(instanceIndex);
 +                        }
++
++                        // Rush 2 recomp: a view marked for sky fog. Its pass runs right after its last sky draw
++                        // (gEXSetSkyDraw) and takes the fog color of its fogged draws.
++                        if (call.callDesc.extendedFlags.skyFog != 0) {
++                            const int32_t skyFogIndex = skyFogPassOf(call.callDesc.extendedFlags.skyFog);
++                            if (skyFogIndex >= 0) {
++                                SkyFogPass &pass = skyFogPasses[skyFogIndex];
++                                if (call.callDesc.extendedFlags.skyDraw) {
++                                    pass.lastInstance = instanceIndex;
++                                    pass.hasSky = true;
++                                }
++
++                                pass.cb.haze = call.callDesc.extendedFlags.skyFog / 1000.0f;
++                                if (interop::Blender::usesStandardFogCycle(call.shaderDesc.otherMode)) {
++                                    const interop::float4 &fogColor = drawData.rdpParams[call.callDesc.callIndex].fogColor;
++                                    pass.cb.fogColor = interop::float4(fogColor.x, fogColor.y, fogColor.z, 1.0f);
++                                    pass.fogged = true;
++                                }
++
++                                instanceDrawCall.triangles.skyFogIndex = skyFogIndex;
++                            }
++                        }
 +                    }
                  }
  
                  instanceDrawCallVector.push_back(instanceDrawCall);
-@@ -1754,6 +2505,8 @@ namespace RT64 {
+@@ -1754,6 +2697,8 @@ namespace RT64 {
              }
          }
  
@@ -1753,10 +2493,10 @@ index 9fae0d4..3d09a09 100644
          checkRtScene(rtScene);
  #   endif
 diff --git a/src/render/rt64_framebuffer_renderer.h b/src/render/rt64_framebuffer_renderer.h
-index 3add9c3..6abb6d8 100644
+index 3add9c3..8bc9543 100644
 --- a/src/render/rt64_framebuffer_renderer.h
 +++ b/src/render/rt64_framebuffer_renderer.h
-@@ -5,12 +5,15 @@
+@@ -5,12 +5,16 @@
  #pragma once
  
  #include <stdint.h>
@@ -1769,10 +2509,11 @@ index 3add9c3..6abb6d8 100644
  #include "preset/rt64_preset_scene.h"
 +#include "shared/rt64_ambient_occlusion.h"
 +#include "shared/rt64_car_reflection.h"
++#include "shared/rt64_sky_fog.h"
  #include "shared/rt64_frame_params.h"
  #include "shared/rt64_gpu_tile.h"
  #include "shared/rt64_render_indices.h"
-@@ -58,6 +61,41 @@ namespace RT64 {
+@@ -58,6 +62,59 @@ namespace RT64 {
          uint32_t indexCount;
      };
  
@@ -1811,20 +2552,39 @@ index 3add9c3..6abb6d8 100644
 +        bool atlasDrawn = false;
 +    };
 +
++    // Rush 2 recomp: sky fog (SkyFogPS.hlsl). One per view marked with gEXSetSkyFog: run once, right after the view's
++    // last sky draw (gEXSetSkyDraw), over the screen area its marked draws covered.
++    struct SkyFogPass {
++        interop::SkyFogCB cb;
++        // The viewport the view draws to, which tells views apart.
++        RenderViewport viewport;
++        // The scissors of the view's marked draws, joined.
++        RenderRect rect;
++        bool rectSet = false;
++        // The view's last sky draw (instanceDrawCallVector index), if it has any. A view with no sky draw shows the
++        // clear color, which the game sets to the fog color, so it needs no pass.
++        uint32_t lastInstance = 0;
++        bool hasSky = false;
++        // Whether a marked draw of the view is fogged (cb.fogColor is its color). A view without fog gets no haze.
++        bool fogged = false;
++        bool done = false;
++    };
++
      struct FramebufferRenderer {
          std::vector<uint32_t> textureCacheVersions;
          std::vector<Texture *> textureCacheTextures;
-@@ -67,6 +105,9 @@ namespace RT64 {
+@@ -67,6 +124,10 @@ namespace RT64 {
          uint32_t textureCacheGlobalVersion = 0;
          bool textureCacheReplacementMapEnabled = false;
          std::vector<InstanceDrawCall> instanceDrawCallVector;
 +        std::vector<interop::AmbientOcclusionCB> occlusionParamsVector; // Rush 2 recomp.
 +        std::vector<CarReflectionScene> carReflectionScenes; // Rush 2 recomp.
 +        std::vector<CarReflectionSlot> carReflectionSlots; // Rush 2 recomp.
++        std::vector<SkyFogPass> skyFogPasses; // Rush 2 recomp.
          std::vector<RenderPipelineProgram> hitGroupVector;
          std::vector<interop::RenderIndices> renderIndicesVector;
          std::vector<DynamicTextureView> dynamicTextureViewVector;
-@@ -165,6 +206,9 @@ namespace RT64 {
+@@ -165,6 +226,9 @@ namespace RT64 {
          void submitRSPSmoothNormalCompute(RenderWorker *worker, const OutputBuffers *outputBuffers);
          bool submitDepthAccess(RenderWorker *worker, RenderFramebufferStorage *fbStorage, bool readOnly, bool &depthState);
          void submitRasterScene(RenderWorker *worker, const Framebuffer &framebuffer, RenderFramebufferStorage *fbStorage, const RasterScene &rasterScene, bool &depthState);
@@ -1835,10 +2595,10 @@ index 3add9c3..6abb6d8 100644
          void endFramebuffers(RenderWorker *worker, const DrawBuffers *drawBuffers, const OutputBuffers *outputBuffers, bool rtEnabled);
          void recordSetup(RenderWorker *worker, std::vector<BufferUploader *> bufferUploaders, RSPProcessor *rspProcessor, VertexProcessor *vertexProcessor, const OutputBuffers *outputBuffers, bool rtEnabled);
 diff --git a/src/render/rt64_framebuffer_renderer_call.h b/src/render/rt64_framebuffer_renderer_call.h
-index f2eee70..a0b4bdc 100644
+index f2eee70..ac443eb 100644
 --- a/src/render/rt64_framebuffer_renderer_call.h
 +++ b/src/render/rt64_framebuffer_renderer_call.h
-@@ -41,6 +41,15 @@ namespace RT64 {
+@@ -41,6 +41,18 @@ namespace RT64 {
                  bool vertexTestZ : 1;
                  bool postBlendDitherNoise : 1;
                  bool postBlendDitherNoiseNegative : 1;
@@ -1851,6 +2611,9 @@ index f2eee70..a0b4bdc 100644
 +                int32_t reflectionIndex;
 +                // Rush 2 recomp: the car the draw is part of, in that scene's cars (CarReflectionScene::carBoxes).
 +                int32_t reflectionCar;
++                // Rush 2 recomp: the sky fog pass of the view this draw is part of (FramebufferRenderer::skyFogPasses),
++                // or -1.
++                int32_t skyFogIndex;
              } triangles;
  
              struct {
@@ -2611,7 +3374,7 @@ index 5c40c18..2e33dae 100644
 \ No newline at end of file
 +};
 diff --git a/src/render/rt64_render_target_manager.h b/src/render/rt64_render_target_manager.h
-index 7368711..249ced4 100644
+index 7368711..6949601 100644
 --- a/src/render/rt64_render_target_manager.h
 +++ b/src/render/rt64_render_target_manager.h
 @@ -9,6 +9,7 @@
@@ -2622,11 +3385,12 @@ index 7368711..249ced4 100644
  #include "rt64_render_target.h"
  
  namespace RT64 {
-@@ -56,6 +57,15 @@ namespace RT64 {
+@@ -56,6 +57,16 @@ namespace RT64 {
          uint64_t colorTargetRevision = 0;
          uint64_t depthTargetRevision = 0;
  
-+        // Rush 2 recomp: screen space ambient occlusion (FramebufferRenderer::submitRasterScene), made when first used.
++        // Rush 2 recomp: screen space ambient occlusion and sky fog (FramebufferRenderer::submitRasterScene), made when
++        // first used. Sky fog uses colorOnly and occlusionDepthSet.
 +        std::unique_ptr<RenderTexture> occlusionTexture;
 +        std::unique_ptr<RenderFramebuffer> occlusionFramebuffer;
 +        std::unique_ptr<RenderFramebuffer> colorOnly;
@@ -2639,18 +3403,19 @@ index 7368711..249ced4 100644
      };
  
 diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library.cpp
-index d1c5273..47db0f1 100644
+index d1c5273..e2acd4d 100644
 --- a/src/render/rt64_shader_library.cpp
 +++ b/src/render/rt64_shader_library.cpp
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
  #include "rt64_shader_library.h"
  
  #include "common/rt64_common.h"
 +#include "shared/rt64_ambient_occlusion.h"
++#include "shared/rt64_sky_fog.h"
  #include "shared/rt64_render_target_copy.h"
  #include "shared/rt64_rsp_vertex_test_z.h"
  
-@@ -49,6 +50,12 @@
+@@ -49,6 +51,14 @@
  #include "shaders/FullScreenVS.hlsl.spirv.h"
  #include "shaders/Im3DVS.hlsl.spirv.h"
  #include "shaders/ComposePS.hlsl.spirv.h"
@@ -2660,10 +3425,12 @@ index d1c5273..47db0f1 100644
 +#include "shaders/CarReflectionCS.hlsl.spirv.h"
 +#include "shaders/CarReflectionVS.hlsl.spirv.h"
 +#include "shaders/CarReflectionPS.hlsl.spirv.h"
++#include "shaders/SkyFogPS.hlsl.spirv.h"
++#include "shaders/SkyFogPSMS.hlsl.spirv.h"
  #include "shaders/DebugPS.hlsl.spirv.h"
  #include "shaders/Im3DPS.hlsl.spirv.h"
  #include "shaders/PostProcessPS.hlsl.spirv.h"
-@@ -95,6 +102,12 @@
+@@ -95,6 +105,14 @@
  #   include "shaders/FullScreenVS.hlsl.dxil.h"
  #   include "shaders/Im3DVS.hlsl.dxil.h"
  #   include "shaders/ComposePS.hlsl.dxil.h"
@@ -2673,10 +3440,12 @@ index d1c5273..47db0f1 100644
 +#   include "shaders/CarReflectionCS.hlsl.dxil.h"
 +#   include "shaders/CarReflectionVS.hlsl.dxil.h"
 +#   include "shaders/CarReflectionPS.hlsl.dxil.h"
++#   include "shaders/SkyFogPS.hlsl.dxil.h"
++#   include "shaders/SkyFogPSMS.hlsl.dxil.h"
  #   include "shaders/DebugPS.hlsl.dxil.h"
  #   include "shaders/Im3DPS.hlsl.dxil.h"
  #   include "shaders/PostProcessPS.hlsl.dxil.h"
-@@ -140,6 +153,12 @@
+@@ -140,6 +158,14 @@
  #   include "shaders/FullScreenVS.hlsl.metal.h"
  #   include "shaders/Im3DVS.hlsl.metal.h"
  #   include "shaders/ComposePS.hlsl.metal.h"
@@ -2686,10 +3455,12 @@ index d1c5273..47db0f1 100644
 +#   include "shaders/CarReflectionCS.hlsl.metal.h"
 +#   include "shaders/CarReflectionVS.hlsl.metal.h"
 +#   include "shaders/CarReflectionPS.hlsl.metal.h"
++#   include "shaders/SkyFogPS.hlsl.metal.h"
++#   include "shaders/SkyFogPSMS.hlsl.metal.h"
  #   include "shaders/DebugPS.hlsl.metal.h"
  #   include "shaders/Im3DPS.hlsl.metal.h"
  #   include "shaders/PostProcessPS.hlsl.metal.h"
-@@ -148,6 +167,7 @@
+@@ -148,6 +174,7 @@
  #include "shared/rt64_fb_common.h"
  #include "shared/rt64_fb_reinterpret.h"
  #include "shared/rt64_texture_copy.h"
@@ -2697,7 +3468,7 @@ index d1c5273..47db0f1 100644
  #include "shared/rt64_video_interface.h"
  
  #include "rt64_descriptor_sets.h"
-@@ -535,6 +555,20 @@ namespace RT64 {
+@@ -535,6 +562,20 @@ namespace RT64 {
              rspSmoothNormal.pipeline = device->createComputePipeline(pipelineDesc);
          }
  
@@ -2718,7 +3489,7 @@ index d1c5273..47db0f1 100644
          // RSP World.
          {
              RSPWorldDescriptorSet descriptorSet;
-@@ -573,7 +607,7 @@ namespace RT64 {
+@@ -573,7 +614,7 @@ namespace RT64 {
          {
              TextureDecodeDescriptorSet descriptorSet;
              layoutBuilder.begin();
@@ -2727,7 +3498,7 @@ index d1c5273..47db0f1 100644
              layoutBuilder.addDescriptorSet(descriptorSet);
              layoutBuilder.end();
              textureDecode.pipelineLayout = layoutBuilder.create(device);
-@@ -851,7 +885,106 @@ namespace RT64 {
+@@ -851,7 +892,143 @@ namespace RT64 {
              pipelineDesc.multisampling = multisampling;
              postProcess.pipeline = device->createGraphicsPipeline(pipelineDesc);
          }
@@ -2776,6 +3547,43 @@ index d1c5273..47db0f1 100644
 +            pipelineDesc.pixelShader = applyShader.get();
 +            pipelineDesc.multisampling = multisampling;
 +            ambientOcclusionApply.pipeline = device->createGraphicsPipeline(pipelineDesc);
++        }
++
++        // Rush 2 recomp: sky fog. Reads the depth target and blends the fog color over the color target's RGB where the
++        // depth is the clear, by the alpha the shader returns.
++        {
++            TextureCopyDescriptorSet descriptorSet;
++            layoutBuilder.begin();
++            layoutBuilder.addPushConstant(0, 0, sizeof(interop::SkyFogCB), RenderShaderStageFlag::PIXEL);
++            layoutBuilder.addDescriptorSet(descriptorSet);
++            layoutBuilder.end();
++            skyFog.pipelineLayout = layoutBuilder.create(device);
++            skyFogMS.pipelineLayout = layoutBuilder.create(device);
++
++            std::unique_ptr<RenderShader> skyFogShader = device->createShader(CREATE_SHADER_INPUTS(SkyFogPSBlobDXIL, SkyFogPSBlobSPIRV, SkyFogPSBlobMSL, "PSMain", shaderFormat));
++            std::unique_ptr<RenderShader> skyFogMSShader = device->createShader(CREATE_SHADER_INPUTS(SkyFogPSMSBlobDXIL, SkyFogPSMSBlobSPIRV, SkyFogPSMSBlobMSL, "PSMain", shaderFormat));
++            RenderBlendDesc fogBlend;
++            fogBlend.blendEnabled = true;
++            fogBlend.srcBlend = RenderBlend::SRC_ALPHA;
++            fogBlend.dstBlend = RenderBlend::INV_SRC_ALPHA;
++            fogBlend.blendOp = RenderBlendOperation::ADD;
++            fogBlend.srcBlendAlpha = RenderBlend::ZERO;
++            fogBlend.dstBlendAlpha = RenderBlend::ONE;
++            fogBlend.blendOpAlpha = RenderBlendOperation::ADD;
++            fogBlend.renderTargetWriteMask = uint8_t(RenderColorWriteEnable::RED) | uint8_t(RenderColorWriteEnable::GREEN) | uint8_t(RenderColorWriteEnable::BLUE);
++            RenderGraphicsPipelineDesc pipelineDesc;
++            pipelineDesc.renderTargetBlend[0] = fogBlend;
++            pipelineDesc.renderTargetFormat[0] = RenderTarget::colorBufferFormat(usesHDR);
++            pipelineDesc.renderTargetCount = 1;
++            pipelineDesc.vertexShader = fullScreenVertexShader.get();
++            pipelineDesc.multisampling = multisampling;
++            pipelineDesc.pipelineLayout = skyFog.pipelineLayout.get();
++            pipelineDesc.pixelShader = skyFogShader.get();
++            skyFog.pipeline = device->createGraphicsPipeline(pipelineDesc);
++
++            pipelineDesc.pipelineLayout = skyFogMS.pipelineLayout.get();
++            pipelineDesc.pixelShader = skyFogMSShader.get();
++            skyFogMS.pipeline = device->createGraphicsPipeline(pipelineDesc);
 +        }
 +
 +        // Rush 2 recomp: car reflections. Draws a marked draw's triangles over the paint they are a layer of, blended by
@@ -2836,10 +3644,10 @@ index d1c5273..47db0f1 100644
          {
              FramebufferRendererDescriptorCommonSet descriptorCommonSet(samplerLibrary, deviceCapabilities.raytracing);
 diff --git a/src/render/rt64_shader_library.h b/src/render/rt64_shader_library.h
-index 641f3ec..3dc2fcb 100644
+index 641f3ec..5068fdd 100644
 --- a/src/render/rt64_shader_library.h
 +++ b/src/render/rt64_shader_library.h
-@@ -18,7 +18,12 @@ namespace RT64 {
+@@ -18,7 +18,14 @@ namespace RT64 {
          bool usesHardwareResolve = false;
  
          // All shaders.
@@ -2849,6 +3657,8 @@ index 641f3ec..3dc2fcb 100644
          ShaderRecord bicubicScaling;
 +        ShaderRecord carReflection;
 +        ShaderRecord carReflectionDraw;
++        ShaderRecord skyFog;
++        ShaderRecord skyFogMS;
          ShaderRecord boxFilter;
          ShaderRecord compose;
          ShaderRecord debug;
@@ -2872,21 +3682,22 @@ index 95618bc..984759e 100644
          std::vector<uint8_t> bytesTMEM;
          bool decodeTMEM = false;
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
-index 0848f3e..315d140 100644
+index 0848f3e..bb0b3f5 100644
 --- a/src/render/rt64_texture_cache.cpp
 +++ b/src/render/rt64_texture_cache.cpp
-@@ -4,6 +4,10 @@
+@@ -4,6 +4,11 @@
  
  #define STB_IMAGE_IMPLEMENTATION
  
 +#include <algorithm>
++#include <atomic>
 +#include <thread>
 +#include <chrono>
 +
  #include "ddspp/ddspp.h"
  #include "stb/stb_image.h"
  #include "xxHash/xxh3.h"
-@@ -11,8 +15,10 @@
+@@ -11,8 +16,10 @@
  // Needs to be included before other headers.
  #include "gbi/rt64_f3d.h"
  
@@ -2897,7 +3708,7 @@ index 0848f3e..315d140 100644
  #include "common/rt64_load_types.h"
  #include "common/rt64_thread.h"
  #include "common/rt64_tmem_hasher.h"
-@@ -26,6 +32,59 @@ namespace RT64 {
+@@ -26,6 +33,59 @@ namespace RT64 {
      // ReplacementMap
      
      static const interop::float2 IdentityScale = { 1.0f, 1.0f };
@@ -2907,9 +3718,9 @@ index 0848f3e..315d140 100644
 +    static std::mutex LiveCacheMutex;
 +    static TextureCache *LiveCache = nullptr;
 +
-+    bool addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, ReplacementRegion region) {
++    bool addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, ReplacementRegion region, bool centered) {
 +        std::unique_lock lock(LiveCacheMutex);
-+        return (LiveCache != nullptr) && LiveCache->addLiveReplacement(hash, contentKey, std::move(fileBytes), region);
++        return (LiveCache != nullptr) && LiveCache->addLiveReplacement(hash, contentKey, std::move(fileBytes), region, centered);
 +    }
 +
 +    bool hasLiveReplacementContent(uint64_t contentKey) {
@@ -2957,7 +3768,7 @@ index 0848f3e..315d140 100644
      static const uint32_t TextureDataPitchAlignment = 256;
      static const uint32_t TextureDataPlacementAlignment = 512;
  
-@@ -60,6 +119,14 @@ namespace RT64 {
+@@ -60,6 +120,14 @@ namespace RT64 {
          resolvedHashVersions.clear();
          fileSystemStreamResolvedPaths.clear();
  
@@ -2972,15 +3783,17 @@ index 0848f3e..315d140 100644
          usedTexturePoolSize = 0;
          cachedTexturePoolSize = 0;
          fileSystemIsDirectory = false;
-@@ -207,6 +274,7 @@ namespace RT64 {
+@@ -206,7 +274,9 @@ namespace RT64 {
+             if (textureReplacements[i] != nullptr) {
                  textureReplacements[i] = nullptr;
                  textureReplacementShiftedByHalf[i] = false;
++                textureReplacementCentered[i] = false;
                  textureReplacementReferenceCounted[i] = false;
 +                textureReplacementRegions[i] = {};
                  versions[i]++;
              }
          }
-@@ -214,7 +282,7 @@ namespace RT64 {
+@@ -214,7 +284,7 @@ namespace RT64 {
          globalVersion++;
      }
  
@@ -2989,15 +3802,17 @@ index 0848f3e..315d140 100644
          assert(hashMap.find(hash) == hashMap.end());
  
          // Check for free spaces on the LIFO queue first.
-@@ -231,6 +299,7 @@ namespace RT64 {
+@@ -230,7 +300,9 @@ namespace RT64 {
+             textureReplacements.push_back(nullptr);
              cachedTextureReplacementDimensions.emplace_back();
              textureReplacementShiftedByHalf.emplace_back(false);
++            textureReplacementCentered.emplace_back(false);
              textureReplacementReferenceCounted.emplace_back(false);
 +            textureReplacementRegions.emplace_back();
              textureScales.push_back(IdentityScale);
              hashes.push_back(0);
              versions.push_back(0);
-@@ -240,21 +309,38 @@ namespace RT64 {
+@@ -240,21 +312,41 @@ namespace RT64 {
  
          hashMap[hash] = textureIndex;
          textures[textureIndex] = texture;
@@ -3005,6 +3820,7 @@ index 0848f3e..315d140 100644
 +        cachedTextureDimensions[textureIndex] = interop::float3(float(texture->width), float(texture->height), float(std::max(texture->mipmaps, 1U)));
          textureReplacements[textureIndex] = nullptr;
          textureReplacementShiftedByHalf[textureIndex] = false;
++        textureReplacementCentered[textureIndex] = false;
          textureReplacementReferenceCounted[textureIndex] = false;
 +        textureReplacementRegions[textureIndex] = {};
          textureScales[textureIndex] = IdentityScale;
@@ -3022,8 +3838,9 @@ index 0848f3e..315d140 100644
 +            accessList.push_front({ textureIndex, creationFrame });
 +            listIterators[textureIndex] = accessList.begin();
 +        }
-+    }
-+
+     }
+ 
+-    void TextureMap::replace(uint64_t hash, Texture *texture, bool shiftedByHalf, bool referenceCounted) {
 +    void TextureMap::unpinAll() {
 +        // Rush 2 recomp: prewarmed textures never used go into the access list as last used when they were made, so
 +        // the next eviction ages them out like any other.
@@ -3033,24 +3850,28 @@ index 0848f3e..315d140 100644
 +                listIterators[i] = std::prev(accessList.end());
 +            }
 +        }
-     }
- 
--    void TextureMap::replace(uint64_t hash, Texture *texture, bool shiftedByHalf, bool referenceCounted) {
-+    void TextureMap::replace(uint64_t hash, Texture *texture, bool shiftedByHalf, bool referenceCounted, const ReplacementRegion &region) {
++    }
++
++    void TextureMap::replace(uint64_t hash, Texture *texture, ReplacementShift shift, bool referenceCounted, const ReplacementRegion &region) {
++        const bool shiftedByHalf = (shift == ReplacementShift::Half) || (shift == ReplacementShift::Center);
++        const bool centered = (shift == ReplacementShift::Center);
          const auto it = hashMap.find(hash);
          if (it == hashMap.end()) {
              return;
-@@ -265,6 +351,7 @@ namespace RT64 {
+@@ -265,6 +357,8 @@ namespace RT64 {
          if (texture == textureReplacements[it->second]) {
              // The exception is that the shifting mode can be changed in real-time by the user while editing, so we update it regardless.
              textureReplacementShiftedByHalf[it->second] = shiftedByHalf;
++            textureReplacementCentered[it->second] = centered;
 +            textureReplacementRegions[it->second] = region;
              return;
          }
  
-@@ -277,7 +364,12 @@ namespace RT64 {
+@@ -276,8 +370,14 @@ namespace RT64 {
+         Texture *replacedTexture = textures[it->second];
          textureReplacements[it->second] = texture;
          textureReplacementShiftedByHalf[it->second] = shiftedByHalf;
++        textureReplacementCentered[it->second] = centered;
          textureReplacementReferenceCounted[it->second] = referenceCounted;
 -        textureScales[it->second] = { float(texture->width) / float(replacedTexture->width), float(texture->height) / float(replacedTexture->height) };
 +        textureReplacementRegions[it->second] = region;
@@ -3062,7 +3883,7 @@ index 0848f3e..315d140 100644
          cachedTextureReplacementDimensions[it->second] = interop::float3(float(texture->width), float(texture->height), float(texture->mipmaps));
          versions[it->second]++;
          globalVersion++;
-@@ -288,10 +380,31 @@ namespace RT64 {
+@@ -288,10 +388,33 @@ namespace RT64 {
          }
      }
  
@@ -3079,6 +3900,7 @@ index 0848f3e..315d140 100644
 +
 +        textureReplacements[it->second] = nullptr;
 +        textureReplacementShiftedByHalf[it->second] = false;
++        textureReplacementCentered[it->second] = false;
 +        textureReplacementReferenceCounted[it->second] = false;
 +        textureReplacementRegions[it->second] = {};
 +        textureScales[it->second] = IdentityScale;
@@ -3086,16 +3908,17 @@ index 0848f3e..315d140 100644
 +        globalVersion++;
 +    }
 +
-+    bool TextureMap::use(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, interop::uint2 &texelShift, bool &sourceRegion) {
++    bool TextureMap::use(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, bool &centered, interop::uint2 &texelShift, bool &sourceRegion) {
          textureScale = IdentityScale;
          hasMipmaps = false;
          shiftedByHalf = false;
++        centered = false;
 +        texelShift = { 0, 0 };
 +        sourceRegion = false;
  
          // Find the matching texture index in the hash map.
          const auto it = hashMap.find(hash);
-@@ -306,11 +419,24 @@ namespace RT64 {
+@@ -306,11 +429,25 @@ namespace RT64 {
          if (textureReplaced) {
              textureScale = textureScales[textureIndex];
              textureDimensions = cachedTextureReplacementDimensions[textureIndex];
@@ -3103,6 +3926,7 @@ index 0848f3e..315d140 100644
 +            const Texture *replacement = textureReplacements[textureIndex];
 +            hasMipmaps = (replacement->mipmaps > 1) && (!replacement->generatedMipmaps || GeneratedMipmapsEnabled);
              shiftedByHalf = textureReplacementShiftedByHalf[textureIndex];
++            centered = textureReplacementCentered[textureIndex];
 +
 +            // A region is sampled from the image at the region's origin. Its mipmaps aren't used: their filtering
 +            // doesn't know about the region.
@@ -3121,15 +3945,17 @@ index 0848f3e..315d140 100644
          }
  
          // Remove the existing entry from the list if it exists.
-@@ -362,6 +488,7 @@ namespace RT64 {
+@@ -361,7 +498,9 @@ namespace RT64 {
+ 
                  textureReplacements[textureIndex] = nullptr;
                  textureReplacementShiftedByHalf[textureIndex] = false;
++                textureReplacementCentered[textureIndex] = false;
                  textureReplacementReferenceCounted[textureIndex] = false;
 +                textureReplacementRegions[textureIndex] = {};
              }
              // Stop iterating if we reach an entry that has been used in the present.
              else if (age == 0) {
-@@ -410,6 +537,8 @@ namespace RT64 {
+@@ -410,6 +549,8 @@ namespace RT64 {
          Thread::setCurrentThreadPriority(Thread::Priority::Low);
  
          std::vector<uint8_t> replacementBytes;
@@ -3138,7 +3964,7 @@ index 0848f3e..315d140 100644
          while (threadRunning) {
              StreamDescription streamDesc;
  
-@@ -418,7 +547,7 @@ namespace RT64 {
+@@ -418,7 +559,7 @@ namespace RT64 {
                  std::unique_lock queueLock(textureCache->streamDescStackMutex);
                  textureCache->streamDescStackActiveCount--;
                  textureCache->streamDescStackChanged.wait(queueLock, [this]() {
@@ -3147,7 +3973,7 @@ index 0848f3e..315d140 100644
                  });
  
                  textureCache->streamDescStackActiveCount++;
-@@ -427,6 +556,33 @@ namespace RT64 {
+@@ -427,6 +568,33 @@ namespace RT64 {
                      streamDesc = textureCache->streamDescStack.top();
                      textureCache->streamDescStack.pop();
                  }
@@ -3181,7 +4007,7 @@ index 0848f3e..315d140 100644
              }
              
              if (!streamDesc.relativePath.empty()) {
-@@ -487,9 +643,19 @@ namespace RT64 {
+@@ -487,9 +655,19 @@ namespace RT64 {
          for (uint32_t i = 0; i < threadCount; i++) {
              streamThreads.push_back(std::make_unique<StreamThread>(this));
          }
@@ -3201,7 +4027,7 @@ index 0848f3e..315d140 100644
          waitForAllStreamThreads(true);
          streamThreads.clear();
  
-@@ -500,6 +666,10 @@ namespace RT64 {
+@@ -500,6 +678,10 @@ namespace RT64 {
              uploadThread.reset();
          }
          
@@ -3212,7 +4038,7 @@ index 0848f3e..315d140 100644
          descriptorSets.clear();
          tmemUploadResources.clear();
          replacementUploadResources.clear();
-@@ -929,6 +1099,63 @@ namespace RT64 {
+@@ -929,6 +1111,63 @@ namespace RT64 {
          return true;
      }
  
@@ -3276,7 +4102,7 @@ index 0848f3e..315d140 100644
      Texture *TextureCache::loadTextureFromBytes(RenderDevice *device, RenderCommandList *commandList, const std::vector<uint8_t> &fileBytes, std::unique_ptr<RenderBuffer> &dstUploadResource, RenderPool *resourcePool, std::mutex *uploadResourcePoolMutex) {
          const uint32_t PNG_MAGIC = 0x474E5089;
          Texture *replacementTexture = new Texture();
-@@ -942,11 +1169,12 @@ namespace RT64 {
+@@ -942,11 +1181,12 @@ namespace RT64 {
              int width, height;
              stbi_uc *data = stbi_load_from_memory(fileBytes.data(), fileBytes.size(), &width, &height, nullptr, 4);
              if (data != nullptr) {
@@ -3293,7 +4119,7 @@ index 0848f3e..315d140 100644
              }
  
              break;
-@@ -980,10 +1208,39 @@ namespace RT64 {
+@@ -980,10 +1220,39 @@ namespace RT64 {
          std::vector<RenderTextureBarrier> beforeDecodeBarriers;
          std::vector<RenderTextureBarrier> afterDecodeBarriers;
          std::vector<uint8_t> replacementBytes;
@@ -3333,7 +4159,7 @@ index 0848f3e..315d140 100644
              beforeCopyBarriers.clear();
              beforeDecodeBarriers.clear();
              afterDecodeBarriers.clear();
-@@ -992,12 +1249,21 @@ namespace RT64 {
+@@ -992,12 +1261,21 @@ namespace RT64 {
              {
                  std::unique_lock queueLock(uploadQueueMutex);
                  uploadQueueChanged.wait(queueLock, [this]() {
@@ -3356,7 +4182,7 @@ index 0848f3e..315d140 100644
  
                  if (!resolvedPathQueue.empty()) {
                      resolvedPathQueueCopy.insert(resolvedPathQueueCopy.end(), resolvedPathQueue.begin(), resolvedPathQueue.end());
-@@ -1008,6 +1274,14 @@ namespace RT64 {
+@@ -1008,6 +1286,14 @@ namespace RT64 {
                      streamResultQueueCopy.insert(streamResultQueueCopy.end(), streamResultQueue.begin(), streamResultQueue.end());
                      streamResultQueue.clear();
                  }
@@ -3371,7 +4197,7 @@ index 0848f3e..315d140 100644
              }
              
              if (!streamResultQueueCopy.empty()) {
-@@ -1039,7 +1313,7 @@ namespace RT64 {
+@@ -1039,7 +1325,7 @@ namespace RT64 {
                  }
              }
  
@@ -3380,7 +4206,7 @@ index 0848f3e..315d140 100644
                  // Create new upload buffers and descriptor heaps to fill out the required size.
                  const size_t queueSize = queueCopy.size();
                  const uint64_t TMEMSize = 0x1000;
-@@ -1059,18 +1333,95 @@ namespace RT64 {
+@@ -1059,18 +1345,95 @@ namespace RT64 {
                  // issues that can't be accounted for. Using dedicated copy queues for these operations has shown to eliminate these issues entirely.
                  copyWorker->commandList->begin();
                  textureMapAdditions.clear();
@@ -3403,7 +4229,7 @@ index 0848f3e..315d140 100644
 +                        while ((((upload.width >> mipLevels) << mipLevels) == upload.width) && (((upload.height >> mipLevels) << mipLevels) == upload.height)) {
 +                            mipLevels++;
 +                        }
- 
++
 +                        uploadMipLevels[i] = mipLevels;
 +                        uploadMipDescriptorBase[i] = mipDescriptorSetCount;
 +                        mipDescriptorSetCount += mipLevels - 1;
@@ -3413,7 +4239,7 @@ index 0848f3e..315d140 100644
 +                while (mipDescriptorSets.size() < mipDescriptorSetCount) {
 +                    mipDescriptorSets.emplace_back(std::make_unique<TextureDecodeDescriptorSet>(directWorker->device));
 +                }
-+
+ 
 +                auto createResources = [&](size_t i) {
 +                    const TextureUpload &upload = queueCopy[i];
 +                    Texture *newTexture = textureMapAdditions[i].texture;
@@ -3477,7 +4303,7 @@ index 0848f3e..315d140 100644
                      newTexture->tmem->setName("Texture Cache TMEM #" + std::to_string(TMEMGlobalCounter++));
                      newTexture->bytesTMEM = upload.bytesTMEM;
                      newTexture->loadTile = upload.loadTile;
-@@ -1103,16 +1454,17 @@ namespace RT64 {
+@@ -1103,16 +1466,17 @@ namespace RT64 {
  
                      if (upload.decodeTMEM) {
                          static uint32_t TextureGlobalCounter = 0;
@@ -3500,7 +4326,7 @@ index 0848f3e..315d140 100644
                  }
  
                  replacementMapAdditions.clear();
-@@ -1136,8 +1488,11 @@ namespace RT64 {
+@@ -1136,8 +1500,11 @@ namespace RT64 {
  
                      // Replacement texture hasn't been loaded yet.
                      if (replacementTexture == nullptr) {
@@ -3514,7 +4340,7 @@ index 0848f3e..315d140 100644
  #                           if !ONLY_USE_LOW_MIP_CACHE
                              // Make sure the replacement map hasn't queued or loaded the relative path already.
                              auto &streamSet = textureMap.replacementMap.fileSystemStreamSets[resolvedPath.fileSystemIndex];
-@@ -1176,6 +1531,44 @@ namespace RT64 {
+@@ -1176,6 +1543,46 @@ namespace RT64 {
                      }
                  }
                  
@@ -3529,6 +4355,7 @@ index 0848f3e..315d140 100644
 +                            for (uint64_t hash : contentIt->second.hashes) {
 +                                liveHashKeys.erase(hash);
 +                                liveHashRegions.erase(hash);
++                                liveHashCentered.erase(hash);
 +                            }
 +
 +                            liveContents.erase(contentIt);
@@ -3550,16 +4377,17 @@ index 0848f3e..315d140 100644
 +
 +                for (uint64_t hash : liveApplyQueueCopy) {
 +                    ReplacementRegion liveRegion;
-+                    Texture *liveTexture = getLiveTexture(hash, &liveRegion);
++                    bool liveCentered = false;
++                    Texture *liveTexture = getLiveTexture(hash, &liveRegion, &liveCentered);
 +                    if ((liveTexture != nullptr) && !packReplaces(hash)) {
-+                        replacementMapAdditions.emplace_back(ReplacementMapAddition{ hash, liveTexture, ReplacementShift::Half, false, true, liveRegion });
++                        replacementMapAdditions.emplace_back(ReplacementMapAddition{ hash, liveTexture, liveCentered ? ReplacementShift::Center : ReplacementShift::Half, false, true, liveRegion });
 +                    }
 +                }
 +
                  // Execute the copy worker and signal a semaphore so it synchronizes with the direct worker afterwards.
                  const RenderCommandList *copyCommandList = copyWorker->commandList.get();
                  RenderCommandSemaphore *syncSemaphore = copyToDirectSemaphore.get();
-@@ -1205,6 +1598,7 @@ namespace RT64 {
+@@ -1205,6 +1612,7 @@ namespace RT64 {
                          decodeCB.stride = interop::uint(upload.loadTile.line) << 3;
                          decodeCB.tlut = upload.tlut;
                          decodeCB.palette = upload.loadTile.palette;
@@ -3567,7 +4395,7 @@ index 0848f3e..315d140 100644
  
                          // Dispatch compute shader for decoding texture.
                          const uint32_t ThreadGroupSize = 8;
-@@ -1214,6 +1608,16 @@ namespace RT64 {
+@@ -1214,6 +1622,16 @@ namespace RT64 {
                          directWorker->commandList->setComputeDescriptorSet(descriptorSets[i]->get(), 0);
                          directWorker->commandList->dispatch(dispatchX, dispatchY, 1);
  
@@ -3584,7 +4412,7 @@ index 0848f3e..315d140 100644
                          afterDecodeBarriers.emplace_back(RenderTextureBarrier(textureMapAdditions[i].texture->texture.get(), RenderTextureLayout::SHADER_READ));
                      }
                  }
-@@ -1235,18 +1639,31 @@ namespace RT64 {
+@@ -1235,18 +1653,31 @@ namespace RT64 {
                  {
                      std::unique_lock lock(textureMapMutex);
                      for (const TextureMapAddition &addition : textureMapAdditions) {
@@ -3606,7 +4434,7 @@ index 0848f3e..315d140 100644
 +                            continue;
 +                        }
 +
-+                        textureMap.replace(addition.hash, addition.texture, addition.shift == ReplacementShift::Half, addition.referenceCounted, addition.region);
++                        textureMap.replace(addition.hash, addition.texture, addition.shift, addition.referenceCounted, addition.region);
                      }
  
                      textureMap.replacementMap.evict(textureMap.evictedTextures);
@@ -3619,7 +4447,7 @@ index 0848f3e..315d140 100644
                      std::unique_lock queueLock(uploadQueueMutex);
                      newQueue = std::vector<TextureUpload>(uploadQueue.begin() + queueSize, uploadQueue.end());
                      uploadQueue = std::move(newQueue);
-@@ -1279,6 +1696,43 @@ namespace RT64 {
+@@ -1279,6 +1710,43 @@ namespace RT64 {
          uploadQueueChanged.notify_all();
      }
  
@@ -3663,34 +4491,35 @@ index 0848f3e..315d140 100644
      void TextureCache::waitForGPUUploads() {
          std::unique_lock queueLock(uploadQueueMutex);
          uploadQueueFinished.wait(queueLock, [this]() {
-@@ -1312,9 +1766,9 @@ namespace RT64 {
+@@ -1312,9 +1780,9 @@ namespace RT64 {
          }
      }
  
 -    bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf) {
-+    bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, interop::uint2 &texelShift, bool &sourceRegion) {
++    bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, bool &centered, interop::uint2 &texelShift, bool &sourceRegion) {
          std::unique_lock lock(textureMapMutex);
 -        return textureMap.use(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
-+        return textureMap.use(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf, texelShift, sourceRegion);
++        return textureMap.use(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf, centered, texelShift, sourceRegion);
      }
  
      bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex) {
-@@ -1323,7 +1777,9 @@ namespace RT64 {
+@@ -1323,7 +1791,10 @@ namespace RT64 {
          bool textureReplaced;
          bool hasMipmaps;
          bool shiftedByHalf;
 -        return useTexture(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf);
++        bool centered;
 +        interop::uint2 texelShift;
 +        bool sourceRegion;
-+        return useTexture(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf, texelShift, sourceRegion);
++        return useTexture(hash, submissionFrame, textureIndex, textureScale, textureDimensions, textureReplaced, hasMipmaps, shiftedByHalf, centered, texelShift, sourceRegion);
      }
      
      bool TextureCache::addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift) {
-@@ -1406,6 +1862,176 @@ namespace RT64 {
+@@ -1406,6 +1877,186 @@ namespace RT64 {
          return false;
      }
  
-+    bool TextureCache::addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, const ReplacementRegion &region) {
++    bool TextureCache::addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, const ReplacementRegion &region, bool centered) {
 +        {
 +            std::unique_lock liveLock(liveMutex);
 +            auto hashIt = liveHashKeys.find(hash);
@@ -3722,6 +4551,10 @@ index 0848f3e..315d140 100644
 +            liveHashKeys[hash] = contentKey;
 +            if (!region.isWhole()) {
 +                liveHashRegions[hash] = region;
++            }
++
++            if (centered) {
++                liveHashCentered.insert(hash);
 +            }
 +            queueApply = (contentIt->second.texture != nullptr);
 +        }
@@ -3767,6 +4600,7 @@ index 0848f3e..315d140 100644
 +            auto contentIt = liveContents.find(hashIt->second);
 +            liveHashKeys.erase(hashIt);
 +            liveHashRegions.erase(hash);
++            liveHashCentered.erase(hash);
 +            if (contentIt == liveContents.end()) {
 +                return;
 +            }
@@ -3798,6 +4632,7 @@ index 0848f3e..315d140 100644
 +            hashKeys.swap(liveHashKeys);
 +            contents.swap(liveContents);
 +            liveHashRegions.clear();
++            liveHashCentered.clear();
 +        }
 +
 +        // Textures still waiting to be uploaded are deleted by the upload thread once it finds their content gone.
@@ -3828,7 +4663,7 @@ index 0848f3e..315d140 100644
 +        uploadQueueChanged.notify_all();
 +    }
 +
-+    Texture *TextureCache::getLiveTexture(uint64_t hash, ReplacementRegion *region) {
++    Texture *TextureCache::getLiveTexture(uint64_t hash, ReplacementRegion *region, bool *centered) {
 +        std::unique_lock liveLock(liveMutex);
 +        auto hashIt = liveHashKeys.find(hash);
 +        if (hashIt == liveHashKeys.end()) {
@@ -3843,6 +4678,10 @@ index 0848f3e..315d140 100644
 +        if (region != nullptr) {
 +            auto regionIt = liveHashRegions.find(hash);
 +            *region = (regionIt != liveHashRegions.end()) ? regionIt->second : ReplacementRegion();
++        }
++
++        if (centered != nullptr) {
++            *centered = (liveHashCentered.find(hash) != liveHashCentered.end());
 +        }
 +
 +        return contentIt->second.texture;
@@ -3863,7 +4702,7 @@ index 0848f3e..315d140 100644
      void TextureCache::clearReplacementDirectories() {
          // Wait for the streaming threads to be finished.
          waitForAllStreamThreads(true);
-@@ -1431,9 +2057,14 @@ namespace RT64 {
+@@ -1431,9 +2082,14 @@ namespace RT64 {
  
          // Lock the texture map and start changing replacements. This function is assumed to be called from the only
          // thread that is capable of submitting new textures and must've waited beforehand for all textures to be uploaded.
@@ -3881,29 +4720,33 @@ index 0848f3e..315d140 100644
      }
  
      void TextureCache::reloadReplacements(bool clearQueue, uint64_t exclusiveDbHash) {
-@@ -1459,71 +2090,77 @@ namespace RT64 {
+@@ -1459,71 +2115,81 @@ namespace RT64 {
          return loadReplacementDirectories({ replacementDirectory });
      }
      
 -    bool TextureCache::loadReplacementDirectories(const std::vector<ReplacementDirectory> &replacementDirectories) {
 -        clearReplacementDirectories();
 +    PreparedReplacements::~PreparedReplacements() {
-+        // Never swapped in: its low mip cache textures are its own.
++        // Never swapped in: its low mip cache textures are its own, and its preloaded ones.
 +        for (auto &it : lowMipCacheTextures) {
 +            delete it.second.texture;
 +        }
-+    }
  
 -        std::unique_lock lock(textureMapMutex);
 -        textureMap.replacementMap.replacementDirectories = replacementDirectories;
-+    bool TextureCache::loadReplacementDirectories(const std::vector<ReplacementDirectory> &replacementDirectories) {
-+        return applyReplacementDirectories(prepareReplacementDirectories(replacementDirectories), true);
++        for (PreloadedTexture &it : preloadedTextures) {
++            delete it.texture;
++        }
 +    }
  
 -        std::vector<std::unique_ptr<FileSystem>> fileSystems;
 -        std::vector<std::unordered_map<uint64_t, ReplacementResolvedPath>> fileSystemResolvedPaths;
 -        std::vector<uint32_t> fileSystemHashVersions;
 -        std::vector<std::unordered_set<std::string>> fileSystemStreamSets;
++    bool TextureCache::loadReplacementDirectories(const std::vector<ReplacementDirectory> &replacementDirectories) {
++        return applyReplacementDirectories(prepareReplacementDirectories(replacementDirectories), true);
++    }
++
 +    std::unique_ptr<PreparedReplacements> TextureCache::prepareReplacementDirectories(const std::vector<ReplacementDirectory> &replacementDirectories) {
 +        std::unique_ptr<PreparedReplacements> p = std::make_unique<PreparedReplacements>();
 +        p->replacementDirectories = replacementDirectories;
@@ -3988,7 +4831,7 @@ index 0848f3e..315d140 100644
                              }
                          }
                      }
-@@ -1532,37 +2169,59 @@ namespace RT64 {
+@@ -1532,37 +2198,144 @@ namespace RT64 {
                      }
                  }
  
@@ -4000,27 +4843,101 @@ index 0848f3e..315d140 100644
                          fprintf(stderr, "Failed to load low mip cache.\n");
                      }
                  }
-             }
+-            }
  
 -            loaderCommandList->end();
--
++                // Rush 2 recomp: the pack's preload textures, read and uploaded here (PreloadedTexture). The files are
++                // read in turn, PNGs decoded (with their generated mipmaps) on every core, and the uploads recorded on
++                // this command list: a font pack's 84 sheets (9 megapixels) took 0.9 s decoded one by one.
++                struct PreloadFile {
++                    std::string relativePath;
++                    std::vector<uint8_t> bytes;
++                    bool fromPNG = false;
++                };
++
++                std::vector<PreloadFile> preloadFiles;
++                for (const std::string &relativePath : p->fileSystemStreamSets[i]) {
++                    PreloadFile file;
++                    file.relativePath = relativePath;
++                    if (p->fileSystems[i]->load(relativePath, file.bytes) && (file.bytes.size() >= 4)) {
++                        preloadFiles.emplace_back(std::move(file));
++                    }
++                }
+ 
 -            if (!textureMap.replacementMap.lowMipCacheTextures.empty()) {
 -                copyWorker->commandQueue->executeCommandLists(loaderCommandList.get(), loaderCommandFence.get());
 -                copyWorker->commandQueue->waitForCommandFence(loaderCommandFence.get());
-+            commandList->end();
++                const uint32_t PNG_MAGIC = 0x474E5089;
++                std::atomic<size_t> nextFile = 0;
++                auto decodeFiles = [&]() {
++                    for (size_t f; (f = nextFile++) < preloadFiles.size();) {
++                        PreloadFile &file = preloadFiles[f];
++                        if (*reinterpret_cast<const uint32_t *>(file.bytes.data()) != PNG_MAGIC) {
++                            continue;
++                        }
  
 -                // Memory used by low mip cache is considered as permanently in used.
 -                textureMap.replacementMap.usedTexturePoolSize += totalMemory;
 -                textureMap.replacementMap.cachedTexturePoolSize += totalMemory;
-+            if (!p->lowMipCacheTextures.empty()) {
-+                copyWorker->commandQueue->executeCommandLists(commandList.get(), commandFence.get());
-+                copyWorker->commandQueue->waitForCommandFence(commandFence.get());
++                        int width, height;
++                        stbi_uc *data = stbi_load_from_memory(file.bytes.data(), int(file.bytes.size()), &width, &height, nullptr, 4);
++                        if (data == nullptr) {
++                            file.bytes.clear();
++                            continue;
++                        }
++
++                        file.bytes = makeMipmappedDDS(data, uint32_t(width), uint32_t(height));
++                        file.fromPNG = true;
++                        stbi_image_free(data);
++                    }
++                };
++
++                const size_t decoders = std::min<size_t>(preloadFiles.size(), std::max(1u, std::thread::hardware_concurrency()));
++                std::vector<std::thread> decodeThreads;
++                for (size_t t = 1; t < decoders; t++) {
++                    decodeThreads.emplace_back(decodeFiles);
++                }
++
++                decodeFiles();
++                for (std::thread &t : decodeThreads) {
++                    t.join();
++                }
++
++                for (PreloadFile &file : preloadFiles) {
++                    if (file.bytes.size() < 4) {
++                        continue;
++                    }
++
++                    uploadBuffers.emplace_back();
++                    Texture *texture = TextureCache::loadTextureFromBytes(copyWorker->device, commandList.get(), file.bytes, uploadBuffers.back());
++                    if (texture != nullptr) {
++                        texture->generatedMipmaps = file.fromPNG && (texture->mipmaps > 1);
++                        p->preloadedTextures.push_back({ uint32_t(i), file.relativePath, texture });
++                    }
++                }
              }
  
 -            // Build a vector from the known hash versions.
 -            textureMap.replacementMap.resolvedHashVersions.clear();
 -            textureMap.replacementMap.resolvedHashVersions.insert(textureMap.replacementMap.resolvedHashVersions.end(), knownHashVersions.begin(), knownHashVersions.end());
++            commandList->end();
++
++            if (!p->lowMipCacheTextures.empty() || !p->preloadedTextures.empty()) {
++                copyWorker->commandQueue->executeCommandLists(commandList.get(), commandFence.get());
++                copyWorker->commandQueue->waitForCommandFence(commandFence.get());
++            }
++
 +            p->resolvedHashVersions.insert(p->resolvedHashVersions.end(), knownHashVersions.begin(), knownHashVersions.end());
++        }
++
++        p->valid = true;
++        return p;
++    }
++
++    bool TextureCache::applyReplacementDirectories(std::unique_ptr<PreparedReplacements> p, bool waitForPreloads) {
++        clearReplacementDirectories();
++        if ((p == nullptr) || !p->valid) {
++            return false;
          }
  
 -        // Store the file systems in the replacement map.
@@ -4030,16 +4947,6 @@ index 0848f3e..315d140 100644
 -        textureMap.replacementMap.fileSystemHashVersions = std::move(fileSystemHashVersions);
 -        textureMap.replacementMap.fileSystemStreamSets = std::move(fileSystemStreamSets);
 -        textureMap.replacementMap.fileSystemStreamResolvedPaths.resize(fileSystemCount);
-+        p->valid = true;
-+        return p;
-+    }
-+
-+    bool TextureCache::applyReplacementDirectories(std::unique_ptr<PreparedReplacements> p, bool waitForPreloads) {
-+        clearReplacementDirectories();
-+        if ((p == nullptr) || !p->valid) {
-+            return false;
-+        }
-+
 +        uint32_t fileSystemCount = 0;
 +        {
 +            std::unique_lock lock(textureMapMutex);
@@ -4065,10 +4972,42 @@ index 0848f3e..315d140 100644
 +            map.fileSystemStreamSets = std::move(p->fileSystemStreamSets);
 +            map.fileSystemStreamResolvedPaths.resize(fileSystemCount);
 +        }
++
++        // Rush 2 recomp: the preload textures the preparation loaded already go to the upload thread as if a stream
++        // thread had just loaded them, so they're in use from the next batch.
++        std::vector<std::unordered_set<std::string>> preparedByFileSystem(fileSystemCount);
++        if (!p->preloadedTextures.empty()) {
++            {
++                std::unique_lock queueLock(uploadQueueMutex);
++                for (PreparedReplacements::PreloadedTexture &it : p->preloadedTextures) {
++                    if (it.fileSystemIndex < fileSystemCount) {
++                        preparedByFileSystem[it.fileSystemIndex].insert(it.relativePath);
++                        streamResultQueue.emplace_back(it.texture, it.fileSystemIndex, it.relativePath, true);
++                    }
++                    else {
++                        delete it.texture;
++                    }
++                }
++            }
++
++            p->preloadedTextures.clear();
++            uploadQueueChanged.notify_all();
++        }
  
          // Queue all textures that must be preloaded to the stream queues.
          bool texturesPreloaded = false;
-@@ -1579,8 +2238,11 @@ namespace RT64 {
+@@ -1570,6 +2343,10 @@ namespace RT64 {
+             std::unique_lock queueLock(streamDescStackMutex);
+             for (uint32_t i = 0; i < fileSystemCount; i++) {
+                 for (const std::string &relativePath : textureMap.replacementMap.fileSystemStreamSets[i]) {
++                    if (preparedByFileSystem[i].count(relativePath) != 0) {
++                        continue;
++                    }
++
+                     streamDescStack.push(StreamDescription(i, relativePath, true));
+                     texturesPreloaded = true;
+                 }
+@@ -1579,8 +2356,11 @@ namespace RT64 {
          if (texturesPreloaded) {
              streamDescStackChanged.notify_all();
  
@@ -4083,7 +5022,7 @@ index 0848f3e..315d140 100644
  
          reloadReplacements(true);
 diff --git a/src/render/rt64_texture_cache.h b/src/render/rt64_texture_cache.h
-index 9131697..be356ae 100644
+index 9131697..68b14a9 100644
 --- a/src/render/rt64_texture_cache.h
 +++ b/src/render/rt64_texture_cache.h
 @@ -5,6 +5,7 @@
@@ -4110,7 +5049,7 @@ index 9131697..be356ae 100644
      };
  };
  
-@@ -106,6 +109,25 @@ namespace RT64 {
+@@ -106,6 +109,34 @@ namespace RT64 {
          void decrementReference(Texture *texture);
      };
  
@@ -4126,6 +5065,15 @@ index 9131697..be356ae 100644
 +        std::vector<uint32_t> resolvedHashVersions;
 +        std::unordered_map<std::string, LowMipCacheTexture> lowMipCacheTextures;
 +        uint64_t lowMipCacheMemory = 0;
++        // Rush 2 recomp: the textures the packs mark preload, read and uploaded with the rest of the preparation, so
++        // a pack swap has them at once (a font pack's glyph sheets stay drawn through the swap instead of falling
++        // back to the game's own for the frames the stream threads would take).
++        struct PreloadedTexture {
++            uint32_t fileSystemIndex = 0;
++            std::string relativePath;
++            Texture *texture = nullptr;
++        };
++        std::vector<PreloadedTexture> preloadedTextures;
 +        ReplacementDatabase directoryDatabase;
 +        bool fileSystemIsDirectory = false;
 +        bool valid = false;
@@ -4136,7 +5084,7 @@ index 9131697..be356ae 100644
      struct TextureMapAddition {
          uint64_t hash = 0;
          Texture *texture = nullptr;
-@@ -116,6 +138,8 @@ namespace RT64 {
+@@ -116,6 +147,8 @@ namespace RT64 {
          Texture *texture = nullptr;
          ReplacementShift shift = ReplacementShift::None;
          bool referenceCounted = false;
@@ -4145,15 +5093,17 @@ index 9131697..be356ae 100644
      };
  
      struct TextureMap {
-@@ -126,6 +150,7 @@ namespace RT64 {
+@@ -125,7 +158,9 @@ namespace RT64 {
+         std::vector<Texture *> textureReplacements;
          std::vector<interop::float3> cachedTextureReplacementDimensions;
          std::vector<bool> textureReplacementShiftedByHalf;
++        std::vector<bool> textureReplacementCentered; // ReplacementShift::Center (shiftedByHalf is set too).
          std::vector<bool> textureReplacementReferenceCounted;
 +        std::vector<ReplacementRegion> textureReplacementRegions;
          std::vector<interop::float2> textureScales;
          std::vector<uint64_t> hashes;
          std::vector<uint32_t> freeSpaces;
-@@ -141,9 +166,12 @@ namespace RT64 {
+@@ -141,9 +176,12 @@ namespace RT64 {
          TextureMap();
          ~TextureMap();
          void clearReplacements();
@@ -4163,13 +5113,13 @@ index 9131697..be356ae 100644
 +        // Rush 2 recomp: pinned, the texture stays out of the access list (and so is never evicted) until it is used.
 +        void add(uint64_t hash, uint64_t creationFrame, Texture *texture, bool pinned = false);
 +        void unpinAll();
-+        void replace(uint64_t hash, Texture *texture, bool shiftedByHalf, bool referenceCounted, const ReplacementRegion &region = {});
++        void replace(uint64_t hash, Texture *texture, ReplacementShift shift, bool referenceCounted, const ReplacementRegion &region = {});
 +        void unreplace(uint64_t hash, const Texture *texture);
-+        bool use(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, interop::uint2 &texelShift, bool &sourceRegion);
++        bool use(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, bool &centered, interop::uint2 &texelShift, bool &sourceRegion);
          bool evict(uint64_t submissionFrame, std::vector<uint64_t> &evictedHashes);
          void incrementLock();
          void decrementLock();
-@@ -186,6 +214,21 @@ namespace RT64 {
+@@ -186,6 +224,21 @@ namespace RT64 {
              }
          };
  
@@ -4191,7 +5141,7 @@ index 9131697..be356ae 100644
          struct StreamThread {
              std::unique_ptr<RenderWorker> worker;
              TextureCache *textureCache = nullptr;
-@@ -205,6 +248,8 @@ namespace RT64 {
+@@ -205,6 +258,8 @@ namespace RT64 {
          std::vector<std::unique_ptr<RenderBuffer>> tmemUploadResources;
          std::vector<std::unique_ptr<RenderBuffer>> replacementUploadResources;
          std::vector<std::unique_ptr<TextureDecodeDescriptorSet>> descriptorSets;
@@ -4200,13 +5150,14 @@ index 9131697..be356ae 100644
          std::mutex uploadQueueMutex;
          std::condition_variable uploadQueueChanged;
          std::condition_variable uploadQueueFinished;
-@@ -229,6 +274,13 @@ namespace RT64 {
+@@ -229,6 +284,14 @@ namespace RT64 {
          std::mutex uploadResourcePoolMutex;
          uint32_t lockCounter;
          bool developerMode;
 +        std::mutex liveMutex; // Taken on its own, or inside uploadQueueMutex; never around another lock.
 +        std::unordered_map<uint64_t, uint64_t> liveHashKeys;
 +        std::unordered_map<uint64_t, ReplacementRegion> liveHashRegions; // Hashes whose region isn't the whole image.
++        std::unordered_set<uint64_t> liveHashCentered; // Hashes drawn with ReplacementShift::Center.
 +        std::unordered_map<uint64_t, LiveContent> liveContents;
 +        std::vector<LiveUpload> liveUploadQueue; // Guarded by uploadQueueMutex.
 +        std::deque<LiveUpload> liveLoadQueue;    // Rush 2 recomp: waiting for a stream thread. Guarded by streamDescStackMutex.
@@ -4214,16 +5165,16 @@ index 9131697..be356ae 100644
  
          TextureCache(RenderWorker *directWorker, RenderWorker *copyWorker, uint32_t threadCount, const ShaderLibrary *shaderLibrary);
          ~TextureCache();
-@@ -236,14 +288,30 @@ namespace RT64 {
+@@ -236,14 +299,30 @@ namespace RT64 {
          void queueGPUUploadTMEM(uint64_t hash, uint64_t creationFrame, const uint8_t *bytes, int bytesCount, int width, int height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM);
          void waitForGPUUploads();
          void addResolvedPaths(uint64_t hash, uint32_t width, uint32_t height, uint32_t tlut, const LoadTile &loadTile, const std::vector<uint8_t> &bytesTMEM, bool decodeTMEM, std::vector<ReplacementResolvedPath> &resolvedPaths, uint64_t exclusiveDbHash = 0);
 -        bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf);
-+        bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, interop::uint2 &texelShift, bool &sourceRegion);
++        bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf, bool &centered, interop::uint2 &texelShift, bool &sourceRegion);
          bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex);
          bool addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift);
          bool hasReplacement(uint64_t hash);
-+        bool addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, const ReplacementRegion &region);
++        bool addLiveReplacement(uint64_t hash, uint64_t contentKey, std::vector<uint8_t> fileBytes, const ReplacementRegion &region, bool centered = false);
 +        // Rush 2 recomp: texture prewarming (rt64_live_textures.h).
 +        void queuePrewarmTMEM(uint64_t hash, std::vector<uint8_t> bytesTMEM, uint16_t width, uint16_t height, uint32_t tlut, const LoadTile &loadTile, bool decodeTMEM);
 +        void unpinPrewarmed();
@@ -4232,7 +5183,7 @@ index 9131697..be356ae 100644
 +        void removeLiveReplacement(uint64_t hash);
 +        void clearLiveReplacements();
 +        void queueLiveReapply();
-+        Texture *getLiveTexture(uint64_t hash, ReplacementRegion *region = nullptr);
++        Texture *getLiveTexture(uint64_t hash, ReplacementRegion *region = nullptr, bool *centered = nullptr);
 +        bool packReplaces(uint64_t hash);
          void clearReplacementDirectories();
          void reloadReplacements(bool clearQueue, uint64_t exclusiveDbHash = 0);
@@ -4787,6 +5738,52 @@ index e7895c3..d107485 100644
  }
  #endif
 \ No newline at end of file
+diff --git a/src/shaders/SkyFogPS.hlsl b/src/shaders/SkyFogPS.hlsl
+new file mode 100644
+index 0000000..b3bbb91
+--- /dev/null
++++ b/src/shaders/SkyFogPS.hlsl
+@@ -0,0 +1,40 @@
++//
++// RT64
++//
++
++// Rush 2 recomp: sky fog. Over the pixels a view's 3D left at the depth clear (the sky dome or sky model, which don't
++// write depth, and the clear color), returns the fog color with the share of the sky's light the fog takes away along
++// that pixel's ray, for the pipeline to blend over the color target.
++//
++// The fog is an exponential height fog around the camera: density sigma at the camera's height falling by e every H
++// above it. A ray at elevation e passes through optical depth sigma * H / sin e on its way out, so the sky keeps
++// exp(-haze / sin e) of its light, haze = sigma * H. At the horizon that is nothing, the fog color, the same as the
++// world's own fog at the far plane; it clears with height.
++
++#include "shared/rt64_sky_fog.h"
++
++[[vk::push_constant]] ConstantBuffer<SkyFogCB> gConstants : register(b0);
++
++#ifdef MULTISAMPLING
++Texture2DMS<float> gDepth : register(t1);
++#else
++Texture2D<float> gDepth : register(t1);
++#endif
++
++float4 PSMain(in float4 pos : SV_Position, in float2 uv : TEXCOORD0) : SV_TARGET {
++    const int2 pixel = int2(pos.xy);
++#ifdef MULTISAMPLING
++    const float depth = gDepth.Load(pixel, 0);
++#else
++    const float depth = gDepth.Load(int3(pixel, 0));
++#endif
++    const float w = gConstants.depthB / (depth - gConstants.depthA);
++    if ((depth < 0.99999f) && (w > 0.0f)) {
++        discard;
++    }
++
++    const float3 dir = pos.x * gConstants.dirX.xyz + pos.y * gConstants.dirY.xyz + gConstants.dirW.xyz;
++    const float sinElevation = dir.y * rsqrt(max(dot(dir, dir), 1e-20f));
++    const float transmittance = (sinElevation > 0.0f) ? exp(-gConstants.haze / sinElevation) : 0.0f;
++    return float4(gConstants.fogColor.rgb, 1.0f - transmittance);
++}
 diff --git a/src/shaders/TextureDecodeCS.hlsl b/src/shaders/TextureDecodeCS.hlsl
 index 19e6fad..0fd02a8 100644
 --- a/src/shaders/TextureDecodeCS.hlsl
@@ -4830,7 +5827,7 @@ index 19e6fad..0fd02a8 100644
  }
 \ No newline at end of file
 diff --git a/src/shaders/TextureSampler.hlsli b/src/shaders/TextureSampler.hlsli
-index 1ceb2ce..069d113 100644
+index 1ceb2ce..844f11c 100644
 --- a/src/shaders/TextureSampler.hlsli
 +++ b/src/shaders/TextureSampler.hlsli
 @@ -80,7 +80,11 @@ float4 clampWrapMirrorSample(const RDPTile rdpTile, const GPUTile gpuTile, float
@@ -4929,7 +5926,7 @@ index 1ceb2ce..069d113 100644
          }
  #endif
      }
-@@ -214,7 +249,109 @@ float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool fil
+@@ -214,7 +249,111 @@ float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool fil
      }
  }
  
@@ -4981,8 +5978,10 @@ index 1ceb2ce..069d113 100644
 +
 +        Texture2D texture = gTextures[NonUniformResourceIndex(gpuTile.textureIndex)];
 +        const float2 textureSize = gpuTile.textureDimensions.xy;
-+        // The RDP samples a texel at its whole coordinate; a replacement's coordinates were already moved to texel centers.
-+        const float2 nativeUVCoord = (uvCoord + (gpuTileFlagHighRes(gpuTile.flags) ? 0.0f : 0.5f)) / textureSize;
++        // The RDP samples a texel at its whole coordinate; a replacement's coordinates were already moved to texel centers
++        // (unless it is centered, whose coordinates are the RDP's kind again).
++        const bool rdpCentered = !gpuTileFlagHighRes(gpuTile.flags) || gpuTileFlagCentered(gpuTile.flags);
++        const float2 nativeUVCoord = (uvCoord + (rdpCentered ? 0.5f : 0.0f)) / textureSize;
 +        const float2 ddxUVNorm = major / textureSize;
 +        const float2 ddyUVNorm = minor / textureSize;
 +        switch (nativeSampler) {
@@ -5040,7 +6039,21 @@ index 1ceb2ce..069d113 100644
      const bool texturePerspective = (otherMode.textPersp() == G_TP_PERSP);
      const bool applyCorrection = (!texturePerspective && !renderFlagRect(renderFlags));
  
-@@ -263,7 +400,11 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
+@@ -242,6 +381,13 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
+     }
+     
+     uvCoord *= gpuTile.tcScale;
++
++    // ReplacementShift::Center: the game's texel at a whole coordinate lands on the middle of its block of the
++    // replacement (a block's middle is half a replacement texel before the half-shifted, scaled coordinate).
++    if (gpuTileFlagCentered(gpuTile.flags)) {
++        uvCoord -= float2(0.5f, 0.5f);
++    }
++
+     uvCoord -= (float2(rdpTile.uls, rdpTile.ult) * gpuTile.ulScale) / 4.0f;
+     
+     const uint filter = otherMode.textFilt();
+@@ -263,7 +409,11 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
      const bool canDecodeTMEM = renderFlagCanDecodeTMEM(renderFlags);
      const bool usesHDR = renderFlagUsesHDR(renderFlags);
      const uint nativeSampler = rdpTile.nativeSampler;
@@ -5053,7 +6066,17 @@ index 1ceb2ce..069d113 100644
      uint numRDPSamples = 0;
      uint RDPMipLevels[2];
      RDPMipLevels[0] = 0;
-@@ -346,6 +487,14 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
+@@ -287,7 +437,8 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
+         }
+         else {
+             // Must normalize the texture coordinate and the derivatives.
+-            float2 nativeUVCoord = uvCoord / gpuTile.textureDimensions.xy;
++            // A centered replacement's coordinates have the RDP's texel centers: move them to the sampler's.
++            float2 nativeUVCoord = (uvCoord + (gpuTileFlagCentered(gpuTile.flags) ? 0.5f : 0.0f)) / gpuTile.textureDimensions.xy;
+             float2 originalSize = gpuTile.textureDimensions.xy / gpuTile.tcScale;
+             float2 ddxUVNorm = ddxUV / originalSize;
+             float2 ddyUVNorm = ddyUV / originalSize;
+@@ -346,6 +497,14 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
          float4 loLevel = textureSamples[1];
          textureColor = lerp(hiLevel, loLevel, frac(mip));
      }
@@ -5170,20 +6193,21 @@ index 0000000..63ac51a
 +};
 +#endif
 diff --git a/src/shared/rt64_gpu_tile.h b/src/shared/rt64_gpu_tile.h
-index 4548f15..6b4e4f8 100644
+index 4548f15..9add7cd 100644
 --- a/src/shared/rt64_gpu_tile.h
 +++ b/src/shared/rt64_gpu_tile.h
-@@ -18,6 +18,9 @@ namespace interop {
+@@ -18,6 +18,10 @@ namespace interop {
              uint rawTMEM : 1;
              uint hasMipmaps : 1;
              uint shiftedByHalf : 1;
 +            uint anisotropy : 3; // Generated mipmaps: log2 of the most anisotropy they're filtered with.
 +            uint generatedMipmaps : 1; // Filtered with sampleGeneratedMipmaps (Distant Textures: Smooth).
 +            uint sourceRegion : 1; // A replacement for part of a larger image: texelShift is the part's origin in it.
++            uint centered : 1; // ReplacementShift::Center: after the half texel shift and the scale, half a texel back.
          };
  
          uint value;
-@@ -49,6 +52,18 @@ namespace interop {
+@@ -49,6 +53,22 @@ namespace interop {
      bool gpuTileFlagShiftedByHalf(GPUTileFlags flags) {
          return flags & 0x20;
      }
@@ -5199,6 +6223,47 @@ index 4548f15..6b4e4f8 100644
 +    bool gpuTileFlagSourceRegion(GPUTileFlags flags) {
 +        return flags & 0x400;
 +    }
++
++    bool gpuTileFlagCentered(GPUTileFlags flags) {
++        return flags & 0x800;
++    }
  #endif
      struct GPUTile {
          float2 ulScale;
+diff --git a/src/shared/rt64_sky_fog.h b/src/shared/rt64_sky_fog.h
+new file mode 100644
+index 0000000..0eba2e0
+--- /dev/null
++++ b/src/shared/rt64_sky_fog.h
+@@ -0,0 +1,31 @@
++//
++// RT64
++//
++
++#pragma once
++
++#include "shared/rt64_hlsl.h"
++
++#ifdef HLSL_CPU
++namespace interop {
++#endif
++    // Rush 2 recomp: sky fog (SkyFogPS.hlsl). Hazes the sky, the pixels a view's 3D left at the depth clear, toward
++    // the fog color by the fog a ray at that angle above the horizon passes through.
++    struct SkyFogCB {
++        // A pixel's direction from the camera, in the space the view's world transforms put vertices in (y up):
++        // pixel.x * dirX + pixel.y * dirY + dirW, any length.
++        float4 dirX;
++        float4 dirY;
++        float4 dirW;
++        // The view's fog color.
++        float4 fogColor;
++        // Depth buffer value d to w: w = depthB / (d - depthA). w not above 0 is the sky.
++        float depthA;
++        float depthB;
++        // The fog's vertical optical depth: a ray at elevation e keeps exp(-haze / sin e) of the sky's light.
++        float haze;
++        float padding;
++    };
++#ifdef HLSL_CPU
++};
++#endif

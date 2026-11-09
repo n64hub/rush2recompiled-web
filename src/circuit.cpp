@@ -14,15 +14,15 @@
 // The places of each race are kept in 3 bits a race (11 bytes a car), room for 29; the standings loops already stop at
 // the races finished. Rush 2's circuit codes (func_800B2BCC) still hold 28-race circuits.
 //
-// The courses a circuit picks from are chosen per track (Rush 2's 0-6, CRASH 8 and PIPE 9, Rush 2049's 12-17, SF Rush's
-// 18-24, California Speed's 64-79; CRASH and PIPE start off, as Rush 2's circuits never have them); the
-// generator hook (rush2_track49_circuit, src/rush2049/track2049_menu.cpp) draws from the chosen ones that are
+// The courses a circuit picks from are chosen per track (Rush 2's 0-6, HALFPIPE 7, CRASH 8, PIPE 9 and MIDWAY 10,
+// Rush 2049's 12-17, SF Rush's 18-24, California Speed's 64-79; HALFPIPE to MIDWAY start off, as Rush 2's circuits
+// never have them); the generator hook (rush2_track49_circuit, src/rush2049/track2049_menu.cpp) draws from the chosen ones that are
 // available. A circuit keeps the length and courses it started with: the start (end of func_800B2A58) records them
 // against its seed in the saves file's "circuits" section. A circuit with no record (started before this setting
-// existed, or entered as a code) is 28 races over every course but California Speed's, CRASH and PIPE (added later: a
-// circuit in progress keeps its races).
+// existed, or entered as a code) is 28 races over every course but California Speed's and HALFPIPE to MIDWAY (added
+// later: a circuit in progress keeps its races).
 //
-// Custom tracks (src/track_mod/, track select ids 38-63) are chosen by their folder, since their ids follow the enabled
+// Custom tracks (src/track_mod/, track select ids 38-63 and 80-248) are chosen by their folder, since their ids follow the enabled
 // mods: the choices keep the folders turned off (so a newly installed track is in), and a circuit records the folders it
 // started with. A circuit recorded before custom tracks could be chosen has none.
 
@@ -78,27 +78,27 @@ namespace {
         int first;
         int count;
     };
-    // Rush 2's: tracks 0-6, CRASH (8) and PIPE (9); HALFPIPE (7) is a stunt bowl, never a course.
-    constexpr int halfpipe_track = 7;
-    constexpr int crash_track = 8;
-    constexpr int pipe_track = 9;
+    // Rush 2's: tracks 0-6, HALFPIPE (7), CRASH (8), PIPE (9) and MIDWAY (10). STUNT1 (11) is the stunt arena.
+    constexpr int first_extra_track = 7;    // HALFPIPE, CRASH, PIPE, MIDWAY: never in Rush 2's own circuits
+    constexpr int midway_track = 10;
     constexpr Game games[] = {
-        { "Rush 2", 0, 10 },
+        { "Rush 2", 0, 11 },
         { "Rush 2049", rush2::track2049::first_menu_id, rush2::track2049::track_count },
+        // The race tracks' Dreamcast versions, offered beside the N64 ones (Games tab Enabled Source: Both).
+        { "Rush 2049 Dreamcast", rush2::track2049::disc_menu_id, rush2::track2049::track_count },
         { "SF Rush", rush2::track1::first_menu_id, rush2::track1::track_count },
         { "California Speed", rush2::calspeed::first_menu_id, rush2::calspeed::track_count },
     };
     // Rush 2's full track names (0x800C4C40).
-    const char* const rush2_names[10] = { "Las Vegas", "Lower Manhattan", "Honolulu", "Upper Manhattan", "Alcatraz",
-                                          "Los Angeles", "Seattle", "Halfpipe", "Crash", "Pipe" };
+    const char* const rush2_names[11] = { "Las Vegas", "Lower Manhattan", "Honolulu", "Upper Manhattan", "Alcatraz",
+                                          "Los Angeles", "Seattle", "Halfpipe", "Crash", "Pipe", "Midway" };
 
-    // Courses a circuit leaves out until they're turned on.
+    // Courses a circuit leaves out until they're turned on: Rush 2's extra tracks, as its circuits never have them.
     bool off_by_default(int t) {
-        return t == crash_track || t == pipe_track;
+        return t >= first_extra_track && t <= midway_track;
     }
 
     bool is_course(int t) {
-        if (t == halfpipe_track) return false;
         for (const Game& g : games) {
             if (t >= g.first && t < g.first + g.count) return true;
         }
@@ -106,13 +106,14 @@ namespace {
     }
 
     std::string course_name(int t) {
-        if (t < 10) return rush2_names[t];
+        if (t <= midway_track) return rush2_names[t];
+        if (rush2::track2049::is_disc_course(t)) return rush2::track2049::track_names[t - rush2::track2049::disc_menu_id];
         if (t < rush2::track1::first_menu_id) return rush2::track2049::track_names[t - rush2::track2049::first_menu_id];
         if (t >= rush2::calspeed::first_menu_id) return rush2::calspeed::track_names[t - rush2::calspeed::first_menu_id];
         return rush2::track1::track_names[t - rush2::track1::first_menu_id];
     }
 
-    // The enabled custom tracks' folders by track select id - mod_menu_id (the ones the track select has room for).
+    // The enabled custom tracks' folders by custom track index (rush2::track2049::mod_index; the ones the track select has room for).
     std::vector<std::string> mod_folders() {
         std::vector<std::string> folders;
         for (const rush2::track_mod::Entry& e : rush2::track_mod::tracks()) {
@@ -129,7 +130,8 @@ namespace {
     };
 
     // What a circuit was started with, and the car player 1 raced each race in (by race index).
-    // A circuit with no record: every course a circuit could pick before California Speed's, CRASH and PIPE were added.
+    // A circuit with no record: every course a circuit could pick before California Speed's and Rush 2's extra tracks
+    // were added.
     std::bitset<course_ids> before_calspeed() {
         std::bitset<course_ids> b;
         for (int t = 0; t < rush2::calspeed::first_menu_id; t++) {
@@ -138,6 +140,14 @@ namespace {
         return b;
     }
 
+    // A circuit race's track as generated: a track select id, or a custom track by folder (its id follows the enabled
+    // mods), and its direction bits (0x800D3A60 +1).
+    struct RaceTrack {
+        int track = -1;
+        std::string mod;
+        int direction = 0;
+    };
+
     struct Setup {
         uint32_t seed = 0;
         int length = stock_length;
@@ -145,6 +155,7 @@ namespace {
         std::set<std::string> mods;    // custom tracks by folder
         std::map<int, Car> cars;
         int battle = -1;    // the race select's BATTLE row for this circuit, -1 not set yet (rush2::circuit::race_battle)
+        std::map<int, RaceTrack> tracks;   // by race index (rush2::circuit::recorded_race)
     };
 
     constexpr const char* saves_section = "circuits";
@@ -188,6 +199,18 @@ namespace {
                 }
             }
             if (e.contains("battle") && e["battle"].is_number_integer()) s.battle = e["battle"].get<int>() != 0 ? 1 : 0;
+            // tracks: [race, track id or custom track folder, direction bits] each.
+            if (e.contains("tracks") && e["tracks"].is_array()) {
+                for (const auto& r : e["tracks"]) {
+                    if (!r.is_array() || r.size() != 3 || !r[0].is_number_integer() || !r[2].is_number_integer()) continue;
+                    RaceTrack rt;
+                    if (r[1].is_string()) rt.mod = r[1].get<std::string>();
+                    else if (r[1].is_number_integer()) rt.track = r[1].get<int>();
+                    else continue;
+                    rt.direction = r[2].get<int>() & 3;
+                    s.tracks[r[0].get<int>()] = rt;
+                }
+            }
             setups.push_back(s);
         }
     }
@@ -208,6 +231,14 @@ namespace {
                                  { "mods", nlohmann::json(std::vector<std::string>(s.mods.begin(), s.mods.end())) },
                                  { "cars", cars } };
             if (s.battle >= 0) e["battle"] = s.battle;   // older records have none: set at the next track select
+            if (!s.tracks.empty()) {
+                nlohmann::json tracks = nlohmann::json::array();
+                for (const auto& [race, rt] : s.tracks) {
+                    if (rt.mod.empty()) tracks.push_back({ race, rt.track, rt.direction });
+                    else tracks.push_back({ race, rt.mod, rt.direction });
+                }
+                e["tracks"] = tracks;
+            }
             list.push_back(e);
         }
         rush2::data_files::write(rush2::data_files::File::Saves, saves_section,
@@ -290,12 +321,61 @@ int rush2::circuit::length(uint8_t* rdram) {
 }
 
 bool rush2::circuit::course_chosen(uint8_t* rdram, int t) {
-    int m = t - rush2::track2049::mod_menu_id;
-    if (m >= 0 && m < rush2::track2049::mod_capacity) {
+    int m = rush2::track2049::mod_index(t);
+    if (m >= 0) {
         std::vector<std::string> folders = mod_folders();
         return m < (int)folders.size() && current_setup(rdram).mods.contains(folders[m]);
     }
     return t >= 0 && t < course_ids && current_setup(rdram).courses.test(size_t(t));
+}
+
+bool rush2::circuit::recorded_race(uint8_t* rdram, int race, int& track, int& direction) {
+    if ((uint32_t)MEM_W(0, (int32_t)circuit_block) == 0 || rush2::online::game::circuit_length() > 0) return false;
+    const Setup s = current_setup(rdram);
+    auto found = s.tracks.find(race);
+    if (found == s.tracks.end()) return false;
+    const RaceTrack& rt = found->second;
+    direction = rt.direction;
+    if (rt.mod.empty()) {
+        track = rt.track;
+        return track >= 0 && track < course_ids;
+    }
+    std::vector<std::string> folders = mod_folders();
+    auto it = std::find(folders.begin(), folders.end(), rt.mod);
+    if (it == folders.end()) return false;
+    track = rush2::track2049::mod_id(int(it - folders.begin()));
+    return true;
+}
+
+void rush2::circuit::record_races(uint8_t* rdram, const std::vector<std::pair<int, int>>& races) {
+    if ((uint32_t)MEM_W(0, (int32_t)circuit_block) == 0 || rush2::online::game::circuit_length() > 0) return;
+    std::vector<std::string> folders = mod_folders();
+    int raced = finished(rdram);
+    std::lock_guard lock{ setups_mutex };
+    Setup& s = setup_of(rdram);
+    bool changed = false;
+    for (int race = 0; race < (int)races.size(); race++) {
+        auto [track, direction] = races[race];
+        RaceTrack rt;
+        int m = rush2::track2049::mod_index(track);
+        if (m >= 0) {
+            if (m >= (int)folders.size()) continue;
+            rt.mod = folders[m];
+        }
+        else {
+            rt.track = track;
+        }
+        rt.direction = direction & 3;
+        auto it = s.tracks.find(race);
+        // A race run keeps its track, even one whose custom track isn't loaded now.
+        if (it != s.tracks.end() && (race < raced || (it->second.track == rt.track && it->second.mod == rt.mod &&
+                                                        it->second.direction == rt.direction))) {
+            continue;
+        }
+        s.tracks[race] = rt;
+        changed = true;
+    }
+    if (changed) save_setups();
 }
 
 void rush2::circuit::init_config() {
@@ -627,7 +707,7 @@ extern "C" void rush2_circuit_review_snapshot(uint8_t* rdram, recomp_context* ct
             race.car = c->second;
         }
         uint32_t entry = circuit_races + r * 4;
-        race.track = (int8_t)MEM_B(0, (int32_t)entry);
+        race.track = MEM_BU(0, (int32_t)entry);
         race.place = 0;
         for (int k = 0; k < 3; k++) {
             int bit = r * 3 + k;
@@ -651,7 +731,7 @@ extern "C" void rush2_circuit_review_title(uint8_t* rdram, recomp_context* ctx) 
     }
     else if (review_hosted) {
         // Not left hosted for the title's own demos.
-        rush2::track2049::host_menu_track(rdram, (int8_t)MEM_B(0, (int32_t)menu_track));
+        rush2::track2049::host_menu_track(rdram, MEM_BU(0, (int32_t)menu_track));
         review_hosted = false;
     }
     completed.clear();
@@ -723,12 +803,13 @@ namespace {
     const char* const courses_description =
         "Picks the courses circuits are made from. The toggles at the top turn all of a game's courses, or all the "
         "modded courses, on or off. "
-        "Crash and Pipe start off. "
+        "Halfpipe, Crash, Pipe and Midway start off. "
         "A course that isn't unlocked yet is skipped, and with none on, every course is used. "
         "Applies to the next circuit you start; a circuit in progress keeps its own courses.";
 
     bool game_shown(const Game& g) {
         if (g.first == rush2::track2049::first_menu_id) return rush2::track2049::available();
+        if (g.first == rush2::track2049::disc_menu_id) return rush2::track2049::disc_courses_available();
         if (g.first == rush2::track1::first_menu_id) return rush2::track1::available();
         if (g.first == rush2::calspeed::first_menu_id) return rush2::calspeed::available();
         return true;
@@ -982,3 +1063,12 @@ void rush2::circuit::add_section(recompui::Element* parent, const TextShower& te
     recompui::get_current_context().create_element<Section>(parent, text_shower, std::move(panel));
 }
 
+
+std::string rush2::circuit::track_name(int t) {
+    if (t < 0 || t >= rush2::calspeed::first_menu_id + rush2::calspeed::track_count ||
+        (t >= 10 && t < rush2::track2049::first_menu_id) ||
+        (t >= rush2::track2049::stunt_menu_id && t < rush2::calspeed::first_menu_id)) {
+        return {};
+    }
+    return course_name(t);
+}

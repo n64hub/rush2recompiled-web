@@ -838,8 +838,8 @@ namespace {
         return uint16_t(((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (a ? 1 : 0));
     }
 
-    // Median cut to at most 256 colours.
-    void quantize(const std::vector<std::array<uint8_t, 3>>& px, Texture& tex) {
+    // Median cut to at most `colors` (up to 256) colours.
+    void quantize(const std::vector<std::array<uint8_t, 3>>& px, Texture& tex, int colors = 256) {
         std::vector<std::vector<int>> boxes(1);
         for (int i = 0; i < int(px.size()); i++) boxes[0].push_back(i);
         auto range = [&](const std::vector<int>& box, int& axis) {
@@ -859,7 +859,7 @@ namespace {
             return Split{ r > 0 ? r * std::sqrt(float(box.size())) : 0.0f, axis };
         };
         splits.push_back(measure(boxes[0]));
-        while (boxes.size() < 256) {
+        while (boxes.size() < size_t(std::clamp(colors, 1, 256))) {
             int pick = -1;
             float score = 0;
             for (int b = 0; b < int(boxes.size()); b++) {
@@ -1858,11 +1858,13 @@ namespace {
         // 2049's band suits its tracks, which spread over many thousand units; a custom track can pack its stretches
         // much closer (Wario Stadium's switchbacks run 76 units apart, center to center), and the 200 unit band then
         // runs into the stretch beside it. Its band is at most 0.7 of the closest gap between stretches side by side
-        // (the rings cut corners a little), never wider than 2049's and never under 1/200 of the extent so it still
-        // shows (a path that tight overlaps a little). The lift above the road is half the band's half width, as 2049's.
+        // (the rings cut corners a little), and never under 1/40 of the extent (the preview is drawn the same size
+        // whatever the extent), so it reads as a solid line on the track select (1/200 left a path with close stretches,
+        // such as an out-and-back arm, a hairline, and 1/80 was still thin; a path that tight overlaps a little). The
+        // lift above the road is half the band's half width, as 2049's.
         if (fit && !battle) {
             float clearance = spine_clearance(spine, true);
-            half_width = std::clamp(clearance * 0.35f, float(extent) * 0.005f, tube_half_width);
+            half_width = std::max(float(extent) / 40.0f, std::min(clearance * 0.35f, tube_half_width));
             lift = half_width * 0.5f;
         }
 
@@ -1983,14 +1985,93 @@ namespace {
         m.objects = m.objects_drawn = 1;
     }
 
-    bool build_tube(const rush2::rom2049::Source& rom, int k, TrackModel& m) {
+    // The circuit screen's version ring (rush2::track2049::version_ring_*): a flat band in the tube's floor plane
+    // around the turning route, so it reads as a circle in the circuit review's small window (the round picture's
+    // ring isn't drawn there). Between G_NOOPs tagged circuit_ring_start / _end: the circuit screen shows it for a
+    // course with another version, the track select branches over it (src/rush2049/track2049_menu.cpp).
+    constexpr int ground_ring_segments = 64;
+    constexpr float ground_ring_gap = 1.03f, ground_ring_width = 0.07f;    // radius over the route's, band / radius
+
+    template <typename ToModel>
+    void emit_ground_ring(const Tube& tube, uint32_t rgb, TrackModel& m, ToModel to_model) {
+        float radius = 0.0f, floor = 1e30f;
+        for (const auto& p : tube.ring) {
+            radius = std::max(radius, std::hypot(p[0], p[2]));
+            floor = std::min(floor, p[1]);
+        }
+        if (radius <= 0.0f) return;
+        const float inner = radius * ground_ring_gap, outer = inner * (1.0f + ground_ring_width);
+        Bytes& vertices = m.parts[vertices_part];
+        Bytes& list = m.parts[list_part];
+        auto command = [&](uint32_t w0, uint32_t w1, bool vertex_pointer) {
+            if (vertex_pointer) m.fixups.push_back({ list_part, uint32_t(list.size() + 4), vertices_part });
+            push32(list, w0);
+            push32(list, w1);
+        };
+        // Hidden as built: the start is a branch past the end marker (the loader relocates it as any branch), which
+        // the circuit screen turns into the G_NOOP to show it.
+        const uint32_t start = uint32_t(list.size());
+        command(0xDE010000, 0, false);
+        command(0xD7000000, 0xFFFFFFFF, false);     // G_TEXTURE off
+        command(0xE7000000, 0, false);
+        command(0xE200001C, 0x0C192230, false);     // z-buffered opaque surface without the fog (it washed the color out)
+        command(0xFCFFFFFF, 0xFFFE7C38, false);     // shade colour
+        // 15 segments (32 vertices: inner and outer at each edge) per load.
+        constexpr int per_load = 15;
+        for (int s0 = 0; s0 < ground_ring_segments; s0 += per_load) {
+            const int n = std::min(per_load, ground_ring_segments - s0);
+            const uint32_t base = uint32_t(vertices.size());
+            for (int e = 0; e <= n; e++) {
+                float a = float(s0 + e) * 6.2831853f / float(ground_ring_segments);
+                for (float r : { inner, outer }) {
+                    std::array<float, 3> p = { r * std::cos(a), floor, r * std::sin(a) };
+                    float mv[3];
+                    to_model(p, mv);
+                    for (int j = 0; j < 3; j++) {
+                        push16(vertices, uint16_t(int16_t(std::trunc(std::clamp(mv[j], -32767.0f, 32767.0f)))));
+                    }
+                    push16(vertices, 0x8000);
+                    push16(vertices, 0);
+                    push16(vertices, 0);
+                    vertices.push_back(uint8_t(rgb >> 16));
+                    vertices.push_back(uint8_t(rgb >> 8));
+                    vertices.push_back(uint8_t(rgb));
+                    vertices.push_back(0xFF);
+                    m.radius = std::max(m.radius, std::sqrt(mv[0] * mv[0] + mv[1] * mv[1] + mv[2] * mv[2]));
+                    m.vertices++;
+                }
+            }
+            const uint32_t count = uint32_t(2 * (n + 1));
+            command(0x01000000 | (count << 12) | (count << 1), base, true);
+            auto tri = [](uint32_t a, uint32_t b, uint32_t c) { return (a * 2 << 16) | (b * 2 << 8) | (c * 2); };
+            for (int e = 0; e < n; e++) {
+                uint32_t i0 = uint32_t(2 * e), o0 = i0 + 1, i1 = i0 + 2, o1 = i0 + 3;
+                // Both windings, so it shows whatever the culling and mirror state.
+                command(0x06000000 | tri(i0, o0, o1), tri(i0, o1, i1), false);
+                command(0x06000000 | tri(i0, o1, o0), tri(i0, i1, o1), false);
+                m.triangles += 4;
+            }
+        }
+        command(0xD7000002, 0xFFFFFFFF, false);     // G_TEXTURE on, as 2049's lists end
+        command(0x00000000, rush2::track2049::circuit_ring_end, false);
+        put32(list, start + 4, uint32_t(list.size()));
+        m.fixups.push_back({ list_part, start + 4, list_part });
+    }
+
+    bool build_tube(const rush2::rom2049::Source& rom, int k, TrackModel& m, uint32_t ring = 0) {
         Tube tube;
         if (!tube_geometry(rom, k, tube)) return false;
         m.print.spine = tube.spine;
         const float scale = 2 * diorama_half_size / float(tube.extent);
-        emit_tube(tube, number_of(k), tube_highlight ? 0.0f : -1.0f, m, [&](const std::array<float, 3>& p, float* out) {
+        auto to_model = [&](const std::array<float, 3>& p, float* out) {
             for (int j = 0; j < 3; j++) out[j] = p[j] * scale;
-        });
+        };
+        emit_tube(tube, number_of(k), tube_highlight ? 0.0f : -1.0f, m, to_model);
+        // The race tracks' version ring for the circuit screen: the N64 ROM's or the disc's.
+        if (k >= 1 && k <= rush2::track2049::track_count) {
+            if (ring == 0) ring = rom.is_dreamcast() ? rush2::track2049::version_ring_dc : rush2::track2049::version_ring_n64;
+            emit_ground_ring(tube, ring, m, to_model);
+        }
         Bytes& vertices = m.parts[vertices_part];
         vertices[vertices.size() - 10] &= 0x7F;
         push32(m.parts[list_part], 0xDF000000);
@@ -2140,8 +2221,8 @@ namespace {
     constexpr float preview_tilt = 0.52359878f;                    // 0x803B92DC: -pi/6 about x
     constexpr float preview_disc_x = 176.0f, preview_disc_y = 32.0f; // func_800B3704(name, 0xB0, 0x20, 0)
     constexpr float preview_disc_depth = 150.0f;                   // behind the model (its far edge is about 125)
-    constexpr int preview_strip_h = 16;                            // 128 x 16 CI8 texels per TMEM load (2 KB)
-    constexpr int preview_strip_shown = 14;                        // rows drawn from each: a row either side for filtering
+    constexpr int preview_strip_bytes = 2048;                      // CI8 texels per TMEM load (128 x 16 for 2049's)
+    constexpr int preview_max_width = rush2::track2049::route_picture_max_w;   // texels: 512, four rows a load
 
 
     // Object `name` of file 60 (a flat track select outline): its LOD 0 vertices (2049 units) and triangles.
@@ -2229,23 +2310,41 @@ namespace {
         });
     }
 
-    // The screenshot: w (128) x h CI8 `indices` with `palette` in 128 x 16 strips, translucent (its corners are clear),
+    // The circuit screen's version ring (emit_ground_ring) in the preview's space, after the rest of its list (the
+    // circuit screen branches from the turning route past the screenshot to it).
+    void preview_ground_ring(const Tube& tube, uint32_t rgb, TrackModel& m) {
+        const float scale = 50.0f / float(tube.extent);
+        emit_ground_ring(tube, rgb, m, [&](const std::array<float, 3>& p, float* out) {
+            float q[3] = { p[0] * scale, p[1] * scale, p[2] * scale };
+            rush2::track2049::preview_place(q, 0.0f, out);
+        });
+    }
+
+    // The screenshot: w (128; at most preview_max_width) x h CI8 `indices` with `palette`, shown show_w x show_h of
+    // 2049's screen pixels (0: w x h, as 2049 draws its own) centered where 2049 draws its 128 x 128 sprite. Drawn in
+    // strips of as many rows as one TMEM load holds (16 of 128 texels), translucent (2049's corners are clear),
     // z-compared but not written, after the model so the model hides it.
     void preview_screenshot(Miniature& mini, TrackModel& m, const std::vector<uint8_t>& indices,
-                            std::array<uint16_t, 256> palette, int w, int h) {
+                            std::array<uint16_t, 256> palette, int w, int h, float show_w = 0, float show_h = 0) {
+        if (w <= 0 || w > preview_max_width || h <= 0) return;
+        if (show_w <= 0 || show_h <= 0) show_w = float(w), show_h = float(h);
         // Clear entries black, so filtering darkens the round edge instead of fringing it with the key colour.
         for (uint16_t& c : palette) {
             if (!(c & 1)) c = 0;
         }
-        // Strips of preview_strip_h rows starting a row above the preview_strip_shown rows each draws, so the
-        // filter has both neighbours at the seams: the image with its first and last rows repeated around it.
-        const int strips = (h + preview_strip_shown - 1) / preview_strip_shown;
+        // Rows of `line` 64-bit words (padded clear past w), strip_h of them a load, starting a row above the
+        // strip_h - 2 rows each strip draws, so the filter has both neighbours at the seams: the image with its first
+        // and last rows repeated around it.
+        const int line = (w + 7) / 8, stride = line * 8;
+        const int strip_h = preview_strip_bytes / stride, shown = strip_h - 2;
+        const int strips = (h + shown - 1) / shown;
         Bytes& texels = m.parts[texels_part];
         align(texels, 8);
         const uint32_t at = uint32_t(texels.size());
-        for (int row = -1; row < strips * preview_strip_shown + preview_strip_h - preview_strip_shown - 1; row++) {
+        for (int row = -1; row < strips * shown + 1; row++) {
             int r = std::clamp(row, 0, h - 1);
             texels.insert(texels.end(), indices.begin() + r * w, indices.begin() + (r + 1) * w);
+            texels.insert(texels.end(), size_t(stride - w), uint8_t(255));
         }
         const uint32_t pal = uint32_t(texels.size());
         for (uint16_t c : palette) push16(texels, c);
@@ -2261,30 +2360,88 @@ namespace {
         mini.command(0xF0000000, 0x073FC000);    // LOADTLUT 256 entries
         mini.command(0xE7000000, 0);
         const uint32_t clamp = (2u << 18) | (2u << 8);
+        const uint32_t dxt = uint32_t((2048 + line - 1) / line);    // 2049's 128 wide: 0x80
         const float d = preview_disc_depth / rush2::track2049::preview_focal;
+        // 2049's sprite spans (preview_disc_x, preview_disc_y) + 128 x 128; texel rows show show_h / h pixels each.
+        const float sx0 = preview_disc_x + 64.0f - show_w * 0.5f, sx1 = sx0 + show_w;
+        const float sy0 = preview_disc_y + 64.0f - show_h * 0.5f, per_row = show_h / float(h);
         for (int strip = 0; strip < strips; strip++) {
-            mini.command(0xFD500000, at + uint32_t(strip * w * preview_strip_shown), texels_part); // SETTIMG CI 16-bit
+            mini.command(0xFD500000, at + uint32_t(strip * stride * shown), texels_part); // SETTIMG CI 16-bit
             mini.command(0xF5500000, 0x07000000 | clamp);   // SETTILE 7
             mini.command(0xE6000000, 0);                     // LOADSYNC
-            mini.command(0xF3000000, 0x073FF080);            // LOADBLOCK 1024 16-bit texels, 16 words per row
+            mini.command(0xF3000000, 0x07000000 | (uint32_t(preview_strip_bytes / 2 - 1) << 12) | dxt);  // LOADBLOCK
             mini.command(0xE7000000, 0);
-            mini.command(0xF5482000, clamp);                 // SETTILE 0: CI8, 16 words per row, TMEM 0
-            mini.command(0xF2000000, 0x001FC03C);            // SETTILESIZE 128 x 16
+            mini.command(0xF5400000 | (1u << 19) | (uint32_t(line) << 9), clamp);   // SETTILE 0: CI8, line words, TMEM 0
+            mini.command(0xF2000000, (uint32_t(w - 1) << 14) | uint32_t(strip_h - 1) << 2);   // SETTILESIZE w x strip_h
             Group quad;
-            int rows = std::min(preview_strip_shown, h - strip * preview_strip_shown);
-            float y0 = preview_disc_y + float(strip * preview_strip_shown), y1 = y0 + float(rows);
-            float x0 = preview_disc_x, x1 = preview_disc_x + float(w);
+            int rows = std::min(shown, h - strip * shown);
+            float y0 = sy0 + float(strip * shown) * per_row, y1 = y0 + float(rows) * per_row;
             auto corner = [&](float sx, float sy, float s, float t) {
                 float x = (sx - rush2::track2049::preview_center_x) * d, y = (rush2::track2049::preview_center_y - sy) * d;
                 return quad.add({ x * preview_units, y * preview_units, preview_disc_depth * preview_units, s, t, 255, 255, 255 });
             };
             // s runs against x: the menu camera's x is mirrored on screen, so texel 0 at x0 showed the picture
             // reversed (stock thumbnails and mod previews alike).
-            int a = corner(x0, y0, float(w), 1), b = corner(x1, y0, 0, 1);
-            int c = corner(x1, y1, 0, float(1 + rows)), e = corner(x0, y1, float(w), float(1 + rows));
+            int a = corner(sx0, y0, float(w), 1), b = corner(sx1, y0, 0, 1);
+            int c = corner(sx1, y1, 0, float(1 + rows)), e = corner(sx0, y1, float(w), float(1 + rows));
             quad.quad(a, b, c, e);
             emit_group(mini, quad);
         }
+    }
+
+    // The version ring (rush2::track2049::version_ring_*): a thin band of color `rgb` around the round screenshot's
+    // opaque texels (w x h CI8 `indices`, opaque where the palette entry's alpha bit is set), drawn where
+    // preview_screenshot draws the picture, a little in front of it. Shade colored with alpha 1 in the screenshot's
+    // translucent z-compared mode, so the model in front still hides it.
+    constexpr float ring_inner = 1.0f, ring_outer = 1.5f;      // 2049 screen pixels inside and outside the picture's edge
+    constexpr int ring_segments = 96;
+
+    void preview_ring(Miniature& mini, const std::vector<uint8_t>& indices, const std::array<uint16_t, 256>& palette,
+                      int w, int h, uint32_t rgb) {
+        int x0 = w, x1 = -1, y0 = h, y1 = -1;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (!(palette[indices[size_t(y * w + x)]] & 1)) continue;
+                x0 = std::min(x0, x); x1 = std::max(x1, x);
+                y0 = std::min(y0, y); y1 = std::max(y1, y);
+            }
+        }
+        if (x1 < x0 || y1 < y0) return;
+        // Texel column c shows at screen x preview_disc_x + w - c (preview_screenshot runs s against x), row r at
+        // preview_disc_y + r.
+        const float cx = preview_disc_x + float(w) - float(x0 + x1 + 1) * 0.5f;
+        const float cy = preview_disc_y + float(y0 + y1 + 1) * 0.5f;
+        const float r = float(std::max(x1 - x0 + 1, y1 - y0 + 1)) * 0.5f;
+        const float depth = preview_disc_depth - 0.5f;
+        const float d = depth / rush2::track2049::preview_focal;
+        const uint8_t cr = uint8_t(rgb >> 16), cg = uint8_t(rgb >> 8), cb = uint8_t(rgb);
+        Group band;
+        auto point = [&](float radius, float a) {
+            float sx = cx + radius * std::cos(a), sy = cy + radius * std::sin(a);
+            float x = (sx - rush2::track2049::preview_center_x) * d, y = (rush2::track2049::preview_center_y - sy) * d;
+            return band.add({ x * preview_units, y * preview_units, depth * preview_units, 0, 0, cr, cg, cb });
+        };
+        int first_in = point(r - ring_inner, 0.0f), first_out = point(r + ring_outer, 0.0f);
+        int in = first_in, out = first_out;
+        for (int s = 1; s <= ring_segments; s++) {
+            int next_in = first_in, next_out = first_out;
+            if (s < ring_segments) {
+                float a = float(s) * 6.2831853f / float(ring_segments);
+                next_in = point(r - ring_inner, a);
+                next_out = point(r + ring_outer, a);
+            }
+            band.quad(in, out, next_out, next_in);
+            in = next_in;
+            out = next_out;
+        }
+        // Between two G_NOOPs tagged version_ring_start / _end: the track select branches over it for a course with
+        // one version (src/rush2049/track2049_menu.cpp, show_ring).
+        mini.command(0x00000000, rush2::track2049::version_ring_start);
+        mini.command(0xE7000000, 0);
+        mini.command(0xE200001C, 0x0C184A50);    // the screenshot's mode: z-compared translucent surface
+        mini.command(0xFCFFFFFF, 0xFFFE7C38);    // shade colour, alpha 1
+        emit_group(mini, band);
+        mini.command(0x00000000, rush2::track2049::version_ring_end);
     }
 
     // A Rush 2049 or Dreamcast RGBA picture as the screenshot's CI8: index 255 clear, the rest a median cut of the
@@ -2293,8 +2450,10 @@ namespace {
                           std::array<uint16_t, 256>& palette) {
         std::vector<std::array<uint8_t, 3>> px(rgba.size());
         for (size_t i = 0; i < rgba.size(); i++) px[i] = { rgba[i][0], rgba[i][1], rgba[i][2] };
+        // 255 colours: index 255 is the clear one. With 256 the last colour's texels were moved to 254, another
+        // colour, which showed as specks (the arcade pictures' light pavement).
         Texture t;
-        quantize(px, t);
+        quantize(px, t, 255);
         indices = t.texels;
         palette = t.palette;
         palette[255] = 0;
@@ -2302,6 +2461,19 @@ namespace {
             if (rgba[i][3] < 128) indices[i] = 255;
             else if (indices[i] == 255) indices[i] = 254;
         }
+    }
+
+    // Track k's round screenshot for its preview as CI8 (128 wide): the cartridge's own texels, or the disc's picture
+    // quantized. `ui` is file 60 (unused for a disc).
+    bool preview_thumbnail(const rush2::rom2049::Source& rom, const Bytes& ui, int k, std::vector<uint8_t>& indices,
+                           std::array<uint16_t, 256>& palette, int& w, int& h) {
+        std::vector<std::array<uint8_t, 4>> rgba;
+        indices.clear();
+        bool thumbnail = rom.is_dreamcast() ? disc_thumbnail(rom, k, rgba, w, h)
+                                            : read_thumbnail(ui, k, rgba, w, h, &indices, &palette);
+        if (!thumbnail || w != 128 || h <= 0) return false;
+        if (indices.empty()) quantize_picture(rgba, indices, palette);
+        return true;
     }
 
     // The model's part of a preview: how much of the list and the vertices so far is the tube's or the outline's.
@@ -2344,8 +2516,8 @@ namespace {
 
         // The model, with 2049's list state: textures off, fog and an opaque z-buffered surface, shade colour.
         bool race = k >= 1 && k <= rush2::track2049::track_count;
+        Tube tube;
         if (race) {
-            Tube tube;
             if (!tube_geometry(rom, k, tube)) return false;
             preview_tube(tube, number_of(k), m);
         }
@@ -2368,17 +2540,43 @@ namespace {
 
         const PreviewPart model(m);
 
-        std::vector<std::array<uint8_t, 4>> rgba;
         std::vector<uint8_t> indices;
         std::array<uint16_t, 256> palette{};
         int w = 0, h = 0;
-        bool thumbnail = rom.is_dreamcast() ? disc_thumbnail(rom, k, rgba, w, h)
-                                            : read_thumbnail(ui, k, rgba, w, h, &indices, &palette);
-        if (thumbnail && w == 128 && h > 0) {
-            if (indices.empty()) quantize_picture(rgba, indices, palette);
+        if (preview_thumbnail(rom, ui, k, indices, palette, w, h)) {
             preview_screenshot(mini, m, indices, palette, w, h);
+            // The version ring: the N64 ROM's or the disc's (the race tracks; the arenas have one version).
+            if (race) {
+                preview_ring(mini, indices, palette, w, h, rom.is_dreamcast() ? rush2::track2049::version_ring_dc
+                                                                              : rush2::track2049::version_ring_n64);
+            }
+        }
+        if (race) {
+            preview_ground_ring(tube, rom.is_dreamcast() ? rush2::track2049::version_ring_dc
+                                                         : rush2::track2049::version_ring_n64, m);
         }
         return preview_finish(mini, m, model);
+    }
+
+    // The screenshot in a route_preview blob (list at `list`): its 128 x 128 CI8 texels and palette, read back from
+    // the strips preview_screenshot laid out (the first SETTIMG of the palette, the first strip's texels with the
+    // picture's first row repeated before it). False when the blob has none.
+    bool blob_screenshot(const Bytes& blob, uint32_t list, std::vector<uint8_t>& indices,
+                         std::array<uint16_t, 256>& palette) {
+        constexpr int w = 128, h = 128;
+        uint32_t texels = 0, pal = 0;
+        bool have_texels = false, have_pal = false;
+        for (size_t at = list; at + 8 <= blob.size() && blob[at] != 0xDF && !(have_texels && have_pal); at += 8) {
+            uint32_t w0 = be32(blob, at), w1 = be32(blob, at + 4) & 0xFFFFFF;
+            if (w0 == 0xFD100000 && !have_pal) { pal = w1; have_pal = true; }
+            if (w0 == 0xFD500000 && !have_texels) { texels = w1; have_texels = true; }
+        }
+        if (!have_texels || !have_pal || size_t(texels) + size_t(w) * (h + 1) > blob.size() || size_t(pal) + 512 > blob.size()) {
+            return false;
+        }
+        indices.assign(blob.begin() + texels + w, blob.begin() + texels + w + w * h);
+        for (int c = 0; c < 256; c++) palette[size_t(c)] = be16(blob, pal + uint32_t(c) * 2);
+        return true;
     }
 
     // A model's parts as one blob: texels, vertices, then the list, with the list's pointers made blob offsets.
@@ -2408,8 +2606,8 @@ void rush2::track2049::quantize_ci8(const std::vector<std::array<uint8_t, 4>>& r
 }
 
 bool rush2::track2049::route_preview(const std::vector<uint8_t>& path, int color, const std::vector<uint8_t>& picture,
-                                     std::vector<uint8_t>& blob, uint32_t& list, std::vector<uint32_t>& pointers,
-                                     float& radius) {
+                                     int picture_w, int picture_h, std::vector<uint8_t>& blob, uint32_t& list,
+                                     std::vector<uint32_t>& pointers, float& radius) {
     Tube tube;
     if (!tube_from_path(path, false, tube, true)) return false;
     TrackModel m;
@@ -2417,15 +2615,67 @@ bool rush2::track2049::route_preview(const std::vector<uint8_t>& path, int color
     Miniature mini(no_geometry, m);
     preview_tube(tube, color, m);
     const PreviewPart model(m);
-    if (picture.size() == 128 * 128 * 4) {
-        std::vector<std::array<uint8_t, 4>> rgba(128 * 128);
+    if (picture_w > 0 && picture_w <= preview_max_width && picture_h > 0 &&
+        picture.size() == size_t(picture_w) * size_t(picture_h) * 4) {
+        std::vector<std::array<uint8_t, 4>> rgba(size_t(picture_w) * size_t(picture_h));
         for (size_t i = 0; i < rgba.size(); i++) rgba[i] = { picture[i * 4], picture[i * 4 + 1], picture[i * 4 + 2], picture[i * 4 + 3] };
         std::vector<uint8_t> indices;
         std::array<uint16_t, 256> palette{};
         quantize_picture(rgba, indices, palette);
-        preview_screenshot(mini, m, indices, palette, 128, 128);
+        // Shown in route_picture_w x route_picture_h of the track select's pixels, aspect kept.
+        float s = std::min(rush2::track2049::route_picture_w / float(picture_w), rush2::track2049::route_picture_h / float(picture_h));
+        preview_screenshot(mini, m, indices, palette, picture_w, picture_h, float(picture_w) * s, float(picture_h) * s);
     }
     if (!preview_finish(mini, m, model) || !flatten(m, blob, list, pointers)) return false;
+    radius = m.radius / 16.0f;
+    return true;
+}
+
+bool rush2::track2049::course_preview(const rush2::rom2049::Source& rom, int k, const std::vector<uint8_t>* picture_of,
+                                      uint32_t picture_list, uint32_t ring, std::vector<uint8_t>& blob, uint32_t& list,
+                                      std::vector<uint32_t>& pointers, float& radius) {
+    if (k < 1 || k > track_count) return false;
+    Tube tube;
+    if (!tube_geometry(rom, k, tube)) return false;
+    TrackModel m;
+    static const Bytes no_geometry;
+    Miniature mini(no_geometry, m);
+    preview_tube(tube, number_of(k), m);
+    const PreviewPart model(m);
+    std::vector<uint8_t> indices;
+    std::array<uint16_t, 256> palette{};
+    int w = 128, h = 128;
+    bool picture = false;
+    if (picture_of != nullptr) {
+        picture = blob_screenshot(*picture_of, picture_list, indices, palette);
+    }
+    else {
+        Bytes ui;
+        picture = (rom.is_dreamcast() || rom.read_file(ui_file, ui)) && preview_thumbnail(rom, ui, k, indices, palette, w, h);
+    }
+    if (picture) {
+        preview_screenshot(mini, m, indices, palette, w, h);
+        preview_ring(mini, indices, palette, w, h, ring);
+    }
+    preview_ground_ring(tube, ring, m);
+    if (!preview_finish(mini, m, model) || !flatten(m, blob, list, pointers)) return false;
+    radius = m.radius / 16.0f;
+    return true;
+}
+
+std::string rush2::track2049::disc_preview_name(int k) {
+    return "R49PDTRACK" + std::to_string(k);
+}
+
+std::string rush2::track2049::disc_model_name(int k) {
+    return "R49DTRACK" + std::to_string(k);
+}
+
+bool rush2::track2049::course_diorama(const rush2::rom2049::Source& rom, int k, uint32_t ring, std::vector<uint8_t>& blob,
+                                      uint32_t& list, std::vector<uint32_t>& pointers, float& radius) {
+    if (k < 1 || k > track_count) return false;
+    TrackModel m;
+    if (!build_tube(rom, k, m, ring) || !m.parts[loads_part].empty() || !flatten(m, blob, list, pointers)) return false;
     radius = m.radius / 16.0f;
     return true;
 }

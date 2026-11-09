@@ -55,7 +55,7 @@ namespace rush2::online {
         uint8_t battle_minutes = 0;
         uint8_t race_battle = 0;     // The race track select's BATTLE row (rush2::battle::race_battle): weapons.
         // A custom track (src/track_mod/) is known by what it is, not its id: each machine numbers its custom tracks
-        // (ids 38-63) in its own mod order. mod_track is rush2::track2049::online_track_key ("" for the other
+        // (ids 38-63 and 80-248) in its own mod order. mod_track is rush2::track2049::online_track_key ("" for the other
         // tracks), mod_track_name its name for the lobby's messages.
         std::string mod_track;
         std::string mod_track_name;
@@ -227,10 +227,12 @@ namespace rush2::online {
     void set_local_mod_cars(const std::array<uint32_t, max_mod_cars>& checks);
     // This machine's settings that change the race (RosterEntry::gameplay).
     void set_local_gameplay(const std::string& gameplay);
+    // The name shown until a profile is picked: the first saved profile (the Online tab sets it before hosting or
+    // joining), or RUSH2_ONLINE_NAME in test runs.
     void set_display_name(const std::string& name);
     std::string display_name();
     // The name of the save profile this machine's player picked on Select Player, which the lobby shows in place of
-    // the display name; empty for none.
+    // the display name from then on. Empty (no profile picked) keeps the last one.
     void set_profile_name(const std::string& name);
     // This machine's players (1-4) and their cars, once its car select has them all: the host gives the machine a slot
     // per player (or as many as the lobby has room for: start_race says so).
@@ -383,7 +385,7 @@ namespace rush2::online_tab {
     void create_tab();
     // Loads online.json and hands this machine's choices to the session. Call after every other config has loaded.
     void load_config();
-    // The "online" config (online.json): the display name, which the Controls tab also shows, and the tab's choices.
+    // The "online" config (online.json): the tab's choices (last address, host settings, car).
     recomp::config::Config& config();
     // Game thread, every frame: in a joined lobby this machine's gameplay settings follow the host's (kept in memory,
     // with this machine's own backed up in the save file); out of one they are put back. Changes wait while a menu is

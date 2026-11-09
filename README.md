@@ -23,7 +23,7 @@ You need to bring your own copy of the game. Nothing from the original cartridge
 
 **Download:** the Windows build and the Linux AppImage are on the [Releases page](https://github.com/bryantmh/rush2recompiled/releases/latest). Every release lists what changed since the last one.
 
-Join the [Discord](https://discord.gg/nYfFAKMnyx) or watch the [YouTube video](https://youtu.be/Dd5F3HraMxA) introducing the project.
+Join the [Discord](https://discord.gg/nYfFAKMnyx) or watch the YouTube videos: the [introduction to the project](https://youtu.be/Dd5F3HraMxA) and [a follow-up video](https://youtu.be/G1nH34h8MZw).
 
 ## What you get
 
@@ -64,7 +64,7 @@ Add the Rush 2049 ROM to get:
 - **2049 stunt scoring.** Set Stunt Scoring on the Games tab to score tricks the Rush 2049 way: flips, rolls, helicopter spins and wheelies build a combo with a multiplier, and a wreck loses it. The stunt display comes with it.
 - **Battle arenas.** Eight deathmatch arenas in the BATTLE row, with weapons, pickups, and arrows pointing to the other cars. Computer-controlled drones can fill the arenas, and weapons can also be turned on in regular arena races with a cheat. The track select's BATTLE row turns any race into a battle race: a row of weapon and power-up pickups on every checkpoint line past the start, and drones that grab them and shoot.
 - **Coins.** Collect 2049's coins, which are counted per player in the Progress tab and count toward unlocks.
-- **Dreamcast disc (experimental).** Rush 2049 can also be loaded from a Dreamcast disc image instead of the N64 ROM, and a Dreamcast Textures option uses the disc's textures with the N64 version.
+- **Dreamcast disc** Rush 2049 can also be loaded from a Dreamcast disc image instead of the N64 ROM, and with a disc installed the race tracks' Dreamcast versions can be raced alongside or in place of the N64 versions.
 
 ### San Francisco Rush
 
@@ -88,13 +88,25 @@ California Speed (Atari Games, 1999) runs on the same engine as Rush 2, so it co
 
 The arcade release of San Francisco Rush 2049 (Special Edition) had a track and cars the N64 version never got, and its own versions of the six race tracks. If you have the arcade game's files as unpacked by [Project R](https://t3hd0gg.com/project-r/) (a free native PC port of the arcade game; you supply your own arcade files), press Build and Install under Rush 2049 Arcade on the Games tab. It finds ProjectR's folder by itself (or press Select Folder) and builds and turns on two mods in a few seconds, no restart needed:
 
-- **Alcatraz.** The arcade-only Alcatraz track, listed right after the Rush 2049 tracks, with computer opponents, records and ghosts like any custom track.
-- **Arcade tracks.** Turn off Alcatraz Only and the arcade's own Marina, Haight, Civic, Metro, Mission and Presidio are added too, as tracks of their own (Marina Arcade and so on) before Alcatraz. Their buildings, props, skies and road shapes come from the arcade game, so they look and drive a little differently from the N64 versions.
+- **Arcade tracks.** The arcade's Alcatraz joins the track select, and Marina, Haight, Civic, Metro, Mission and Presidio each get an ARCADE version beside their N64 one: the version button (X, Square or J on the keyboard) on the track select switches between them. Their buildings, props, skies and road shapes come from the arcade game, so they look and drive a little differently from the N64 versions.
 - **Arcade cars.** The arcade's Truck, Deuce and Caddy join the car select, and the arcade-only color schemes for the 2049 cars show up as a STYLE row.
+- **Arcade music.** Each arcade track plays its own song from the arcade game.
 
 With the mods built, the Arcade Checkpoints option hangs the arcade's CHECKPOINT banner over every checkpoint on the N64 Rush 2049 tracks, which the N64 game leaves unmarked.
 
 The mods are built from your own copy of the arcade game and aren't shared with the download. They rebuild themselves when a new version of the game changes them.
+
+### SF Rush arcade tracks
+
+The arcade release of San Francisco Rush (The Rock edition) has its own versions of all seven SF Rush tracks: the same layouts with much sharper textures and more detailed scenery. With its files unpacked by Project R, press Build and Install under SF Rush Arcade on the Games tab. Each course then gets an ARCADE version beside its N64 one: the version button (X, Square or J on the keyboard) on the track select switches between them. The arcade's eight songs come with it and play on the SF Rush tracks along with the N64 songs.
+
+### SF Rush PlayStation
+
+The PlayStation release of San Francisco Rush has a track and cars the N64 version never got. Under SF Rush PlayStation on the Games tab, press Select Disc and pick your disc image (a .cue, .chd or .ccd, or the .bin, .img or .iso of its first track), then press Build and Install. You don't need the N64 SF Rush ROM for this. You get:
+
+- **Chinatown.** The PlayStation's own fourth track, through the Presidio, the MacArthur Tunnel, Chinatown and the Financial District. It's listed with the SF Rush tracks.
+- **Seven new cars.** Starsky, Jeep, Jet Car, Mini, City Bus, Police and the UFO join the car select with the SF Rush cars.
+- **The PlayStation music.** The disc's four CD audio songs play on the SF Rush tracks along with the N64 songs.
 
 ## What you need
 
@@ -104,6 +116,7 @@ The mods are built from your own copy of the arcade game and aren't shared with 
 - Optional: a ROM of **San Francisco Rush 2049** to play its tracks, cars, arenas and more
 - Optional: a ROM of **San Francisco Rush: Extreme Racing** to play its tracks, music and more
 - Optional, experimental: a ROM of **California Speed** to play its tracks, cars and music
+- Optional: a disc image of the PlayStation **San Francisco Rush: Extreme Racing** (USA, SLUS-00505) to play its own track, cars and music
 
 Each game takes one exact ROM, the North American (USA) release, and other regions or versions are turned away. Check yours against these SHA-1 hashes (of the `.z64` file; `.n64` and `.v64` files of the same ROM work too):
 

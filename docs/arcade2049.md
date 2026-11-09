@@ -3,7 +3,9 @@
 The arcade game (Rush 2049 Special Edition) has a track the N64 never got: Alcatraz. `src/arcade2049/arcade_track.cpp`
 converts an arcade track into a custom-track mod (docs/custom_tracks.md) at the arcade's full model detail and texture
 size, and `src/arcade2049/arcade_cars.cpp` the cars into a car mod; the Games tab runs both (below).
-`tools/arcade2049/arcade.py` reads the data for study. Nothing here is shared with the N64 or Dreamcast formats.
+`tools/arcade2049/arcade.py` reads the data for study. Nothing here is shared with the N64 or Dreamcast formats. The
+same converter builds the SF Rush arcade (Rush The Rock) tracks, whose data is laid out the same way, with a few rules
+of their own: docs/sfrush_arcade.md.
 
 ```
 python tools/arcade2049/arcade.py TRACK4          (a summary of the track's files)
@@ -37,20 +39,19 @@ track select read the new files without a restart; `mods_changed` also has the c
 (`rush2::track_mod::rescan`): it was kept by the enabled mods and their file names, which a rebuild keeps, so until
 2026-10-19 tracks added by a rebuild (Alcatraz Only turned off) showed only after a restart.
 
-- **Alcatraz Only** (Games tab, under the section, default on; `arcade_alcatraz_only` in games.json): on, the track
-  mod holds just Alcatraz (TRACK4). Off, it also holds the arcade's own versions of the six Rush 2049 tracks as tracks
-  of their own after the Rush 2049 ones (`a49::arcade_tracks`: TRACK1 `marina_arcade`, TRACK2 `haight_arcade`, TRACK3
-  `civic_arcade`, TRACK5 `metro_arcade`, TRACK6 `mission_arcade`, TRACK7 `presidio_arcade`, each "<Name> Arcade").
-  The track select shows them in the N64's order with Alcatraz last: each track.toml's `[menu] after` names the track
-  before it in `arcade_tracks` (the first `rush2049`); until 2026-10-19 they all followed `rush2049` and showed in
-  folder name order.
-  The option is part of the mod's key, so changing it rebuilds an installed mod in the background (and once more if
-  it changes during a build); without the arcade data a copied mod keeps the tracks it was built with. Their logos
-  are the N64 tracks' own banners with " A" after them (`tools/build_banners.py --arcade`: the font-drawn names drawn
-  again as "MARINA A", Metro's and Presidio's picture banners kept, narrowed, with the "A" beside them), and their
-  round previews are the user's in-game screenshots (`tools/arcade2049/previews/<id>.png`, cut by
-  `tools/build_banners.py --arcade` into `assets/arcade2049/<id>_preview.png`). Only Alcatraz sets a
-  fog color (its night). `ARCADE_ALL=1` makes cpp_test build them all. Offline
+- **The arcade's versions of the six race tracks.** The track mod holds Alcatraz (TRACK4, `[menu] after =
+  "rush2049"`) and the arcade's own versions of the six Rush 2049 race tracks (`a49::arcade_tracks`: TRACK1
+  `marina_arcade`, TRACK2 `haight_arcade`, TRACK3 `civic_arcade`, TRACK5 `metro_arcade`, TRACK6 `mission_arcade`,
+  TRACK7 `presidio_arcade`, each "<Name> Arcade"). Each of the six is a version of its course (`[menu] variant_of =
+  "rush2049:<course>"`, `variant = "ARCADE"`): it shares the course's track select entry with the N64 and Dreamcast
+  versions, and the version button switches to it (docs/custom_tracks.md#versions). Until 2026-11-05 the Games tab's
+  **Alcatraz Only** option (`arcade_alcatraz_only`, default on) left them out, and with it off they were entries of
+  their own after the Rush 2049 tracks; the option is gone (a games.json still holding it is ignored) and the mod
+  always holds all seven, rebuilt once at the next launch as its key changed. Their logos are the N64 tracks' own
+  banners (`tools/build_banners.py --arcade`; until 2026-11-05 with an " A" after the name, which the version button's
+  ARCADE replaces), and their round previews are the user's in-game screenshots
+  (`tools/arcade2049/previews/<id>.png`, cut by `tools/build_banners.py --arcade` into
+  `assets/arcade2049/<id>_preview.png`). Only Alcatraz sets a fog color (its night). Offline
   (`tools/track_mod_test.bat` + `tools/track_mod_check.py` on the C++ output) all seven pass. Haight and Presidio
   needed the collision steps under "roaddat.rom" below (a cone tip on Haight; copies and a tunnel seam on Presidio)
   and Presidio, at 13,047 polygons, the converter's wide leaves (docs/custom_tracks.md: until 2026-10-19 the game took
@@ -69,8 +70,16 @@ track select read the new files without a restart; `mods_changed` also has the c
   `assets/arcade2049/<id>_logo.png` and `<id>_preview.png` (both part of the mod's key), all made by
   `tools/build_banners.py --arcade` (Alcatraz's logo with `banner_font.render_fit`). Regenerate them if a source
   changes.
+- **In the menus they count as Rush 2049's**, decided by the mod's id (`rush2049_arcade`, `rush2049_arcade_cars`),
+  which no track.toml or car file can claim. The game filter files the tracks and cars under Rush 2049, not Custom
+  (`rush2::track2049::mod_from_2049`, `rush2::car2049::mod_car_from_2049`). The cars list right after the 2049 cars
+  (`rush2::car2049::list_order`, used by the car select's list and the unlock system's). Alcatraz's `after =
+  "rush2049"` puts it after Presidio: the anchor skips a course's other versions (the Dreamcast ids 249-254).
+  The six ARCADE versions show the 2049 course's route tube and color in front of their own picture, with a red
+  version ring (docs/menus.md#track-versions).
 - **TRACK8** is SF Rush's Track 2, Embarcadero, left on the 2049 disk. It is The Rock's TRACK2 (same 200 textures,
-  220 road segments) with checkpoints matching SF Rush 64's exactly, and it is already in the game from the N64 ROM.
+  220 road segments) with checkpoints matching SF Rush 64's exactly; the SF Rush arcade mod has it as Embarcadero's
+  ARCADE version (docs/sfrush_arcade.md).
   Its drone path is stale data from another track. `arcade.py` now reads its collision: its vertex lists follow the
   leaves, and the file ends in 2 bytes of padding.
 
@@ -86,6 +95,27 @@ ProjectR (a native port of the arcade games) unpacks the arcade disk (`sf2049se.
 | TRACK1, 2, 3, 5, 6, 7 | the N64's Marina, Haight, Civic, Metro, Mission, Presidio (matched by their paths) |
 | TRACK4 | **Alcatraz** (arcade only) |
 | TRACK8 | SF Rush's Embarcadero (The Rock's TRACK2), named STUNT_TRACK2 in `roaddat.rom` +0x1C, its `dobs` empty |
+
+## Music
+
+`AUDIO` holds the arcade's music as `.str` streams: `track1`..`track7` (one per TRACKn, 185-278 s), `therock`
+(TRACK8), `select`, `finish`/`finish1-3`/`gameover` (91 s), `freegame`, `atari`, `movie1` and twelve 14 s `peelout`
+stings. Format: `STRM`, u32 data bytes, u32 0x36, u32 0x52, zeros to 512 bytes; the file is 5.1 PCM16 frames
+(FL FR C LFE BL BR, LFE always 0) counted from byte 0, 22050 Hz [I].
+
+None of them is a Dreamcast disc song (and so none is an N64 song, which arrange the disc's): `tools/rush2049/song_match.py`
+slides a 40 s chroma clip of each over all 18 disc `.STR` songs, and no arcade stream picks out one disc song
+(best 0.22-0.64, each with a runner-up within 0.01-0.08), and the same-named `therock` against the disc's `THEROCK.STR` stays
+at 0.25 or less at every rate from 11 to 50 kHz with any key shift; real arrangements score 0.54-0.87, see
+docs/rush2049_research/audio.md). So the arcade's soundtrack is its own [I]; confirm by ear with `song_match.py ... --wav OUT`.
+
+The game plays them (src/music_streams.cpp) straight from the arcade data folder, nothing converted: the first whole
+frame after the header is frame 43 (byte 516); the six channels carry different parts (the centre and rears hold
+their own instruments, uncorrelated with the fronts), so they are folded to stereo (FL + 0.707 C + 0.707 BL, likewise
+right; src/stream_decode.cpp), and turned down 9.7 dB (folded, they measure -6.4 LUFS against Rush 2's -16.1). Each
+TRACKn's song is the Original of its arcade version (`track4` Alcatraz's); `therock` (TRACK8's) is no raced track's
+own song, so it plays only in shuffles; `select` is a main menu song (Sound tab: Rush 2049 >
+Arcade > Main Menu). They are listed under Rush 2049's Arcade heading in the Sound tab.
 
 ## Axes
 
@@ -120,6 +150,14 @@ s16 next, s16 -1, u32. Bytes after a name's NUL are leftovers of longer names, s
 Read at 8, arcade Marina, Haight, Civic and Presidio lost 64, 107, 355 and 469 placements (the AF_/FF_/AL_/BL_/LP_
 objects, ambiguous at 8); the readers now take the long name when it is an object. Every Alcatraz matrix is identity.
 
+Name prefixes set object flags **[V]** (ProjectR 0x1402D69EE, the per-instance worlds loader; strings at 0x1406EA205):
+`FF_` 0x2000000, the same flag dobs' `frontface` sets (0x1402D83B5), so `FF_` placements are cards turned to the camera;
+`AF_` 0x20000, `AL_` 0x80000 (not decoded); `LP_` 0x4000090, the same as dobs' `lightpoint`. An identity matrix adds 0x10.
+`FF_` placements are mostly trees: Marina 34, Haight 74, Civic 286, Alcatraz 0, Metro 1 (the moon), Mission 133,
+Presidio 320 (plus bridge glows and glare sprites). The converter makes them `BILLBOARD_` as it does `frontface` objects
+(`src/arcade2049/arcade_track.cpp`, `Instance::card`; until 2026-11-05 they were fixed scenery, edge-on or missing
+from most angles). Each is a flat quad centered on its own origin with an identity matrix, so it turns in place.
+
 ## dobs.rom (dynamic objects)
 
 u8 1, then records: u8 name length (with its NUL), the name (can be longer than the object table's 15 characters; a
@@ -132,7 +170,7 @@ commands and what the converter makes of them:
 |---|---|---|
 | `frontface` | a card turned to the camera | `BILLBOARD_` |
 | `bounce`, `box x y z`, `point x y z` | knocked when hit (box or point hit shape) | `PROP_KNOCK_` |
-| `coin` | a score pickup, not Rush 2049's hidden coins | left out (mods have no collectibles) |
+| `coin` | a score pickup, not Rush 2049's hidden coins | left out (the N64 course's coins are placed instead: [Coins and keys on the arcade versions](#coins-and-keys-on-the-arcade-versions)) |
 | `spinx`/`spinz <deg/s>` | turns about its own x / upright axis, as its matrix turns it **[I]** (degrees per second fits the lighthouse and police lights); a positive rate is right-handed in dobs.rom's (x, z, y) axes, left-handed in world axes (every plane's pointed nose leads that way; the converter turned them right-handed in world until 2026-10-21 and they flew tail first) | looping `MOVE_` (with its collision and `start` if it has them) |
 | `flipbook <fps>` | steps through `<name>_1..n` at that rate; negative: once, on its start event (breaking glass, the finish sign) | one `MOVE_` per frame, shown by scale steps; an event flipbook is `mode = "once"` with its `start` |
 | `alpha 0` / `alpha 1` | blending mode (not decoded) | the texture's own alpha |
@@ -321,6 +359,13 @@ corners within 0.04 ft of it, t 0..1, none reaching past it). So a spline polygo
 segment has no band, and that fits its own segment is kept as it is, in its own facing (`kept` in `spline_road`):
 Alcatraz 232, TRACK1 248, TRACK7 4,348, matching the census.
 
+Footprints off their surface (checked 2026-11-06): the report gives how many footprint planes sit over 5 ft from
+their segment's surface and where (Marina 4, one 143 ft off near (717, 1576); Civic 1; Presidio 1). The game picks the
+face under a wheel by its plane (the highest within 5 ft above), but `tools/collision_probe.py` shows those faces still
+give the lanes their segment's height, and cutting their segments again changed nothing there, so they stay as built.
+The probe does find 1-2 ft gaps between faces on the lanes near them (Civic (672-690, 1856), Presidio (-740, 915)),
+there either way: open (docs/sfrush_arcade.md#how-it-differs-from-the-rush-2049-arcade-data).
+
 ## dpath.rom (the drones' paths)
 
 8 tables of 2000 slots of 0x18 bytes (384,000 bytes). Slot 0 is a header (u32 lap point count, u32 1 or 0, ...).
@@ -330,6 +375,28 @@ routes off the course; tables 1 and 2 are racing lines about 10 ft from it (744 
 stale data about 2,900 ft off the course; on the other tracks all seven are lanes. The lap is at road height (median
 0.4 ft) except over the jumps, where it is the cars' arc, hence `keep_height`. Speeds become Rush 2 mph as
 ft/s x 60 / 88 / 1.2 (Rush 2049's lane speeds over Rush 2's, docs/rush2049_research/cars.md).
+
+- **Presidio's lap is a run-in (2026-11-05).** Every Presidio (TRACK7) table starts from a standstill on the arcade's
+  grid (record 0 at 1 mph, then 35, 50, ...), runs along a stretch of its own onto the loop at record 285 and ends
+  where it first came onto it, 6,253 ft from its start; the other tracks' laps close within 17 ft. Closed into a loop,
+  that 6,000 ft straight back to the grid (lane points with no road under them, speeds blended down to 1-2 mph) turned
+  the drones about at the junction under checkpoint 1, where they wrecked (every drone, with DEATHS on), and timed the
+  first stretch at 183 s (247 s on the clock at difficulty 2). The converter now writes a lap whose ends are more than
+  300 ft apart as a run-in circuit (`run_in = true`, docs/custom_tracks.md#run-in-circuits): open AIPATH ribbons, the
+  start line 100 ft along it, the checkpoint banner at the junction as CHECKPOINT_1 (the loop start), gates numbered in
+  race order. Clock: 28 s to the loop start + 10 + lap / 30, about 42 s (51 s at difficulty 2); a lap of the loop 123 s.
+- **Drones still wreck after Presidio's big jump (both Presidios, open).** Sims with DEATHS on, catch-up off, 5
+  drones: N64 Presidio (track 17) lost 3, Presidio Arcade 2 and 0 in two runs, all between the jump and the 90 degree
+  bend after it ((-1150, 175, -2600) to (-1520, 179, -2960)). The samples show cars leaving the downhill crest
+  airborne at 100-113 mph (falling 50-60 ft/s) already rolling, landing on the roof or rolling over within 0.5 s of
+  landing; others run wide into the bend's outside wall at 94 mph or roll on its bank at 80. Capping the drones' lane
+  speeds to a Rush 2 car's cornering (rush2::calspeed::capped_lane_speeds at 2.5 g, as California Speed's are) did
+  not help: with the 4 g crest cap the drones left other crests slow and flipped, corners only lost 3 and 4 of 5, and
+  either way they were 25% slower from CP1 to CP2. Not changed; what keeps Rush 2049's own drones upright off these
+  crests is not worked out (no drone air control found in the registry; wings are the player's).
+- **Civic Center's tables 3-7 open with a standing start** (1, 25, 39, 48, 56 mph) on a closed lap: drones in those
+  lanes braked to a crawl at the line every lap. On a closed lap the converter gives that rising ramp the speed the
+  lap arrives at the line with.
 
 ## What the converter makes
 
@@ -452,6 +519,50 @@ every arcade car, so it lands on Rush 2's roster mean, as the N64 roster's avera
 inertia follow the mass by the N64's frame formula (2425 and 412500). Tire curves, rear grip, drive flags and
 drivetrain inertia are the N64 2049 car's. Steering, yaw damping and the SUSPENSION and TIRES settings are Rush 2's
 mean, as for the N64 cars. It was dropped: the cars now drive as their base car (docs/car_mods.md#rush-2049-arcade-cars).
+
+## Coins and keys on the arcade versions
+
+The arcade versions of the six Rush 2049 race tracks and of the SF Rush tracks (Rush The Rock, docs/sfrush_arcade.md)
+carry the N64 course's own coins or keys where the arcade track has the same spot. They are the course's: same record
+names, so same bits in the profile's masks (src/collectibles.cpp). One taken on either version counts on both, and
+the Progress tab and unlocks don't change. The arcade's own `coin` score pickups stay left out (dobs.rom above).
+
+- **Which spots.** `tools/arcade_collectibles.py` compares each N64 pickup against the arcade track's roaddat.rom. The
+  N64 position is used as it is: the arcade data is in the N64 games' world frame (Axes). It keeps a pickup when:
+  - the highest floor under it (within 2 ft above it) is within 3 ft of the N64's;
+  - at 6 or more of 8 points 30 ft around it, the floors match in the same way, or both have none;
+  - no arcade wall comes within 4 ft of it (floor to pickup) where the N64 has none.
+  `--write` makes `src/arcade2049/arcade_collectibles.inc`. Its source: 2049 placement file 120 + k (GOLDCOIN /
+  SILVERCOIN in record order, as the converter numbers them) and Rush 1 placement asset t (KEYL, key number at +0x4A,
+  section position added).
+- **Kept (2026-11-08).** Coins: Marina 11 of 16, Haight 3, Civic 8, Metro 12, Mission 13, Presidio 8 (55 of 96).
+  Keys: Golden Gate 6 of 6, Embarcadero 4 of 7, Market 7 of 8, Downtown 8 of 8, The Heights 6 of 8, Sunset 5 of 8,
+  The Rock 0 of 8 (36 of 53). Haight's hidden areas and The Rock are laid out differently in the arcade. Most others
+  dropped have no arcade floor at that height (rooftops and ledges the N64 port added). The Dreamcast's coins are the
+  N64's, except two Metro gold coins 6-10 ft higher; arcade versions use the N64's.
+- **The track.** Only the game-built arcade mods get them (`rush2049_arcade`, `sfrush_arcade`, by track folder).
+  track.glb and track.toml can't place collectibles, so other custom tracks still have none.
+  `rush2::arcade2049::collectible_extras` (src/arcade2049/arcade_collectibles.cpp) hands the custom track converter
+  their models and records (`track_mod::Extras::models` / `records`).
+  - Models: 2049 file 68's GOLDCOING_COIN and SILVERCOINS_COI (`track2049::convert_file`), or SF Rush asset 12's
+    KEYL1 (`track1::convert_container`), each with behaviour 8.
+  - Records: KEYS0-7 / KEYG0-7, or KEY1-8, at their world position, as children of the nearest opaque section. That
+    section's box and radius grow to hold them.
+  - The models and records are in the conversion's cache key. Without the 2049 source (coins) or the SF Rush ROM
+    (keys), the version has none.
+- **In the race.** `collectibles.cpp` takes the raced version's course at the race's object setup
+  (`rush2_collect_race_reset`) and counts its pickups as that course's. The coin rules are the stock tracks': 9 ft
+  pickup radius, glow, the 2049 sound. On an SF Rush course's version, `track2049.cpp` points KEY1-8 at KEYL1 and
+  turns on SF Rush's key hit test (`track1::set_redirects` with `rush1_hits`), as on the N64 course.
+- **Pause box.** It counts only the pickups the race placed (`collectibles::race_pickups`). When the version has
+  fewer than the course, the course's total follows in brackets: Haight Arcade shows `0/3 (8)` for its silver coins.
+  A kind with none placed has no row; a version with none has no box.
+- **Test.** `RUSH2_TEST_ARCADE_SPOT=<record>,x,y,z` moves one pickup, e.g. onto the start straight, to take it on a
+  short drive:
+  - `tools/test_race.py marina_arcade --drones 0 --env RUSH2_TEST_ARCADE_SPOT=KEYG2,1720,535,1873 --script "8:A:7,17:START" --shots 15,18.5`
+    gives `1/4 (8)`;
+  - `golden_gate_arcade` with `KEY3,-1639,276,5880` gives `1/6`.
+  The first run after a build converts the track again, and the race starts ~8 s later.
 
 ## Arcade checkpoints
 

@@ -63,10 +63,32 @@ namespace rush2 {
     // the extended GBI is enabled.
     bool draw_distance_take_fog(float& mul, float& offset);
 
+    // Sky Fog (src/sky_fog.cpp): hazes the sky toward the fog color by elevation, in races.
+    namespace sky_fog {
+        void set_enabled(bool on);
+        bool enabled();
+        // The sky model's marking is rush2_sky_fog_model_draw (include/rush2_hooks.h).
+        // Whether the view (its address) draws without fog: FOG 1 on a converted course with a sky model, as Rush
+        // 2049's lowest fog level (not part of Sky Fog: stock Rush 2 courses keep their fog).
+        bool fog_removed(uint8_t* rdram, uint32_t view_address);
+        // Each view, before guPerspective (from rush2_draw_distance_projection): works out the view's haze from its
+        // fog and near and far planes (in view units, before the draw distance factor).
+        void view_setup(uint8_t* rdram, uint32_t view, double near16, double far16);
+        // The view's haze in thousandths (0 = none), for its gEXSetSkyFog.
+        uint16_t take_haze();
+    }
+
     // High-resolution fonts (src/fonts.cpp). install_font_pack copies the built-in pack into the mods folder and must
     // run after the config path is registered. set_hires_fonts_enabled turns the pack and its tile clamping on or off.
     void install_font_pack();
     void set_hires_fonts_enabled(bool enabled);
+    // Hands the font pack to RT64 as the launcher opens, when its mod is enabled, so its glyph sheets are loaded
+    // before the game's first frame (mods' packs otherwise reach RT64 only when the game loads its mods, seconds
+    // later). Once per launch.
+    void load_font_pack_early();
+    // The font pack is drawn with (or isn't wanted: Fonts not High Resolution, its mod off). The launcher holds the
+    // game's start on it, black, for at most 2 s.
+    bool font_pack_ready();
 
     // Where settings and saves are stored (src/data_location.cpp): the user's app data folder, or the program's folder
     // in portable mode (portable.txt next to the executable). Switching takes effect on the next launch.
@@ -256,8 +278,11 @@ namespace rush2 {
         bool is_controller_enabled(int32_t joystick_id);
         // The controller currently driving a port, or -1.
         int32_t get_port_controller(int port);
-        // Whether RUSH2_TEST_VPAD's virtual controller drives the port (a simulation run reads it like a real one).
+        // Whether RUSH2_TEST_VPAD's virtual controller, or RUSH2_TEST_KEYS's keyboard, drives the port (a simulation run
+        // reads it like a real one).
         bool is_test_vpad_port(int port);
+        // SDL's keyboard state with RUSH2_TEST_KEYS's held keys added (SDL's own without it).
+        const uint8_t* keyboard_state(int* num_keys);
         // The port the keyboard drives, or -1 for none (off, or it hasn't pressed anything yet).
         int get_keyboard_port();
         bool get_keyboard_enabled();
@@ -334,9 +359,9 @@ namespace rush2 {
         // Glyphs of the menu layout's buttons, as port's controller or keyboard shows them (src/controls_menu.cpp),
         // drawn from a widget's text callback: begin, add any number (x, y: top left; w x h pixels, 16x14 the
         // Controller Setup screen's size), end.
-        // Y is the menus' C-up (Y or Triangle, I on the keyboard). add_menu_rect fills a rectangle (rgba with alpha)
-        // in the same list, under what is added after it.
-        enum class MenuButton : uint8_t { A, B, L, R, Y };
+        // Y is the menus' C-up (Y or Triangle, I on the keyboard), X their C-left (X or Square, J on the keyboard).
+        // add_menu_rect fills a rectangle (rgba with alpha) in the same list, under what is added after it.
+        enum class MenuButton : uint8_t { A, B, L, R, Y, X };
         void begin_menu_glyphs(uint8_t* rdram);
         void add_menu_glyph(uint8_t* rdram, int port, MenuButton button, int x, int y, int w, int h);
         void add_menu_rect(uint8_t* rdram, int x, int y, int w, int h, uint32_t rgba);

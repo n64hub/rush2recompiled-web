@@ -1,4 +1,5 @@
 diff --git a/recompui/src/composites/ui_mod_menu.cpp b/recompui/src/composites/ui_mod_menu.cpp
+index 937f2e8..fb208d9 100644
 --- a/recompui/src/composites/ui_mod_menu.cpp
 +++ b/recompui/src/composites/ui_mod_menu.cpp
 @@ -313,6 +313,9 @@ void recompui::open_folder(const std::filesystem::path& folder) {
@@ -12,6 +13,7 @@ diff --git a/recompui/src/composites/ui_mod_menu.cpp b/recompui/src/composites/u
      static_assert(false, "Not implemented for this platform.");
  #endif
 diff --git a/recompui/src/util/file.cpp b/recompui/src/util/file.cpp
+index ffb696b..d460905 100644
 --- a/recompui/src/util/file.cpp
 +++ b/recompui/src/util/file.cpp
 @@ -1,7 +1,9 @@

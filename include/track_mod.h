@@ -90,16 +90,27 @@ namespace rush2::track_mod {
         // rush2_track49_gravity), for each gravity cheat setting.
         std::string gravity = "rush2";
         std::optional<float> start_time;
+        std::optional<float> finish_time;                     // what crossing the finish adds (start_time if unset)
         std::vector<std::array<float, 3>> checkpoint_time;   // per checkpoint: first lap, later laps (third unused)
         std::vector<float> best_times;
         std::array<uint8_t, 3> fog = { 0xA0, 0xB8, 0xD0 };
         std::string sky = "none";                             // none or a stock_skies name
         float cloud_scroll = 0.0f, sky_parallax = 0.0f;
+        // [audio] music: the track's own songs, played as its Original (src/music.cpp): a song of the game
+        // ("track1".."track8": Rush 2's by its track select order, or a Sound tab song's key such as "r49dc_5"), or
+        // music files in the track's folder (.ogg, .wav), one or a list. music is the first, music_list all of them.
         std::string music;
+        std::vector<std::string> music_list;
         std::string preview, logo, diorama;                   // [menu] files in the track's folder
         // [menu] after: where the track select lists the track: behind a game's tracks ("rush2", "sfrush", "rush2049",
         // "calspeed") or behind another custom track (its folder name). Empty: after the stock and added tracks.
         std::string menu_after;
+        // [menu] variant_of: the track this one is a version of, sharing its track select entry, whose version button
+        // switches between them (docs/custom_tracks.md#versions): a race track of another game ("rush2049:marina",
+        // "rush2:las_vegas", "sfrush:golden_gate", "calspeed:monterey": the game and the track's name in lower case,
+        // spaces and dots as _) or another custom track's folder. [menu] variant: what the button shows for this
+        // version ("ARCADE"; default the track's name).
+        std::string variant_of, variant;
         // [track] smooth_collision (default true): the road's tilt blends smoothly across polygon edges
         // (src/smooth_collision.cpp); smooth_fold (degrees, default 20): an edge folding more than this stays sharp.
         bool smooth_collision = true;
@@ -162,6 +173,22 @@ namespace rush2::track_mod {
         // copied in as SKYO1. Empty when the game couldn't provide it (no Rush 2049 ROM, the offline converter).
         std::vector<uint8_t> sky_container;
         std::string sky_model;
+        // Models copied in from another Rush 2 container under their own name, with a behaviour id (the coin and key
+        // models of the arcade versions' collectibles), and placement records using them: each a child of the section
+        // it is in, at its world position. Only the game fills these (src/arcade2049/arcade_collectibles.cpp, for the
+        // arcade versions of the stock courses): track.glb and track.toml can't make collectibles.
+        struct Model {
+            std::vector<uint8_t> container;
+            std::string name;
+            uint16_t behaviour = 0;
+        };
+        struct Record {
+            std::string name;
+            std::array<float, 9> m{};
+            std::array<float, 3> pos{};
+        };
+        std::vector<Model> models;
+        std::vector<Record> records;
     };
 
     struct Converted {

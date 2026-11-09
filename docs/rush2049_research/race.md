@@ -130,7 +130,7 @@ don't matter. They hold whatever the editor dumped, sometimes stale.
 |---|---|---|
 | Checkpoints / laps | Path checkpoints. `func_8008F220` runs when a car's progress passes its next checkpoint: next = cp+1, wrapping to loop-start. A lap is counted when leaving the finish cp after the arming cp has been passed (car+0x7FC). [V] | Same logic in `func_800D24C8` (2049). [V] |
 | Number of laps | Option byte `0x800D5760[0]` → `0x8010C0E2`; circuit mode forces 3 (`func_80094698`). **No per-track lap count.** [V] | Option → `0x80152734`. [I] same |
-| Finish | When the leader starts the last lap, `func_8008F080` looks up model `<prefix>FINISH` (or `<prefix>FINISHB` when backward) and swaps G_DL calls to texture `CHKPNT`'s load list for texture `FINISH`'s (a banner swap). [V] | No equivalent (no FINISH/CHKPNT strings). [V] |
+| Finish | When a car passes the last checkpoint before the finish on the last lap (`checkpoint_passed_8008F220` at 0x8008F4C4: next checkpoint +0x800 = the header's finish checkpoint and laps 0x8010C0E2 = car +0x7FD + 1, with 0x8010C05E clear; on its per-player HUD path, so players' cars [I]), `func_8008F080` looks up model `<prefix>FINISH` (or `<prefix>FINISHB` when backward) and swaps G_DL calls to texture `CHKPNT`'s load list for texture `FINISH`'s (a banner swap). [V] | No equivalent (no FINISH/CHKPNT strings). [V] |
 | Checkpoint time | When checkpoints are on (`0x8010C17B`, options+0x19): `func_80093300` writes 90 / 45 into the header copy, but `func_800924E4` (from `func_80093048`) then **overwrites** them with driving times from the path's AI lanes (start = first stretch + 10 + a share of the rest; each checkpoint +0x1E / +0x20 = time to the next one). Both are multiplied by 1 + (5 − difficulty) × 0.075 (`func_800AE670`, `func_8008F220`). **Not 45 s per checkpoint.** 2049 tracks scale the result (`rush2_track49_race_time`); SF Rush tracks use SF Rush's own times (`rush2::track1::race_time`). See checkpoints.md §0. [V] | Never reads the bonus fields. [V] |
 | Start grid | Grid slot table `0x800CC2BC` (12-byte offsets; 8 race slots in staggered rows of 2 every 20 ft, slot 1 at +17 ft lateral, rows at 0/−20/−40/−60), applied in the car's path frame. The anchor is the spine crossing of the car's current checkpoint (cp 0 at start), oriented along the spine (`func_8006DE20` case 0, `func_8006D348`). Slot from `0x800D9C10[car*9+6]`. [V/I] | Same table at `0x801210E8`, but **6 race slots** (the last row is −40). [V] |
 | Attract/demo start | `func_8008E6B4`: cycles through per-track spine indices (`0x800C456C` lists, counts `0x800C45CC`, 24 = 12×fwd/back). [V] | `func_800B9284` (2049): `0x801173D8` / `0x80117408` (12 = 6×fwd/back). [V] |
@@ -286,6 +286,24 @@ The 2049 AI rubber band has no per-track factor (`func_800F93A0` (2049)).
 | 5 | 163/182 | 000000 | 7 | 450 | 117/119 | fea664ff fef071ff | 6/6 | 1383 | 5/5 | 0,230,420,680 / 0,260,505,760,1027 |
 
 2049 song ids index 2049's own MusyX music. Rush 2 needs a Rush 2 song number (plan §9.8).
+
+### Fog
+
+Rush 2049's per-view fog setup is `func_800AB18C` (view index a0, camera position a1), the twin of Rush 2's
+`race_fog_zone_setup_80081074` [V]. Views are 0x48 bytes at 0x8017A510: +0x40 fog start, +0x42 fog end (u16, 0-1000),
++0x3C far plane (f32).
+- The fog level is the byte 0x8013F1D8 (0-3). **Level 0 returns at once** (0x800AB1A0): the view keeps the range the
+  race start gave it, `func_800A7480(1000, 999, r, g, b, 0xFF, view)` from 0x800FB894 with the track's fog color
+  (0x80114658), an empty range, so **level 0 is no fog**.
+- Levels 1-3: fog start s16 0x8011E810[players * 4 + level], end 1000, far s16 0x8011E7F0[players * 4 + level], cull
+  distance f32 0x8011E7A8[players * 4 + level] into 0x80151AA0 (players at 0x8014A108). One player: start 992 / 975 /
+  900, far 1500 / 1000 / 600, the same as Rush 2's FOG 2-4 (Rush 2 0x800CA258 / 0x800CA244, rows of 5, one player
+  996 / 992 / 975 / 900 and 2000 / 1500 / 1000 / 600 for FOG 1-4). 2049's table also holds 996 / 2000 at level 0's
+  index, never read.
+- Fog zones: a list per track at 0x8011E76C (all NULL), blended as Rush 2's.
+
+The port keeps Rush 2's FOG 1-4 and gives FOG 1 on a converted course with a sky model 2049's no-fog level
+(`rush2::sky_fog::fog_removed`, docs/graphics_effects.md#sky-fog).
 
 ## 8. What a converted 2049 race track needs (replacing Rush 2 slot t)
 

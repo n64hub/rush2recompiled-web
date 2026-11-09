@@ -97,10 +97,10 @@ palette cycles, Monterey 2 scrolls and 1 palette cycle, in game]
   redirects (`track1::set_redirects`); windows and buildings stay static; the helicopter and stealth bomber draw
   nothing (`CSNONE`). [V]
 - **Cache:** `track_cache` entry 2000 + t plus the blob `calspeed_track<t>_<prefix>`, keyed on the ROM and the build. [V]
-- **Track select:** ids 64-79 (`rush2::calspeed::first_menu_id`), after the custom tracks; the screen's tables are
-  at 0x80310000 (names +0, scales +0x200, cloud heights +0x400, logos +0x600, carousel +0x800 (128 x 0x1C), circuit
-  instances +0x1600 (80), custom track strings +0x1800, California Speed strings +0x1C00), us.toml repointing the
-  instructions. BACKWARD isn't listed on its tracks and LAPS isn't on the point-to-point ones. [V]
+- **Track select:** ids 64-79 (`rush2::calspeed::first_menu_id`), between custom tracks 38-63 and 80-248; the
+  screen's tables are at 0x80310000 (names +0, scales +0x400, cloud heights +0x800, logos +0xC00, carousel +0x1000
+  (256 x 0x1C), circuit instances +0x2C00 (255), custom track strings +0x3000, California Speed strings +0x5000),
+  us.toml repointing the instructions. BACKWARD isn't listed on its tracks and LAPS isn't on the point-to-point ones. [V]
 
 - **Cars under the course:** Rush 2's tracks lie over an out-of-bounds floor (surface 7: a wheel on it wrecks the
   car, which puts it back on the road); California Speed's have none and their ground runs on below the roads
@@ -759,7 +759,11 @@ LZ-compressed MIDI as SF Rush's) and the sound effect bank at 0xD73AE0. The bloc
 past SF Rush's in the ROM image and filled from the ROM, the .ctl copy lives at 0x80E16000 (below 16 MB: the audio
 microcode reads its ADPCM codebooks with 24-bit addresses), and the songs are Rush 2 songs 29-37. California Speed
 has no per-track songs: its options' Audio Track picks one (strings at 0x800D4658), so a California Speed track
-plays a random one of its songs by default (`src/music.cpp`). Its menu song isn't identified. [V layout]
+plays a random one of its songs by default (`src/music.cpp`). Its menu song is sequence 0 (Rush 2 song 29, "Song 1"):
+the front end plays it through 0x800569BC (sequence << 16 | 0xFFFF, queued by 0x80056930) at 0x8006EFC0, 0x8006EFFC,
+0x8006F368, 0x8006FA14 and 0x8007562C, all in game state 0; races play the Audio Track table 0x800D8C64 (sequences
+0-8) from 0x800AE300. The Sound tab lists it as California Speed's Main Menu song (`menu_song_cs`, off by default).
+[V layout, V code]
 
 ### Engine sounds
 

@@ -1295,6 +1295,14 @@ area = "car"
 ref = "src/rush2049/wings_render.cpp"
 
 [[func]]
+vram = 0x80092360
+name = "sfx_play_msg"
+sig = "void sfx_play_msg(s32 id, s32 a1, s32 a2, s32 a3)"
+desc = "Game-side sound effect start: queues audio message type 2 (+4 = a2) on 0x801427A8 for sfx id a0; menus call it as (id, 0, 1, 0)."
+status = "inferred"
+ref = "docs/rush2049_research/menus.md#117-menu-sounds"
+
+[[func]]
 vram = 0x800924F4
 desc = "Wing callback: slides the wings out in 6 steps of 15 ms (0 to 5/6 of the car's slide distance), tilts them with the stick, and starts sound 0x3D when sliding starts; builds wing rotation about X and translation (slide, height, 0)."
 status = "verified"
@@ -1363,6 +1371,14 @@ desc = "Per-frame update of one car's draw nodes (arg0 = node record, +6 body no
 status = "verified"
 area = "car"
 ref = "docs/rush2049_research/cars.md#damaged-hood-v"
+
+[[func]]
+vram = 0x800947F0
+name = "menu_pulse_update"
+desc = "Menu highlight pulse: blends style 0x16's color each frame from 0x801146C0 (black) to 0x801146BC (0xE0E000) by a triangle wave of period 0.5 s."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x80094888
@@ -1663,6 +1679,7 @@ desc = "2049 placement walk and PVS region search: records 0x68 bytes, nodes 0x4
 status = "inferred"
 rush2 = 0x8007C27C
 rush1 = [0x80064544]
+calspeed = [0x800BFF98]
 link = "role"
 area = "render"
 ref = "docs/rush2049_research/geometry.md#51-scene-nodes-come-from-the-placement-file"
@@ -1676,6 +1693,14 @@ rush2 = 0x8007C624
 link = "same-code"
 area = "render"
 ref = "docs/rush2049_research/geometry.md#54-culling-and-visibility-summary"
+
+[[func]]
+vram = 0x800A04C4
+name = "widget_draw"
+desc = "2D widget draw: copy mode, point sampled, alpha compare; images drawn rows bottom up (stored flipped) in 2 KB strips. Draws the menu circuit board BACKGROUND_A/B at (0,0)."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x800A1910
@@ -1745,6 +1770,13 @@ area = "render"
 ref = "docs/rush2049_research/battle.md#61-arrows-to-the-other-cars"
 
 [[func]]
+vram = 0x800A5908
+desc = "Menu view setup after view_set_fov_800A5744: near 2.5, far 2000 (x16 for guPerspective), fov 0x80154188 = 90 in the menus."
+status = "inferred"
+area = "render"
+ref = "docs/functions/rush2049_render.md#rush-2049-render-functions"
+
+[[func]]
 vram = 0x800A6094
 name = "view_point_at_depth"
 sig = "void view_point_at_depth(s32 view, s16 *screen_xy, f32 *camera, f32 depth, f32 *out)"
@@ -1763,6 +1795,13 @@ rush1 = [0x8005C504, 0x80078414, 0x80079B90, 0x8009A56C]
 link = "same-code"
 area = "other"
 ref = "docs/rush2049_research/movers.md#6-effects-on-cars-v-unless-marked"
+
+[[func]]
+vram = 0x800A6244
+desc = "Projects a world position (a1) through view a2 to screen coordinates (s16 x, y at the 5th argument); func_800FEE04 places its title and row texts with it."
+status = "inferred"
+area = "render"
+ref = "docs/functions/rush2049_render.md#rush-2049-render-functions"
 
 [[func]]
 vram = 0x800A7480
@@ -1813,6 +1852,18 @@ desc = "Registers a bounding box for a placement scene node (2049)."
 status = "inferred"
 area = "render"
 ref = "docs/rush2049_research/placement.md#2-rush-2049-placement-format-v"
+
+[[func]]
+vram = 0x800AB18C
+name = "race_fog_zone_setup"
+sig = "void race_fog_zone_setup(s32 view, Vec3 *pos)"
+desc = "Per-view fog setup, twin of Rush 2 race_fog_zone_setup_80081074: fog level byte 0x8013F1D8 0 returns at once (no fog: the race start's range 1000/999 stays); levels 1-3 set view +0x40 fog start (s16 0x8011E810[players*4+level]), +0x42 end 1000, +0x3C far (0x8011E7F0), cull 0x80151AA0 (0x8011E7A8); fog zones 0x8011E76C (all NULL)."
+consts = "0x3E8 = fog end 1000; 0x7FFF = nearest zone distance start"
+status = "verified"
+rush2 = 0x80081074
+rush1 = [0x80082524]
+area = "render"
+ref = "docs/rush2049_research/race.md#61-tables"
 
 [[func]]
 vram = 0x800AB53C
@@ -2189,6 +2240,14 @@ area = "ui"
 ref = "docs/rush2049_research/stunts.md#5-the-hud"
 
 [[func]]
+vram = 0x800B3D18
+name = "font_tables_load"
+desc = "Points the font state at the current font's glyph table (0x801497F0 header, 0x80149800 records from +0x10, 12 bytes each, count header byte 12), sets each record's first word to its kerning row (after the records, count bytes a row) when header byte 10 is set, fills the char-to-record map 0x80149878 (s16, -1 none) and copies header bytes 4 and 8 to 0x80149B60 and 0x80149B70."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
+
+[[func]]
 vram = 0x800B3F50
 name = "text_line_height"
 sig = "s16 text_line_height(void)"
@@ -2200,9 +2259,10 @@ ref = "docs/rush2049_research/stunts.md#5-the-hud"
 [[func]]
 vram = 0x800B3FA4
 name = "text_width"
-desc = "Width in pixels of string a0 in the current font (a1 = -1: whole string)"
+desc = "Width of string a0 in the current font (a1 = -1: whole string): each glyph adds x1 - x0 + 1 + the gap (header byte 8, 0x80149B70), a space header byte 7; with kerning (header byte 10) kern[this record][previous record] is taken off unless the previous is record 0 or a space; the last gap is taken off the total."
 status = "inferred"
-ref = "docs/functions/rush2049_other.md#rush-2049-other-functions"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x800B4200
@@ -2230,6 +2290,57 @@ rush2 = 0x800B1A48
 link = "same-code"
 area = "util"
 ref = "docs/functions/rush2049_util.md#rush-2049-util-functions"
+
+[[func]]
+vram = 0x800B5898
+name = "mtx_rotate_x"
+desc = "Rotation about x: y' = y cos - z sin, z' = y sin + z cos (sin/cos 0x80008730/0x800088F0)."
+status = "inferred"
+area = "util"
+ref = "docs/functions/rush2049_util.md#rush-2049-util-functions"
+
+[[func]]
+vram = 0x800B5F4C
+name = "menu_sound_move"
+sig = "void menu_sound_move(u32 input)"
+desc = "Menu cursor sound: sfx 0x28 when input bit 0x400 (down) is set, else 0x27 (up), via func_80092360."
+status = "verified"
+ref = "docs/rush2049_research/menus.md#117-menu-sounds"
+
+[[func]]
+vram = 0x800B5F88
+name = "menu_sound_step"
+sig = "void menu_sound_step(u32 input)"
+desc = "Menu value-step sound: sfx 0x29 when input bit 0x1000 is set, else 0x2C (bits 0x1000/0x2000 right/left, inferred)."
+status = "verified"
+ref = "docs/rush2049_research/menus.md#117-menu-sounds"
+
+[[func]]
+vram = 0x800B5FC4
+name = "menu_sound_button"
+sig = "void menu_sound_button(u32 input)"
+desc = "Menu button sound: sfx 0x2E on input bit 1, 0x26 on bit 2, else 0x25 (bits 1/2/4 A/B/START, inferred)."
+status = "verified"
+ref = "docs/rush2049_research/menus.md#117-menu-sounds"
+
+[[func]]
+vram = 0x800B61A8
+name = "sfx_play_if_on"
+desc = "Plays sound a0 via sfx_play_msg_80092360 (a1-a3 passed on, a3 as a byte) unless the sound flag 0x8010FFC0 is 0 or a0 is -1; returns -1 then. The race start's GO (0x4E) goes through it."
+status = "verified"
+area = "audio"
+ref = "docs/announcer.md#how-each-game-calls-the-start"
+
+[[func]]
+vram = 0x800B61FC
+name = "race_countdown_update"
+desc = "Rush 2049's race countdown (Rush 2's race_countdown_update): CNTDWNn sign per view; digit 0x80152032; plays 0x4B on 3, 0x4C on 2, 0x4D on 1 via sfx_play_msg(id, 0, 1, 0) when the sound flag 0x8010FFC0 is set."
+status = "verified"
+rush2 = 0x80088DF0
+rush1 = [0x80097618]
+link = "role"
+area = "race"
+ref = "docs/announcer.md#how-each-game-calls-the-start"
 
 [[func]]
 vram = 0x800B669C
@@ -2265,9 +2376,10 @@ ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 [[func]]
 vram = 0x800B71D4
 name = "text_draw"
-desc = "Draws string a2 at (a0, a1) in the current font, with the current horizontal (0x80118E20) and vertical (0x80118E24) alignment"
+desc = "Draws string a2 at (a0, a1) in the current font. Horizontal alignment 0x80118E20 (1 centers, 2 right-aligns, by text_width_800B3FA4); vertical 0x80118E24 (1 moves y up by half the glyph table's ascent + descent, header bytes 2 and 3, truncated toward zero; 4 by all of it). Stores x/y at 0x80149D92/0x80149D9E and draws with func_800B6BEC."
 status = "inferred"
-ref = "docs/functions/rush2049_other.md#rush-2049-other-functions"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x800B74A0
@@ -2278,6 +2390,21 @@ consts = "0x16 = blended color"
 status = "verified"
 area = "ui"
 ref = "docs/rush2049_research/stunts.md#5-the-hud"
+
+[[func]]
+vram = 0x800B74C0
+desc = "Called by the menu pulse (func_800947F0): writes the blended pulse color into the style table 0x80118E34."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
+
+[[func]]
+vram = 0x800B8374
+name = "menu_background_sfx_draw"
+desc = "Menu background swirl: four camera-space quads (table 0x80114264 + view count 0x80151AD0 * 0xE0) meeting at the screen center at z 1025, color 0x0000C0, texture BACKGROUND_SFX (file 54)."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x800B9284
@@ -2446,6 +2573,7 @@ desc = "Scroll patch: walks a load list to G_ENDDL and on each G_SETTILESIZE rep
 status = "verified"
 ported = true
 rush2 = 0x8008A804
+calspeed = [0x8008A960]
 link = "same-code"
 area = "render"
 ref = "docs/rush2049_research/texanim.md#12-scrolls-and-palette-cycles-table-0x8011a840-ptr-per-track-id"
@@ -2457,6 +2585,7 @@ desc = "Per-frame animated texture update (flip-books and scrolls); called from 
 status = "verified"
 ported = true
 rush2 = 0x8008A9C8
+calspeed = [0x800B989C]
 link = "role"
 area = "render"
 ref = "docs/rush2049_research/texanim.md#1-how-rush-2049-does-it-v"
@@ -2475,6 +2604,7 @@ desc = "Race-start set-up of animated textures: flip-book table 0x8011A31C and s
 status = "verified"
 ported = true
 rush2 = 0x8008AF48
+calspeed = [0x800B979C]
 link = "role"
 area = "render"
 ref = "docs/rush2049_research/texanim.md#1-how-rush-2049-does-it-v"
@@ -2791,10 +2921,25 @@ ref = "docs/rush2049_research/collision.md#5-surface-types-poly-flags--0xf"
 
 [[func]]
 vram = 0x800C5644
-desc = "2049 surface type/material code compared with Rush 2 func_8006F704/func_8006FC94."
+name = "car_wall_poly_test"
+sig = "void car_wall_poly_test(Car *car, Poly *poly, Hit *hit)"
+desc = "One polygon against the car's body: the four body points (+0x274) and their previous positions (+0x2A4) in the polygon's frame (matrix_world_to_local_800A61B0); a hit goes through func_800C36A0 and the polygon is retested; types 3/4 wreck (func_800C54F0), battle scoring func_803914B4. Inferred the same scheme as California Speed's func_800B0E80 (body quad edges clipped to the polygon)."
 status = "inferred"
 area = "collision"
-ref = "docs/rush2049_research/collision.md#5-surface-types-poly-flags--0xf"
+ref = "docs/rush2049_research/collision.md#walls-behind-their-cells"
+
+[[func]]
+vram = 0x800C6404
+name = "car_wall_collision"
+sig = "void car_wall_collision(Car *car)"
+desc = "2049's wall collision, at the start of the ground contact car_ground_contact_800CF06C: the leaves under the four body points (+0x274, stride 0xC; collision_node_find_cached_800ACA9C from +0x3A0, 2049's exact floor), each once, then every polygon of them not flagged 0x4000 (done this call) / 0x2000 or type 0xF through func_800C5644; flags each one 0x4000. Unlike Rush 2's per-point probe, a wall is found from any body point's leaf, so 2049's files list walls only for the cells they cross (role link: Rush 2 car_wall_collision_query_8006FC94)."
+consts = "0x274 = body points, 0x3A0 = cached node, 0x4000 = polygon done this call"
+status = "verified"
+rush2 = 0x8006FC94
+calspeed = [0x800AFAFC, 0x800B1624]
+link = "role"
+area = "collision"
+ref = "docs/rush2049_research/collision.md#quadtree-lookups-v"
 
 [[func]]
 vram = 0x800C6AA0
@@ -3112,6 +3257,22 @@ status = "verified"
 ported = true
 area = "audio"
 ref = "docs/rush2049_research/audio.md#4-volume-calibration"
+
+[[func]]
+vram = 0x800D6914
+name = "menu_button_flip"
+desc = "Turns each menu row's button: rotX(angle - pi/2), angle moving 4 pi/s (0x801241B4) to pi under the cursor and back to 0 elsewhere; BUTTON texture up to pi/2, BUTTON_SELECT past it."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
+
+[[func]]
+vram = 0x800D71D0
+name = "menu_setup"
+desc = "Menu setup: node color D_80110660 = 0xFFFFFFFF, button models from table 0x80110290 (S3, S1, S2, CURSOR, AB, ...; BUTTON_S0G1..S8G1 in file 54)."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x800D7E90
@@ -3618,6 +3779,14 @@ area = "race"
 ref = "docs/rush2049_research/movers.md#1-globals-and-timing"
 
 [[func]]
+vram = 0x800FC9F8
+name = "menu_background_sfx_scroll"
+desc = "Scrolls the swirl quads' texture coordinates 0.2 texture widths a second (0x80114274/8), truncated each frame."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
+
+[[func]]
 vram = 0x800FD464
 desc = "2049 frame function; calls func_800FBF88 (game step) then func_800F733C, func_800B0868."
 status = "verified"
@@ -3678,6 +3847,14 @@ desc = "Plays a sound at a position: func_800FEA00(id, car, pos, 2)."
 status = "inferred"
 area = "audio"
 ref = "docs/rush2049_research/placement.md#7-knock-over-props-v"
+
+[[func]]
+vram = 0x800FEE04
+name = "options_rows_text"
+desc = "Options menu row text: style 1, or 0x16 for the row under the cursor (font unchanged); hidden while the button is 40-140 degrees (0x80124834/0x80124830); placed 0x37 px in from the button end."
+status = "inferred"
+area = "ui"
+ref = "docs/functions/rush2049_ui.md#rush-2049-ui-functions"
 
 [[func]]
 vram = 0x80103D28
@@ -3860,7 +4037,7 @@ ref = "docs/rush2049_research/menus.md#73-per-frame-func_8038a820"
 vram = 0x8038AA8C
 name = "battle_mount_update"
 sig = "void battle_mount_update(Object *obj, s16 unload)"
-desc = "Battle overlay. Per-car callback of the weapon mounted on a car: swaps the model for the weapon held (ids 0xD8-0xDF of table 0x801427C0, hidden for the gun), places it at 0x803943A4[weapon][car model], and runs the cannon's and gatling's barrel and muzzle flash parts."
+desc = "Battle overlay. Per-car callback of the weapon mounted on a car: swaps the model for the weapon held (ids 0xD8-0xDF of table 0x801427C0, hidden for the gun), places it at 0x803943A4[weapon][car model], and runs the cannon's and gatling's barrel and muzzle flash parts. Hides it in its driver's own view (+0x35C) while that player's camera mode +0x35D is 0 or 1 (bumper, hood)."
 consts = "0x9C = bytes per weapon in the mount table (13 car models x vec3); 8 = the default gun"
 status = "verified"
 ported = true
@@ -3896,6 +4073,16 @@ status = "verified"
 ported = true
 area = "menu"
 ref = "docs/rush2049_research/menus.md#72-builder-func_8038cd14-race-tracks-0x8038d0580x8038de08"
+
+[[func]]
+vram = 0x8038D328
+name = "battle_node_create"
+sig = "Object *battle_node_create(void)"
+desc = "Battle overlay node helper (register args): $s1 model index into the handles at 0x80399B18, $s2 parent node (-1 none), $s3 node flags, $s4 nonzero = no own matrix; takes an object from the pool 0x80394F70 (func_8008E3C0) and makes its node (func_8008E398), stored at object +4."
+consts = "0x2000 = mine base node flags; 0x2080 = mine cap child flags"
+status = "verified"
+area = "battle"
+ref = "docs/rush2049_research/battle.md#1-where-the-code-is"
 
 [[func]]
 vram = 0x8038D3A4
@@ -3964,6 +4151,14 @@ area = "battle"
 ref = "docs/rush2049_research/battle.md#1-where-the-code-is"
 
 [[func]]
+vram = 0x8038E124
+name = "battle_fire_update"
+desc = "Battle overlay: per-car weapon firing / shot update; for a mine (0x8038E3F4) makes the WPR_MINEBASE node and a WPR_MINECAP child whose texture is MINE_CAP_<team color> (0x8012E67C[shot +4] indexes the handles at 0x80399AF8)."
+status = "inferred"
+area = "battle"
+ref = "docs/rush2049_research/battle.md#70-roof-mounts-and-the-mines-model"
+
+[[func]]
 vram = 0x8038F568
 name = "battle_aim"
 sig = "void battle_aim(CarState *car)"
@@ -3993,6 +4188,15 @@ desc = "Battle overlay. Once a step: gatling casings, then per car the power-ups
 consts = "1/6 (0x80394EB8) = cooldown of cannon, grenade, rocket, gun; 1/15 (0x80394EE4) = gatling; 3.1667 (0x80394EE0) = grenade life; 165 = missile launch speed; 75 / 50 = grenade / rocket launch speed"
 status = "verified"
 ported = true
+area = "battle"
+ref = "docs/rush2049_research/battle.md#1-where-the-code-is"
+
+[[func]]
+vram = 0x803908D0
+name = "battle_load_models"
+sig = "void battle_load_models(void)"
+desc = "Battle overlay setup: looks up the model names at 0x803942EC into handles 0x80399B18 (4 WPR_MINEBASE, 5 WPR_MINECAP, 6 WPR_MINEGLOW) and the textures at 0x80394330 (MINE_CAP_B/R/Y/G, MINE_CAP) into u16 handles 0x80399AF8."
+status = "inferred"
 area = "battle"
 ref = "docs/rush2049_research/battle.md#1-where-the-code-is"
 

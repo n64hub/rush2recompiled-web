@@ -139,8 +139,8 @@ namespace {
     constexpr int footer_gap = 5;
 
     // Glyph images and the display lists that draw them, in spare RDRAM below 16MB (display list addresses are 24
-    // bits). The scene node table is at 0x80400000-0x80420000 (include/scene_nodes.h), the game heap 0x80420000-0x80ACA000
-    // (src/assets.cpp), the world polygons 0x80ACA000-0x80AE0000 (include/world_polygons.h). src/hud.cpp's 2D display lists
+    // bits). The scene node table is at 0x80400000-0x80420000 (include/scene_nodes.h), the game heap 0x80420000-0x80AA0000
+    // (src/assets.cpp), the Rush 2049 Menus' art 0x80AA0000-0x80ACA000 (src/rush2049/menus2049.cpp), the world polygons 0x80ACA000-0x80AE0000 (include/world_polygons.h). src/hud.cpp's 2D display lists
     // use 0x80AE0000-0x80B00000 (the game heap's top lowered to make room), src/ghost.cpp 0x80CB0000-0x80CEF448,
     // src/interpolation.cpp 0x80B00000-0x80C00000, src/rush1/track1_audio.cpp 0x80C90000-0x80C99E00,
     // src/rush2049/odometer.cpp 0x80C9A000-0x80C9AB00, src/pause_menu.cpp 0x80C9C000-0x80C9EF00,
@@ -805,12 +805,13 @@ void rush2::controls::add_menu_glyph(uint8_t* rdram, int port, MenuButton button
     Input in;
     if (shown_device(port) == Device::Keyboard) {
         constexpr SDL_Scancode keys[] = { SDL_SCANCODE_SPACE, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_Q, SDL_SCANCODE_E,
-                                          SDL_SCANCODE_I };
+                                          SDL_SCANCODE_I, SDL_SCANCODE_J };
         in = { Input::Type::Key, keys[(int)button] };
     }
     else {
         constexpr SDL_GameControllerButton buttons[] = { SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_B,
-            SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_BUTTON_Y };
+            SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_BUTTON_Y,
+            SDL_CONTROLLER_BUTTON_X };
         in = { Input::Type::Button, buttons[(int)button] };
     }
     GlyphColor g = glyph_for(in, rush2::input::port_has_playstation_controller(port));

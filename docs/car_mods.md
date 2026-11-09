@@ -49,8 +49,8 @@ The glb:
   Rush 2's, at the stock car's positions, so the body should fit the stock car's wheel arches.
 - **Meshes:** every node's meshes, with its transform (TRS or matrix). Positions, normals, UVs, indices. Any number of
   triangles.
-- **Materials:** `pbrMetallicRoughness.baseColorTexture` is the image. A material's `extras.rush2_paint` (an image
-  index) is its paint mask: red is the MAIN COLOR weight, green the ACCENT COLOR weight. A grayscale mask (every
+- **Materials:** `pbrMetallicRoughness.baseColorTexture` is the image. A material's `extras.rush2_paint` (a texture
+  index, as `baseColorTexture`'s) is its paint mask: red is the MAIN COLOR weight, green the ACCENT COLOR weight. A grayscale mask (every
   texel gray) is all MAIN (`decode_mask`). Without a mask, the texture is drawn as it is (not painted).
 - **Lighting:** the converter bakes a fixed light from the normals into the vertex colors, as Rush 2's cars are unlit.
 
@@ -91,6 +91,25 @@ set of enabled mods changes) read the glbs and build a Rush 2 car container per 
 With texture replacements on, `rush2::derive` swaps each drawn stand-in for the mod's full-size image tinted with
 the paint read from the stand-in (one RT64 hash per paint), mottled darker when damaged
 (docs/texture_upscaling.md, Derived replacements). Without RT64 replacements, the stand-ins draw.
+
+### Image alignment
+
+How a mod's texture repeats comes from its glTF sampler: each image takes the `wrapS` / `wrapT` of the first texture
+using it (`Model::image_cm`), and the stand-in's render tile gets clamp (33071, clamp-to-edge) or mirror (33648)
+in its cms / cmt (`tile_cm`; both the new cars' `build_container` and the model mods' and liveries'
+`true_color_load`). Repeat (10497, glTF's default) wraps as before.
+
+A vertex's coordinate is `uv * size - 0.5` stand-in texels (the N64 samples texel i at i, glTF at i + 0.5), and
+`rush2::derive` hands RT64 the full-size image as a live replacement with the shift "center"
+(`addLiveReplacement(..., centered)`, lib/patches/rt64.patch; docs/rush2049_research/dreamcast.md#replacement-texel-centers):
+each stand-in texel lands on the middle of its block of the image, where glTF samples it. With RT64's usual "half"
+shift the image was sampled half an image texel off.
+
+Both mattered on the Bruiser's arcade liveries (CAR7): the body's mirrored halves meet on textures whose UVs run to
+the edge (`Y_ROOF` u 63.88 of 64, `Y_WINDSHID` 0, `Y_TAIL2` 127.25-127.75 of 128), and filtering there pulled in the
+texture's far edge: a hairline down the middle of the car. The arcade clamps most of them (textureMode bits 6 / 7,
+which `arcade_cars.cpp` now writes as each texture's sampler); `Y_TAIL2` wraps on the arcade too, where its UVs sit
+on its last texel's middle, which only the centered image reproduces.
 
 ## Building a mod: tools/car_mod.py
 
@@ -162,6 +181,7 @@ Put these files per car in the mod under `rush2/new_cars/` (the car's ID is any 
   need to fit it to a Rush 2 car. Model it at its real size: Rush 2's cars are about 14 ft long. The wheels go where
   the `.json` puts them. With color schemes, one glb per scheme instead, named in the `.json`'s `schemes`.
 - `<ID>_HOOD.glb` (any name, listed in `hoods`): optional, the [hood camera hood](#the-hood-camera-hood).
+- `<ID>_BRAKE.glb` (any name, listed in `brakes`): optional, the [brake lights](#brake-lights).
 - `<ID>.json`. Every key but `name` is optional. A full example:
 
 ```json
@@ -185,10 +205,17 @@ Put these files per car in the mod under `rush2/new_cars/` (the car's ID is any 
 | `base` | The Rush 2 car it starts from, by its prefix (see the table in [Mod format](#mod-format)). The new car takes its physics, engine sound, tire curves, TORQUE, options and anything else not set here. Default `PICKUP`. |
 | `wheels` | The front and rear right wheel centers, in the glb's space (1/16 ft units). The left wheels mirror them (the sign of x doesn't matter). They move both the drawn wheels and the physics' wheel points. Default: the base car's. Rush 2's own wheels sit at y 3.2 (front) and 4.0 (rear), x 44 and z ±62.7. |
 | `wheel_scale` | Front and rear wheel model sizes, as Rush 2's TIRE SIZE (most of its cars use 1.0, the Pickup 1.25; stock 0.8 to 1.5). It changes only how big the wheels are drawn. A player's TIRE SIZE for the car starts here. Default: the base car's. |
+| `no_wheels` | `true` hides the car's four wheels, in races and on the car select (it still drives on them). Default `false`. |
+| `no_wings` | `true` hides the car's wings: they still open in the air and steer it there, unseen. Default `false`. |
+| `no_skid_marks` | `true`: the car's wheels lay no tire marks. Default `false`. |
+| `no_wheel_dust` | `true`: the car's wheels throw no dust, smoke or spray (its own effects, such as sparks, stay). Default `false`. |
+| `round_shadow` | A radius in feet: the car's shadow is a soft disc that wide around its middle (a hovering saucer's), on the ground under its wheels, in place of the box between them. Default: the game's shadow. |
+| `logo` | A 128 x 32 PNG in `rush2/new_cars/` drawn as the car's car select name logo instead of `name` in Rush 2049's lettering (the SF Rush PlayStation cars use it for SF Rush's lettering). Default: none. |
 | `box` | The box the car hits other cars with: front, rear, half width, height in feet. Default: from the mesh, about a quarter foot inside each end, at least 3 ft to a side, 3 ft high. Stock cars run 5.25 to 8 ft front and rear, half width 3 (the Caddy 3.25). |
 | `main_color`, `accent_color` | The colors a new player starts the car in, 0-31 (Rush 2's color list). Default: the base car's. Unused with `schemes`. |
 | `schemes` | Color schemes: a list of glb file names in `rush2/new_cars/` (up to 16), in STYLE order. Without it the car is `<ID>.glb` with paint colors. |
 | `hoods` | The hood camera hood of each scheme: a list as long as `schemes` (one entry without schemes), each a glb file name in `rush2/new_cars/`, or `""` for none. Without it the hood camera shows no hood. |
+| `brakes` | The [brake lights](#brake-lights) of each scheme: a list as long as `schemes` (one entry without schemes), each a glb file name in `rush2/new_cars/`, or `""` for none. |
 | `physics_from` | A Rush 2049 car (`"BRUISER"`, `"8-BALL"`, ...) whose physics the car takes in place of the base car's (see [Physics](#physics)). |
 | `physics` | The car's handling, speed and weight (see [Physics](#physics)). Each value you leave out is the base car's. |
 
@@ -302,7 +329,8 @@ The Games tab (`src/arcade2049/arcade_cars.cpp`) builds the `rush2049_arcade_car
 (docs/arcade2049.md). It holds the three arcade cars that have no Rush 2049 (N64) counterpart as new cars: the Deuce
 (CAR10), the Caddy (CAR11) and the Truck (CAR8). Every `COL` folder of a car is one color scheme (`<ID>_COLn.glb`,
 picked with STYLE), each its body's full-detail LOD with the arcade's textures as authored, and its hood camera hood
-(the scheme's HOOD object, `<ID>_COLn_HOOD.glb`, in `hoods`). The wheels are at the
+(the scheme's HOOD object, `<ID>_COLn_HOOD.glb`, in `hoods`) and its brake lights (the BRAKE object, the lit lights the
+arcade draws over the body while the car brakes, `<ID>_COLn_BRAKE.glb`, in `brakes`). The wheels are at the
 arcade's own points, the same for every arcade car (docs/arcade2049.md#wheel-positions).
 
 Each drives as the Rush 2 car of its kind, its `base` (Truck: PICKUP, Deuce: HOTROD, Caddy: CADDY), with no
@@ -314,7 +342,9 @@ The other arcade cars are the N64 cars' models; their arcade-only color schemes 
 [liveries](#liveries) of the N64 cars (`LIVERIES` in the tool): GX-2 gets CAR2 COL6, Magnum CAR4 COL4, 6 and 7,
 Super GT CAR5 COL5 and 7, 8-Ball CAR6 COL1 and 3, and Bruiser the Cuda's (CAR7) COL1, 2, 3, 5, 6, 7 and 8. A livery
 body is moved forward by the N64 car's wheel center offset (Bruiser 0.5 ft, the others 0), which a side silhouette
-fit against the N64 body confirmed. Each livery has its scheme's HOOD as its hood.
+fit against the N64 body confirmed. Each livery has its scheme's HOOD as its hood and its BRAKE as its brake lights.
+The installed mod is keyed on the build, so a new build rebuilds it in the background at launch (an older install
+gets its brake lights that way).
 
 ## The hood camera hood
 
@@ -335,6 +365,43 @@ Code: `convert` / `build_container` (`src/car_mods.cpp`) emit the hood parts as 
 (the loader rebases a list once per part that names it, so two parts never share one); `append_liveries` adds a
 livery's as `~Lnn` + `H0_L` / `H2_L`, which `paint_livery` branches the car's own hood lists to.
 
+## Brake lights
+
+A modded car's brake lights are a glb of their own in the same space as the body: the lit lights, usually a few quads
+just over the body's own tail lights, drawn as authored only while the car brakes (Rush 2's rule: braking, the car's
+flags 0x1000 set and 0x10 clear, func_800599A0). New cars list one per scheme in the `.json`'s `brakes`, liveries one
+per style. The arcade cars' BRAKE objects are theirs. Issue #44.
+
+How it works: each scheme's (style's) brake lights are a list of their own, a model named `<prefix>BRK<scheme>` (a
+livery's `~LnnBRK`) so the loader rebases it, which the game never draws by name. The body's lists end the scheme's
+block (a livery's body lists end) with `rush2::car2049::brake_switch`: a G_NOOP marker (`brake_marker(1)`), then a
+G_NOOP holding the brake list's file offset in its low 24 bits (`brake_marker(2)`). `rush2_car49_dent`, every frame per
+race car, turns each switch of the car's copy (and of the livery it shows) into a G_DL call to the brake list while
+the car brakes, and back into the marker otherwise (`set_brake_switch`, src/rush2049/car2049.cpp; the switches are
+found by `find_scheme_blocks` and, for a livery, `find_brake_switches`). Everything starts off, so a copy just loaded
+and the car select's previews are unlit. The mirror walk (func_800776DC) turns the brake list over through its own
+model and follows calls, so `rush2::car2049::brake_mirror` (from `rush2_livery_mirror_begin` / `_end`) turns the lit
+switches off for it and on again after. A livery's brake list loads its textures inline, as its hood does: the
+relocator doesn't enter a called load list. `rush2_calspeed_brake_lights` (the func_800599A0 hook) keeps each car's
+braking for a car whose `Paint` or shown livery has lights (`Paint::lights`) and still lets Rush 2 write its palette.
+
+The brake lists dent with the body (issue #52): they are models of their own, which the dent's FRAME1 walk never
+reaches, so damaged cars showed their lit lights where the undamaged body was (behind or beside a crushed rear, a
+third light floating over a crushed cab). `collect_brake_vertices` (after the brake switches are found, in `set_body`
+and `add_livery_body`) gives every vertex of the car's brake lists the body vertex nearest it, and `dent_body` moves
+each by its body vertex's dent (`Paint::followers`). Checked with the arcade Truck (type 59) and the Super GT's
+arcade livery, `RUSH2_TEST_DAMAGE=1`, braking.
+
+A brake list draws blended, unlit and full bright (`brake_render_mode`, src/car_mods.cpp): the arcade's BRAKE textures
+are soft glows, alpha 0 and near black around a red core, which the body's opaque render mode drew as dark boxes. The
+list clears G_LIGHTING, sets the body's fog cycle with G_RM_ZB_XLU_SURF2 after it and G_CC_MODULATEIDECALA (the
+texture's alpha, from its full-size replacement; a fogged list's shade alpha is the fog), draws white vertices, and
+ends by setting the body's mode and combiner back; a lit livery LOD sets G_LIGHTING again after its switch.
+
+Test aid: `RUSH2_TEST_LIVERY=<style>` shows that STYLE on every car with liveries (JUST PLAY has no profile to keep one
+in): `tools/test_race.py 0 --cars 28 --env RUSH2_TEST_LIVERY=1 --script "14:A:5,19.2:B:3" --shots 18.8,19.6` brakes
+the Bruiser in the arcade's first Cuda livery.
+
 ## Liveries
 
 A mod's `rush2/liveries/<ID>.json` gives an existing car more looks, each a whole mesh:
@@ -354,6 +421,7 @@ A mod's `rush2/liveries/<ID>.json` gives an existing car more looks, each a whol
   the car's own wheels. Model it over a dump of the car (Dump Models) so it sits on the wheels.
 - `hoods`: optional. The [hood camera hood](#the-hood-camera-hood) of each style, by position in `styles`: a glb file
   in `rush2/liveries/`, or `""` (or a shorter list) for none. A style without one shows no hood in the hood camera.
+- `brakes`: optional. The [brake lights](#brake-lights) of each style, by position in `styles`, as `hoods`.
 
 A file that can't be read is skipped and the log says why (`[livery] <file> in <mod>: ...`).
 
@@ -361,7 +429,10 @@ The car select gets a STYLE row under CAR: STYLE 1 is the car as it is, STYLE 2 
 picked, the MAIN COLOR, ACCENT COLOR, STRIPE and STRIPE COLOR rows are hidden. The choice is per player profile and
 car, kept in the saves' `"liveries"` section (`{"<profile record address>": {"<car type>": style}}`, STYLE 1 not
 stored), apart from the car's paint and stripe bytes, so a car that has stripes keeps them for STYLE 1. Computer cars
-always use STYLE 1. Turning the mod on or off applies the next time the game is in the menus. A livery body is a
+always use STYLE 1. A car that already has a STYLE row (a Dreamcast disc's Rush 2049 car, with its paint jobs) gets no
+second row: its liveries follow its paint jobs on that row, so with 7 jobs STYLE 8 is the first livery (and the stored
+style stays the livery's own number, 1 for the first). Turning the mod on or off applies the next time the game is in
+the menus. A livery body is a
 one-body car's, as a [new car](#new-cars)'s: it gets Rush 2's sheen layers made from it (following Graphics > Car
 Sheen as a new car's do, Cube Map included) and takes the car's panel damage as a 2049 car's body does: it dents,
 folds its hood, and each damaged panel's textures turn to scuffed copies (with RT64's replacements, the livery's
@@ -391,7 +462,8 @@ type: two players choose in panels 0 and 1, a single player's car shows in panel
 1), and the profile is the choosing player's record +0x24. In a race the id is the car 0-7, a human's type at physics
 car 0x800F5470 + id x 0x81C +0x7EA (+0x7E8 == 2) and its profile from the player record whose +0 is the car. The
 STYLE row is option 17 in `src/rush2049/wings_menu.cpp` (`option_livery`); a step repaints both panels' previews of
-the car.
+the car. On a paint-job car `use_slot` leaves option 17 out and `rush2_wings_car_step` walks jobs then liveries on the
+MAIN COLOR (STYLE) row, holding the job byte while a livery is picked.
 
 ## Replacing any model
 
