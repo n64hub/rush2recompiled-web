@@ -24,11 +24,19 @@ index d37284a..828d547 100644
              auto cb = json_serialize_option_map.at(option.id);
              json[option.id] = cb(value);
 diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
-index 1063525..da93410 100644
+index 1063525..55eec62 100644
 --- a/ultramodern/src/events.cpp
 +++ b/ultramodern/src/events.cpp
-@@ -44,7 +44,7 @@ struct DummyWorkloadAction {
- using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction>;
+@@ -41,10 +41,14 @@ struct DummyWorkloadAction {
+     int32_t fb_address;
+ };
+ 
+-using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction>;
++struct PrepareForGameAction {
++    moodycamel::LightweightSemaphore* done;
++};
++
++using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction, PrepareForGameAction>;
  
  struct ViState {
 -    const OSViMode* mode;
@@ -36,7 +44,7 @@ index 1063525..da93410 100644
      PTR(void) framebuffer;
      PTR(OSMesg) mq;
      OSMesg msg;
-@@ -56,6 +56,24 @@ struct ViState {
+@@ -56,6 +60,24 @@ struct ViState {
  #define VI_STATE_BLACK 0x20
  #define VI_STATE_REPEATLINE 0x40
  
@@ -61,7 +69,7 @@ index 1063525..da93410 100644
  static struct {
      struct {
          std::thread thread;
-@@ -74,6 +92,11 @@ static struct {
+@@ -74,6 +96,11 @@ static struct {
          void update_vi() {
              ViState* next_state = get_next_state();
              const OSViMode* next_mode = next_state->mode;
@@ -73,7 +81,7 @@ index 1063525..da93410 100644
              const OSViCommonRegs* common_regs = &next_mode->comRegs;
              const OSViFieldRegs* field_regs = &next_mode->fldRegs[field];
              PTR(void) framebuffer = osVirtualToPhysical(next_state->framebuffer);
-@@ -134,7 +157,7 @@ static struct {
+@@ -134,7 +161,7 @@ static struct {
      // The same message queue may be used for multiple events, so share a mutex for all of them
      std::mutex message_mutex;
      uint8_t* rdram;
@@ -82,7 +90,7 @@ index 1063525..da93410 100644
      moodycamel::BlockingConcurrentQueue<OSTask*> sp_task_queue{};
      moodycamel::ConcurrentQueue<OSThread*> deleted_threads{};
  } events_context{};
-@@ -177,6 +200,182 @@ uint64_t total_vis = 0;
+@@ -177,6 +204,195 @@ uint64_t total_vis = 0;
  
  
  extern std::atomic_bool exited;
@@ -233,6 +241,18 @@ index 1063525..da93410 100644
 +// list the renderer was still reading pointed at what the map's load had put there since: a function pointer read
 +// 0x00010001 and the page trapped, or it trapped in malloc, or it stopped drawing. Held, the game sees the stall as a
 +// console would never show it, one long VI.
++// A stall is two VIs, not six: a page whose every list took about 100 ms left the game six VIs behind each one. In
++// Firefox, its tab hidden on a busy host, Paper Mario's lists took 50-230 ms each (its render to RAM's readbacks waiting
++// on the page's thread), the game stepped its logic three times behind each, and as its intro story handed over to the
++// attract demo it freed what the list in hand pointed at: it trapped in its heap allocator, the free list corrupt, or
++// stopped drawing for good, 4-6 s after the hide in 3 plays of 3. Held after two VIs, as a console's RDP is done with a
++// list a VI or two after it starts, it came through and went on into the demo.
++// Nor once the renderer has told the game the list in hand is done (renderer::rdp_done): it reads nothing more of RDRAM
++// for it, and what is left is its own work, the wait for a busy GPU included. Held there, the game's clock stopped for
++// nothing, and its sound with it, which nothing makes up afterwards: Rush 2049's page in Firefox, uncapped and its tab
++// hidden, held its VIs 91-105 times a play (9.5-11.9 s in all) and its sound ran 238,000-253,000 frames short, most of
++// it through a 5 s wait for a section's prebuilt shaders as its attract race starts; lifted at the RDP's done, it held 4
++// times (only before its sound starts) and lost none.
 +// Both sides touch only lines a game fork's own patches to this file leave alone (DKR-R-web's rewrite the VI messages'
 +// block and the graphics thread's actions).
 +namespace {
@@ -241,8 +261,9 @@ index 1063525..da93410 100644
 +    // in Firefox (each worker's own performance.timeOrigin), so only the VI thread's own clock times it.
 +    std::atomic<uint32_t> renderer_loop_turns{ 0 };
 +
-+    // Six VIs: a list or screen update takes a few ms, and on a phone 10-90 ms at the first list of a new screen.
-+    constexpr std::chrono::milliseconds renderer_stall_limit{ 100 };
++    // Two VIs: a list or screen update takes a few ms. The VI thread looks once a VI, so a game gets two or three VIs of
++    // an action before the hold. Over a timed wait's tick in Firefox (15.6 ms), so an idle thread isn't taken for one.
++    constexpr std::chrono::milliseconds renderer_stall_limit{ 30 };
 +
 +    // Whether the graphics thread has made no turn for renderer_stall_limit, as the VI thread (its only caller) has seen.
 +    // None before its loop's first turn.
@@ -251,7 +272,7 @@ index 1063525..da93410 100644
 +        static std::chrono::steady_clock::time_point seen_time{};
 +        const uint32_t turns = renderer_loop_turns.load();
 +        const auto now = std::chrono::steady_clock::now();
-+        if ((turns == 0) || (turns != seen_turns)) {
++        if ((turns == 0) || (turns != seen_turns) || ultramodern::renderer::rdp_done_pending()) {
 +            seen_turns = turns;
 +            seen_time = now;
 +            return false;
@@ -265,7 +286,7 @@ index 1063525..da93410 100644
  extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
  
  void set_dummy_vi(bool odd);
-@@ -235,10 +434,31 @@ void vi_thread_func() {
+@@ -235,10 +451,31 @@ void vi_thread_func() {
                  // printf("Skipping the next VI wait\n");
                  next = std::chrono::high_resolution_clock::now();
              }
@@ -297,7 +318,7 @@ index 1063525..da93410 100644
              if (new_total_vis > total_vis + 1) {
                  //printf("Skipped % " PRId64 " frames in VI interupt thread!\n", new_total_vis - total_vis - 1);
              }
-@@ -254,6 +474,16 @@ void vi_thread_func() {
+@@ -254,6 +491,16 @@ void vi_thread_func() {
              events_context.action_queue.enqueue(DummyWorkloadAction{events_context.vi.get_next_state()->framebuffer});
          }
  
@@ -314,7 +335,7 @@ index 1063525..da93410 100644
          // Queue a screen update for the graphics thread with the current VI register state.
          // Doing this before the VI update is equivalent to updating the screen after the previous frame's scanout finished.
          // Turbo shows nothing.
-@@ -263,6 +493,7 @@ void vi_thread_func() {
+@@ -263,6 +510,7 @@ void vi_thread_func() {
  
          // Update VI registers and swap VI modes.
          events_context.vi.update_vi();
@@ -322,7 +343,20 @@ index 1063525..da93410 100644
  
          // If the game has started, handle sending VI and AI events.
          if (ultramodern::is_game_started()) {
-@@ -297,6 +528,11 @@ void sp_complete() {
+@@ -291,12 +539,24 @@ void vi_thread_func() {
+ }
+ 
+ void sp_complete() {
++#if ULTRAMODERN_YIELDS_END_QUEUED_GRAPHICS
++    // A graphics task's RSP done went already if a yield was asked of it while it waited (rsp::yield_asked).
++    if ((std::this_thread::get_id() == events_context.sp.gfx_thread.get_id()) && !ultramodern::rsp::graphics_sp_due()) {
++        return;
++    }
++#endif
++
+     uint8_t* rdram = events_context.rdram;
+     std::lock_guard lock{ events_context.message_mutex };
+     ultramodern::enqueue_external_message(events_context.sp.mq, events_context.sp.msg, false, true);
  }
  
  void dp_complete() {
@@ -334,7 +368,23 @@ index 1063525..da93410 100644
      uint8_t* rdram = events_context.rdram;
      std::lock_guard lock{ events_context.message_mutex };
      ultramodern::enqueue_external_message(events_context.dp.mq, events_context.dp.msg, false, true);
-@@ -397,6 +633,9 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -358,6 +618,15 @@ void ultramodern::trigger_config_action() {
+     events_context.action_queue.enqueue(UpdateConfigAction{});
+ }
+ 
++// The graphics thread takes it after every action queued before it: the launcher's lists and screen updates, all of
++// them the renderer's before the game's. With Emscripten the VI thread sends no VI while the renderer is in it
++// (renderer_stalled()), so the game, its audio interrupts included, starts after it, as if it had started then.
++void ultramodern::renderer::prepare_for_game() {
++    moodycamel::LightweightSemaphore done;
++    events_context.action_queue.enqueue(PrepareForGameAction{ &done });
++    done.wait();
++}
++
+ std::atomic<ultramodern::renderer::SetupResult> renderer_setup_result = ultramodern::renderer::SetupResult::Success;
+ std::atomic<ultramodern::renderer::GraphicsApi> renderer_chosen_api = ultramodern::renderer::GraphicsApi::Auto;
+ 
+@@ -397,6 +666,9 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
          renderer_context->poll();
          // Try to pull an action from the queue
          Action action;
@@ -344,3 +394,14 @@ index 1063525..da93410 100644
          if (events_context.action_queue.wait_dequeue_timed(action, 1ms)) {
              // Determine the action type and act on it
              if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
+@@ -440,6 +712,10 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+             else if (const auto* dummy_workload_action = std::get_if<DummyWorkloadAction>(&action)) {
+                 renderer_context->send_dummy_workload(dummy_workload_action->fb_address);
+             }
++            else if (const auto* prepare_action = std::get_if<PrepareForGameAction>(&action)) {
++                renderer_context->prepare_for_game();
++                prepare_action->done->signal();
++            }
+         }
+     }
+ 
