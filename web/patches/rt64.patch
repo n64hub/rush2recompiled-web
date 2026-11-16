@@ -5889,6 +5889,21 @@ index 844f11c..ecab072 100644
  #else
      textureSamples[0] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[0], usesHDR);
      
+diff --git a/src/shared/rt64_car_light.h b/src/shared/rt64_car_light.h
+index 66b078b..dd24602 100644
+--- a/src/shared/rt64_car_light.h
++++ b/src/shared/rt64_car_light.h
+@@ -49,7 +49,9 @@ namespace interop {
+         // light by depth.
+         float depthA;
+         float depthB;
+-        float padding2[2];
++        // Two words, not an array: a page has these as a WGSL uniform buffer, where an array's stride must be 16 bytes.
++        float padding2;
++        float padding3;
+     };
+ #ifdef HLSL_CPU
+ };
 diff --git a/src/shared/rt64_raster_params.h b/src/shared/rt64_raster_params.h
 index 81e3912..b0c304c 100644
 --- a/src/shared/rt64_raster_params.h
