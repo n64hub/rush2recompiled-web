@@ -66,7 +66,9 @@ namespace {
     constexpr float flame_scale = 8.0f;
     constexpr float min_flame_scale = 2.0f;
 
-    // Wing placement per Rush 2 car: half the body's width and its height (world units, from the car models).
+    // Wing placement per Rush 2 car: half the body's width and its roof's height (world units, from the car models).
+    // The ROCKET's fin (5.56) and the DEW's rear wing (5.0) stand above their roofs; measured to them, the wings sat at
+    // the truck's 3 units up, level with the DEW's rear wing (docs/rush2049_research/battle.md: roofs 2.56 and 2.6).
     // Rush 2049 slides its wings to rest about 0.72 units past each car's half width (5/6 of its per-car table value),
     // 1 unit up, or higher on its tall truck; the same rule is applied to Rush 2's cars.
     struct CarSize {
@@ -94,8 +96,8 @@ namespace {
         { 3.188f, 3.562f }, // HOTROD
         { 2.875f, 2.688f }, // FORM1
         { 3.000f, 3.062f }, // GT90
-        { 1.938f, 5.562f }, // ROCKET
-        { 2.500f, 5.000f }, // DEW
+        { 1.938f, 2.560f }, // ROCKET (fin 5.562)
+        { 2.500f, 2.600f }, // DEW (rear wing 5.0)
     } };
     constexpr float rest_gap = 0.72f;
     // Rush 2049's cars are up to 3.44 units tall with the wings 1 unit up; its 5 unit truck has them 3 units up.
@@ -246,11 +248,17 @@ bool rush2::wings::get_pose(uint8_t* rdram, int index, Pose& out) {
     uint32_t car = car_struct(index);
     out.style = w.style;
     out.slide = w.slide;
+    // Rush 2049's wing callback gives the contrail emitter the car's full slide distance (0x8011B4B4 [type]),
+    // scaled by the step only while the wings slide; the wing itself rests at 5/6 of it.
+    out.emit_slide = (w.flags & (opening | closing)) ? w.slide : rest_slide(rdram, car);
     out.height = wing_height(rdram, car);
     out.tilt = w.stick_y * tilt_scale;
     out.flames = true;
     out.flame_scale[0] = std::max(-flame_scale * w.stick_x, min_flame_scale);
     out.flame_scale[1] = std::max(flame_scale * w.stick_x, min_flame_scale);
+    out.stick_x = w.stick_x;
+    out.stick_y = w.stick_y;
+    out.mirror = MEM_B(0, (int32_t)mirror_flag) == 1 ? -1.0f : 1.0f;
     return true;
 }
 

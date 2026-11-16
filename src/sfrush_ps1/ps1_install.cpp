@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <thread>
@@ -19,10 +20,16 @@
 
 #include "sfrush_ps1.h"
 #include "car_mods.h"
+#include "fancy_ufo.h"
 #include "options_page.h"
 #include "texture_upscale.h"
+#include "track1.h"
 #include "track2049.h"
 #include "track_cache.h"
+#include "asset_catalog.h"
+#include "wings_internal.h"
+#include "recompui/config.h"
+#include "librecomp/config.hpp"
 
 namespace ps1 = rush2::sfrush_ps1;
 
@@ -31,9 +38,64 @@ namespace {
         return recompui::file::get_program_path() / "assets" / "sfrush_ps1";
     }
 
+    // The N64 SF Rush's forward AI lanes of its tracks 0-2 when its ROM is in (the Games tab's SF Rush ROM), for the
+    // PS1's versions of those courses (ps1_track.cpp); empty without it.
+    ps1::N64Lanes n64_lanes() {
+        ps1::N64Lanes out;
+        auto rom = rush2::track1::get_rom();
+        if (!rom) return out;
+        for (int t = 0; t < 3; t++) {
+            if (!rush2::track1::read_asset(*rom, 58 + t, out[size_t(t)])) out[size_t(t)].clear();
+        }
+        return out;
+    }
+
+    // The N64 SF Rush's Embarcadero (its track 1) as placed, its TRACK* models only (the course, not its props), for the
+    // PS1 Embarcadero's overpass (ps1_track.cpp); empty without the ROM. The ROM's presence is in the key through
+    // n64_lanes already, and the ROM is checked by its hash, so the scene needs no key of its own.
+    ps1::N64Scene n64_embarcadero() {
+        ps1::N64Scene out;
+        auto rom = rush2::track1::get_rom();
+        if (!rom) return out;
+        rush2::track1::ConvertedTrack track;
+        std::string error;
+        rush2::catalog::Container c;
+        if (!rush2::track1::convert_track(*rom, 1, "HAWAII", track, error) ||
+            !rush2::catalog::read_container(track.geometry, c, error, true)) {
+            printf("[ps1] the N64 Embarcadero couldn't be read: %s\n", error.c_str());
+            return out;
+        }
+        std::vector<int> image_of(c.textures.size(), -1);
+        auto wrap = [](rush2::upscale::Edge e) { return e == rush2::upscale::Edge::Clamp ? 33071 : e == rush2::upscale::Edge::Mirror ? 33648 : 10497; };
+        rush2::catalog::for_each_placed_triangle({ &c }, rush2::catalog::read_placement(track.placement),
+            [&](const rush2::catalog::PlacedTriangle& t) {
+                if (t.model == nullptr || t.model->name.rfind("TRACK", 0) != 0 || t.mesh == nullptr) return;
+                ps1::N64Scene::Tri tri{};
+                for (int v = 0; v < 3; v++) {
+                    // Front faces as drawn: a mirroring placement winds them the other way.
+                    int s = t.mirrored && v > 0 ? 3 - v : v;
+                    std::memcpy(tri.p[v], t.v[s], sizeof(tri.p[v]));
+                    std::memcpy(tri.uv[v], t.source[s]->uv, sizeof(tri.uv[v]));
+                    std::memcpy(tri.color[v], t.source[s]->color, sizeof(tri.color[v]));
+                }
+                int ti = t.mesh->texture;
+                if (ti >= 0 && size_t(ti) < c.textures.size() && !c.textures[size_t(ti)].image.empty()) {
+                    if (image_of[size_t(ti)] < 0) {
+                        const auto& tex = c.textures[size_t(ti)];
+                        image_of[size_t(ti)] = int(out.images.size());
+                        out.images.push_back({ tex.image.width, tex.image.height, tex.image.rgba, wrap(tex.edge_s), wrap(tex.edge_t) });
+                    }
+                    tri.image = image_of[size_t(ti)];
+                }
+                out.tris.push_back(tri);
+            });
+        return out;
+    }
+
     // What the mod is built from: the disc's data track (its name, size and time; reading 50 MB at every launch to
-    // hash it isn't worth it), the shipped logo and diorama layout, and this build.
-    std::string source_key(const std::filesystem::path& disc_path) {
+    // hash it isn't worth it), the shipped logo, diorama layout and N64 night art map, the N64's lanes (a ROM added
+    // later rebuilds it) and this build.
+    std::string source_key(const std::filesystem::path& disc_path, const ps1::N64Lanes& n64) {
         ps1::Disc disc;
         std::string error;
         if (!disc.open(disc_path, error)) return "";
@@ -44,10 +106,19 @@ namespace {
         uint64_t size_time[2] = { (uint64_t)std::filesystem::file_size(disc.data_track(), ec),
                                   (uint64_t)std::filesystem::last_write_time(disc.data_track(), ec).time_since_epoch().count() };
         h = rush2::track_cache::hash(reinterpret_cast<const uint8_t*>(size_time), sizeof(size_time), h);
-        std::vector<uint8_t> logo = rush2::upscale::read_file(assets_dir() / "chinatown_logo.png");
-        h = rush2::track_cache::hash(logo.data(), logo.size(), h);
+        for (const char* track : { "chinatown", "golden_gate", "embarcadero", "market" }) {
+            std::vector<uint8_t> logo = rush2::upscale::read_file(assets_dir() / (std::string(track) + "_logo.png"));
+            h = rush2::track_cache::hash(logo.data(), logo.size(), h);
+        }
         std::vector<uint8_t> diorama = rush2::upscale::read_file(assets_dir() / "chinatown_diorama.json");
         h = rush2::track_cache::hash(diorama.data(), diorama.size(), h);
+        // The N64 night versions' map onto the PS1's night art (n64_night_art.bin, docs/sfrush_ps1.md#n64-night-art).
+        std::vector<uint8_t> night_map = rush2::upscale::read_file(assets_dir() / "n64_night_map.json");
+        h = rush2::track_cache::hash(night_map.data(), night_map.size(), h);
+        // And the snow's (n64_snow_art.bin, docs/sfrush_ps1.md#n64-snow-versions).
+        std::vector<uint8_t> snow_map = rush2::upscale::read_file(assets_dir() / "n64_snow_map.json");
+        h = rush2::track_cache::hash(snow_map.data(), snow_map.size(), h);
+        for (const auto& lanes : n64) h = rush2::track_cache::hash(lanes.data(), lanes.size(), h ^ lanes.size());
         char text[17];
         snprintf(text, sizeof(text), "%016llx", (unsigned long long)h);
         return text;
@@ -73,6 +144,10 @@ namespace {
         }
         return out;
     }
+
+    // In the Games tab's config, games.json (src/rush2049/wings.cpp).
+    const std::string night_option_id = "sfrush_ps1_n64_night";
+    std::atomic_bool night_option = true;
 
     std::mutex state_mutex;
     std::string state_text;                  // what the section shows; written by the worker
@@ -115,7 +190,7 @@ namespace {
             std::filesystem::remove(fresh, ec);
             return false;
         }
-        // A first install goes to the end of the mod order: new mods are put first, and new cars take the 16 mod car
+        // A first install goes to the end of the mod order: new mods are put first, and new cars take the 64 mod car
         // slots in mod order, so the PS1's cars would move the cars of mods already installed (the Rush 2049 arcade
         // cars) to other slots, and saves that picked them would get other cars.
         bool first_install = !installed().rtz;
@@ -140,7 +215,8 @@ namespace {
 
     // Builds and installs the mod from the disc. refresh: only when the installed one's key changed.
     void run(const std::filesystem::path& disc_path, bool refresh) {
-        std::string key = source_key(disc_path);
+        ps1::N64Lanes n64 = n64_lanes();
+        std::string key = source_key(disc_path, n64);
         if (key.empty()) {
             set_state("Failed: the disc couldn't be read");
             return;
@@ -154,7 +230,8 @@ namespace {
         ps1::Disc disc;
         std::string error, log;
         ps1::ModFiles files;
-        bool ok = disc.open(disc_path, error) && ps1::build_mod(disc, assets_dir(), files, log);
+        ps1::N64Scene embarcadero = n64_embarcadero();
+        bool ok = disc.open(disc_path, error) && ps1::build_mod(disc, assets_dir(), files, log, n64, embarcadero);
         if (!ok || !install(files, key, disc_path, !refresh, error)) {
             if (error.empty()) error = "the disc's files couldn't be converted";
             printf("[ps1] %s\n%s", error.c_str(), log.c_str());
@@ -213,6 +290,28 @@ namespace {
         "time you're in the menus.";
 }
 
+void ps1::init_config() {
+    recomp::config::Config& config = rush2::wings::games_config();
+    config.add_bool_option(
+        night_option_id,
+        "N64 Night Versions",
+        "Adds a NIGHT version of the N64 game's Downtown, The Heights, Sunset and The Rock, which the PlayStation version "
+        "doesn't have, in the PlayStation's night look: dark streets, lit windows and a night sky. Pick it with the version "
+        "button on the track select. Needs the disc and the N64 ROM.",
+        true
+    );
+    config.add_option_change_callback(night_option_id,
+        [](recomp::config::ConfigValueVariant cur_value, recomp::config::ConfigValueVariant, recomp::config::OptionChangeContext) {
+            // The custom tracks' scan keys on it (src/track_mod/track_mod.cpp): the next track select lists them or not.
+            night_option = std::get<bool>(cur_value);
+        });
+    rush2::fancy_ufo::init_config();
+}
+
+bool ps1::n64_night_versions() {
+    return night_option.load(std::memory_order_relaxed);
+}
+
 void ps1::add_games_section(rush2::ui::OptionsPage* page, std::function<void()>& refresh) {
     using namespace recompui;
     ContextId context = get_current_context();
@@ -246,7 +345,9 @@ void ps1::add_games_section(rush2::ui::OptionsPage* page, std::function<void()>&
         }
         start(disc);
     });
-    refresh = [note = heading.note, seen = generation.load()]() mutable {
+    page->add_option(rush2::wings::games_config(), night_option_id);
+    rush2::fancy_ufo::add_option(page);
+    refresh =[note = heading.note, seen = generation.load()]() mutable {
         int now = generation.load();
         if (now == seen) return;
         seen = now;

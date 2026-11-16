@@ -3,19 +3,23 @@
 //
 // - RUSH2_TEST_RACE=<track select id> (0-11 Rush 2, then the added tracks, include/track2049.h) or the folder name of
 //   a custom track (a mod's tracks/<folder>).
-// - RUSH2_TEST_RACE_CARS=<type>[,<type>...] (Rush 2 0-21, 2049 23-35, California Speed 36-56, mod cars 57-72): one car
+// - RUSH2_TEST_RACE_CARS=<type>[,<type>...] (Rush 2 0-21, 2049 23-35, California Speed 36-56, mod cars 57-120): one car
 //   per player, 1 to 4 players (split screen). Without it, one player in RUSH2_TEST_CAR's car, or the Pickup (0).
 // - RUSH2_TEST_RACE_LAPS=<n>, RUSH2_TEST_RACE_DRONES=<n>: the track select's LAPS and DRONES (the race keeps the saved
 //   ones otherwise).
 // - RUSH2_TEST_RACE_FOG=<1-4>: the track select's FOG (settings +0xE, the race's 0x800D1FA8).
+// - RUSH2_TEST_RACE_DIFFICULTY=<0-5>: the track select's DIFFICULTY (settings +0xA, the race's 0x8010C211).
 // - RUSH2_TEST_RACE_COLOR=<0-31>: every player's car in that MAIN COLOR (checking a car's paint).
+// - RUSH2_TEST_RACE_STRIPE=<0-7>[,<color>]: every player's car with that STRIPE (and STRIPE COLOR).
 // - RUSH2_TEST_RACE_BACKWARD=1: the track select's BACKWARD on (settings +0xC, copied to 0x80119848 by
 //   menu_settings_to_race_globals_80094698 at 0x800947C0).
 // - RUSH2_TEST_RACE_BATTLE=1: the race select's BATTLE row on (rush2::battle::set_race_battle; not saved).
 // - RUSH2_TEST_RACE_VIEW_CAR=<car>: the first view follows that car (a drone: 1 and up) for the whole race, as
 //   RUSH2_ONLINE_VIEW_CAR does online, to watch a drone drive the course. RUSH2_TEST_RACE_VIEW_LANE=<0-3> keeps that
-//   drone to one AI lane (left to right as you drive).
-// - RUSH2_TEST_RACE_FINISH_BANNER=1: the finish banner turns to FINISH as the race starts (the last lap's swap).
+//   drone to one AI lane (left to right as you drive). RUSH2_TEST_RACE_VIEW_MODE=<0-3> puts the watched car's camera in
+//   that mode (0 bumper, 1 hood, 2 and 3 chase; docs/camera.md).
+// - RUSH2_TEST_RACE_FINISH_BANNER=1: the finish banner turns to FINISH as the race starts (the last lap's swap), and
+//   a custom track's last_checkpoint movers (the Rush 2049 arcade FINISHSIGN flipbooks) start.
 // - RUSH2_TEST_RACE_WAIT=<seconds>: the race starts that long after the title screen is first up (a mod rebuilt at
 //   launch finished first, as when a player starts a race after it).
 //
@@ -164,6 +168,21 @@ namespace {
                 MEM_B(0, (int32_t)(rush2::car_types::table(rush2::car_types::main_color) + (p + 1) * rush2::car_types::types + cars[p])) = (int8_t)c;
             }
         }
+        // RUSH2_TEST_RACE_STRIPE=<0-7>[,<color>]: every player's car with that STRIPE (and STRIPE COLOR), as the
+        // COLOR switch sets MAIN.
+        if (const char* stripe = env("RUSH2_TEST_RACE_STRIPE")) {
+            int value = std::atoi(stripe);
+            const char* comma = strchr(stripe, ',');
+            for (int p = 0; p < players; p++) {
+                MEM_B(4, (int32_t)(car_table + p * car_entry_size)) = (int8_t)value;
+                MEM_B(0, (int32_t)(rush2::car_types::table(rush2::car_types::stripe) + (p + 1) * rush2::car_types::types + cars[p])) = (int8_t)value;
+                if (comma != nullptr) {
+                    int color = std::atoi(comma + 1);
+                    MEM_B(5, (int32_t)(car_table + p * car_entry_size)) = (int8_t)color;
+                    MEM_B(0, (int32_t)(rush2::car_types::table(rush2::car_types::stripe_color) + (p + 1) * rush2::car_types::types + cars[p])) = (int8_t)color;
+                }
+            }
+        }
         MEM_H(0, (int32_t)num_players) = (int16_t)players;
         MEM_H(0, (int32_t)num_views) = (int16_t)players;
         // ONE RACE's game mode: the race start turns a race on a stunt track or arena into stunt mode itself.
@@ -179,6 +198,9 @@ namespace {
         }
         if (const char* backward = env("RUSH2_TEST_RACE_BACKWARD")) {
             MEM_B(0xC, (int32_t)menu_settings) = (int8_t)(std::atoi(backward) != 0);
+        }
+        if (const char* difficulty = env("RUSH2_TEST_RACE_DIFFICULTY")) {
+            MEM_B(0xA, (int32_t)menu_settings) = (int8_t)std::atoi(difficulty);
         }
         if (const char* battle = env("RUSH2_TEST_RACE_BATTLE")) {
             rush2::battle::set_race_battle(std::atoi(battle) != 0);
@@ -217,6 +239,20 @@ extern "C" void rush2_test_race_frame(uint8_t* rdram, recomp_context* ctx) {
     if (spec != nullptr && done && view_lane != nullptr && view_car != nullptr && !rush2::race_setup::in_menus(rdram)) {
         uint32_t state = 0x801124A0u + uint32_t(std::atoi(view_car)) * 0x354u + 0x30Cu;
         MEM_H(0x2A, (int32_t)state) = (int16_t)std::atoi(view_lane);
+    }
+    // RUSH2_TEST_RACE_VIEW_MODE=<0-3>: the watched car's camera mode once the race is on (car state +0x348, and +0x349
+    // the copy the wreck camera returns to; docs/camera.md: 0 bumper, 1 hood, 2 and 3 chase), to shoot a spot as a
+    // player sees it in that view.
+    static const char* view_mode = env("RUSH2_TEST_RACE_VIEW_MODE");
+    // Without RUSH2_TEST_RACE_VIEW_CAR every player's car (0-3: split screen shows four cars in that view at once).
+    if (view_mode != nullptr && done && MEM_W(0, (int32_t)0x8010C0D0) == 3) {
+        const uint32_t first = view_car != nullptr ? uint32_t(std::atoi(view_car)) : 0;
+        const uint32_t last = view_car != nullptr ? first : 3;
+        for (uint32_t car = first; car <= last; car++) {
+            uint32_t state = 0x801124A0u + car * 0x354u;
+            MEM_B(0x348, (int32_t)state) = (int8_t)std::atoi(view_mode);
+            MEM_B(0x349, (int32_t)state) = (int8_t)std::atoi(view_mode);
+        }
     }
     // RUSH2_TEST_RACE_FINISH_BANNER=1: turns the finish banner to FINISH once the race is on, as passing the last
     // checkpoint of the last lap does (checkpoint_passed_8008F220 -> track_finish_line_setup_8008F080), so a test

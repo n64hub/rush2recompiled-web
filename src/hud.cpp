@@ -1180,7 +1180,7 @@ namespace {
             std::filesystem::path file = std::filesystem::is_directory(m.path, ec)
                 ? m.path / std::filesystem::u8path(hud_mod_file) : m.path;
             auto time = std::filesystem::last_write_time(file, ec);
-            signature += ec ? std::string("-") : std::to_string(static_cast<long long>(time.time_since_epoch().count()));
+            signature += ec ? std::string("-") : std::to_string((long long)time.time_since_epoch().count());
             signature += ";";
         }
         if (signature == mod_signature) return false;
@@ -1225,7 +1225,7 @@ namespace {
         c.battle = rush2::track2049::battle_race(rdram);
         c.battle_hud = rush2::battle::hud_mode();
         c.battle_time_limit = rush2::battle::time_limit_minutes() > 0;
-        c.stunts_all_tracks = MEM_B(0, (int32_t)stunts_all_tracks_byte) != 0;
+        c.stunts_all_tracks = MEM_B(0, (int32_t)stunts_all_tracks_byte) != 0 || rush2::track2049::mod_stunts(rdram);
         c.deaths = MEM_B(0, (int32_t)race_deaths) != 0;
         c.mode_option = MEM_BU(0, (int32_t)race_mode_option) != 0;
         c.attract = MEM_BU(0, (int32_t)race_game_mode_byte) != 0;

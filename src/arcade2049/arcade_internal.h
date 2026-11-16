@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -207,6 +208,12 @@ namespace rush2::arcade2049 {
         int node(nlohmann::json n, const std::optional<Trs>& trs);
     };
 
+    // SF Rush arcade scenery (glTF prims, one per material): adds the missing curb faces and closes near-miss seams and
+    // T-junctions between opaque faces (arcade_seams.cpp, docs/sfrush_arcade.md#cracks-and-curbs). opaque(material)
+    // says which materials take part; one summary line goes to report.
+    std::vector<Glb::Prim> close_scenery_seams(const std::vector<Glb::Prim>& prims, const std::function<bool(int)>& opaque,
+                                               std::vector<std::string>& report);
+
     // An Empty at a checkpoint (game pos, game direction, radius ft): its -Z along the direction, Y up, X scaled to
     // the half width in meters. Column major (stock_track_glb.py gate_matrix).
     std::array<double, 16> gate_matrix(const V3& pos, const V3& direction, double radius);
@@ -215,4 +222,39 @@ namespace rush2::arcade2049 {
 
     // Rounds halves to even (the default floating point rounding mode).
     inline double round_even(double v) { return std::nearbyint(v); }
+
+    // The spline road's cut (arcade_track.cpp spline_road; docs/custom_tracks.md#spline-road): a flat collision
+    // polygon, a footprint triangle taking its height from segment `seg`, and a spline polygon kept whole on its own
+    // segment. All in game space.
+    struct FlatPoly {
+        uint32_t flags;
+        std::vector<V3> pts;
+        V3 normal;
+    };
+    struct FootprintTri {
+        uint32_t flags;
+        std::array<V3, 3> pts;
+        int seg;
+    };
+    struct SplinePoly {
+        uint32_t flags;
+        std::vector<V3> pts;
+        V3 normal;
+        int seg;
+    };
+    // Options for cut_spline_road (the PlayStation converter's strips of road: src/sfrush_ps1/ps1_track.cpp).
+    struct SplineCut {
+        // Per segment, the u range its stretch covers from above; empty: u -1.5..2.5 (well past the road's edges).
+        std::vector<std::array<double, 2>> u_band;
+        // The segments that may take part of a polygon, most wanted first; empty: up to 30 either side of its seg.
+        std::function<std::vector<int>(const CollisionPoly&)> candidates;
+    };
+    // Cuts the spline polygons (flags & 0x1000, floor types 0-2, seg = the segment they belong near: up to 30 segments
+    // either side can take part of one) into per-segment footprints over the segments' stretches (`records`, the 33
+    // numbers of each SEG record), keeping a piece only where its facet is within 1 ft of the segment's surface;
+    // the rest, and every other polygon, goes to `flat`. Also used by the PlayStation SF Rush converter
+    // (src/sfrush_ps1/ps1_track.cpp road_splines).
+    void cut_spline_road(const std::vector<std::array<double, 33>>& records, const std::vector<CollisionPoly>& polys,
+                         std::vector<FootprintTri>& tris, std::vector<SplinePoly>& kept, std::vector<FlatPoly>& flat,
+                         std::vector<std::string>& report, const SplineCut& cut = {});
 }

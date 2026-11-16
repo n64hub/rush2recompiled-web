@@ -25,11 +25,9 @@
 #include "librecomp/game.hpp"
 #include "util/file.h"
 
+#include "rush2.h"
+#include "sim_run.h"
 #include "track_cache.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 namespace {
     constexpr char magic[4] = { 'R', '2', 'T', 'C' };
@@ -40,29 +38,25 @@ namespace {
     // MSVC lays the structs out; other standard libraries size their members differently).
 #ifdef _MSC_VER
     static_assert(sizeof(rush2::track1::ConvertedTrack) == 392, "update track_cache.cpp for ConvertedTrack (track1)");
-    static_assert(sizeof(rush2::track2049::ConvertedTrack) == 560, "update track_cache.cpp for ConvertedTrack (2049)");
+    static_assert(sizeof(rush2::track2049::ConvertedTrack) == 576, "update track_cache.cpp for ConvertedTrack (2049)");
     static_assert(sizeof(rush2::track1::ConvertedTrack::Timing) == 64, "update track_cache.cpp for Timing");
     static_assert(sizeof(rush2::track2049::TexFlipbook) == 72, "update track_cache.cpp for TexFlipbook");
     static_assert(sizeof(rush2::track2049::TexScroll) == 72, "update track_cache.cpp for TexScroll");
     static_assert(sizeof(rush2::track2049::TexPalette) == 72, "update track_cache.cpp for TexPalette");
 #endif
 
+    // A simulation run (RUSH2_SIM, src/sim_run.cpp) keeps its settings and save in a data folder of its own, but shares
+    // the player's track cache: entries are keyed on the source and the build, and written by rename, so every run and
+    // the player's game can use the same converted tracks instead of each test folder converting (and storing) its own
+    // gigabyte. launch_times.txt (src/prewarm.cpp) stays in the run's own folder, since a hidden run's timings differ.
     std::filesystem::path cache_dir() {
-        return recomp::get_config_path() / "track_cache";
+        return (rush2::sim::data_dir().empty() ? recomp::get_config_path() : recompui::file::get_app_folder_path()) / "track_cache";
     }
 
     uint64_t build_stamp() {
         static uint64_t stamp = [] {
-            std::filesystem::path exe;
-#ifdef _WIN32
-            wchar_t buf[MAX_PATH * 4];
-            DWORD n = GetModuleFileNameW(nullptr, buf, (DWORD)std::size(buf));
-            if (n > 0 && n < std::size(buf)) exe = std::filesystem::path(std::wstring(buf, n));
-#endif
+            std::filesystem::path exe = rush2::executable_path();
             std::error_code ec;
-#ifndef _WIN32
-            exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-#endif
             uint64_t size = exe.empty() ? 0 : (uint64_t)std::filesystem::file_size(exe, ec);
             uint64_t time = exe.empty() ? 0 : (uint64_t)std::filesystem::last_write_time(exe, ec).time_since_epoch().count();
             return rush2::track_cache::hash((const uint8_t*)&time, sizeof(time),
@@ -336,6 +330,7 @@ namespace {
         w.pods(t.mover_paths);
         w.pods(t.mover_collision);
         for (const auto& l : t.lane_time) w.pods(l);
+        w.strmap(t.record_models);
     }
 
     void read(Reader& r, rush2::track2049::ConvertedTrack& t) {
@@ -389,6 +384,7 @@ namespace {
         r.pods(t.mover_paths);
         r.pods(t.mover_collision);
         for (auto& l : t.lane_time) r.pods(l);
+        r.strmap(t.record_models);
     }
 
     std::filesystem::path blob_file(const std::string& name) {

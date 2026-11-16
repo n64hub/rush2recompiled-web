@@ -62,10 +62,11 @@ namespace {
         for (const Progress& p : list) {
             s += label_of(p) + ":" + std::to_string(rush2::collectibles::points(p.name)) + ":";
             for (const std::string& id : rush2::collectibles::purchases(p.name)) s += id + ",";
-            for (uint16_t m : p.rush2) s += std::to_string(m) + ",";
+            for (uint32_t m : p.rush2) s += std::to_string(m) + ",";
             for (uint16_t m : p.sfrush) s += std::to_string(m) + ",";
             for (uint16_t m : p.rush2049) s += std::to_string(m) + ",";
             for (uint16_t m : p.stunt2049) s += std::to_string(m) + ",";
+            for (uint16_t m : p.sfrush_ps1) s += std::to_string(m) + ",";
             s += ";";
         }
         return s;
@@ -413,19 +414,28 @@ namespace {
                 return;
             }
             using namespace rush2::collectibles;
-            auto count = [](uint16_t m) { return std::popcount((unsigned)m); };
+            auto count = [](uint32_t m) { return std::popcount(m); };
             std::vector<Line> lines;
             for (int t = 0; t < rush2_courses; t++) {
                 lines.push_back({ rush2_tracks[t], {
                     { count(p->rush2[t] & rush2_key_bits), rush2::collectibles::rush2_keys },
-                    { count(p->rush2[t] & rush2_can_bits), rush2_cans } } });
+                    { count(p->rush2[t] & rush2_can_bits), rush2_cans_on(t) } } });
             }
             add_section("Rush 2", { "keys", "Dew cans" }, lines);
 
             lines.clear();
+            // A course's keys: those on the versions the player has (the PS1's among them, docs/sfrush_ps1.md#keys)
+            // and any found on a version since removed. Chinatown (the PS1's own course) only once there are any.
+            auto keys = [&](const std::string& name, int course, uint16_t found) {
+                uint16_t all = uint16_t(key_bits(course, true) | (found & key_bits(course, false)));
+                if (all != 0 || course < sfrush_courses) {
+                    lines.push_back({ name, { { count(found & all), count(all) } } });
+                }
+            };
             for (int t = 0; t < sfrush_courses; t++) {
-                lines.push_back({ rush2::track1::track_names[t], { { count(p->sfrush[t]), sfrush_keys[t] } } });
+                keys(rush2::track1::track_names[t], t, p->sfrush[t]);
             }
+            keys("Chinatown", sfrush_ps1_course, p->sfrush_ps1[0]);
             add_section("SF Rush", { "keys" }, lines);
 
             // Race tracks in the left column, stunt arenas in the right.

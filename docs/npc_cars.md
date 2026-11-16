@@ -53,6 +53,8 @@ The section's rows follow the chosen car, as the car select's do (src/rush2049/w
   entry's +4 byte is copied whole to the physics car's `+0x7ED` (`0x8009E948`), which car_build_scene_nodes passes to
   car_build_textures (`0x800866CC`) as it does a human's STRIPE from the record getter, so the painter hooks at
   `0x80085D84` / `0x80085D8C` draw it.
+- An N64 2049 car and a new car painted through a mask have Stripe too (drawn by their own code:
+  docs/car_mods.md#stripes-on-one-body-cars); a Dreamcast disc's car or a new car with color schemes has none.
 
 A Random ACCENT follows the stripe the car ends up with: Rush 2's stripe path sets a striped drone's ACCENT to its
 MAIN and its no-stripe path another color, so a chosen stripe (or a chosen MAIN on a striped car) makes ACCENT the
@@ -108,3 +110,45 @@ ahead) into $f2 and $f12. The game falls back to a base value itself in two plac
 set it resets both, but only when a comparison against car state +0xE9 passes (not worked out). With catch-up off, the
 hook at 0x800A2F14 (`rush2_drone_catch_up`) puts both base values back every frame, after those paths join, so a
 drone's pace follows DIFFICULTY and its place but not the gaps.
+
+What the two multipliers do: +0x808 scales the driver's target speed (lane mph x 1.05 x +0x808). +0x814 scales the
+car's physics clock: `physics_car_tick_80075880` (0x80075A74) sets +0x818 = (1 + +0x614 x c) x +0x3F0 x +0x814 and the
+car's step +0x718 = +0x818 x frame time, so 1.1 runs the drone's whole simulation 10% fast. `func_800A19B0(x0, x1,
+y0, y1, x)` is a clamped linear map (y0 at x0, y1 at x1, held outside). The bends (constants 0x800CFE0C-0x800CFF34,
+the per-track factors 0x800C1A3C are all 1.0): behind, +0x814 rises to 1.1 - 0.1 f20 - f26 (0.1 f20 + 0.05) at the
+far end of the gap range (300 ft behind for a drone chasing a human, 300 ft for the last car, 200 ft for a middle
+car); ahead, +0x808 drops to 0.9 - f26 (0.5 f20 + 0.1) (200 ft ahead of a human, 500 ft for a leader); a leader closer
+than 200 ft to second gets the +0x814 boost too. At DIFFICULTY 5 (f20 = f26 = 0) the base values are 1.0 and the
+largest catch-up is 1.1x clock with the target speed unchanged. Only one drone chases each human: a human picks the
+drone one place ahead or behind (the nearer, type +0x7E8 == 1, not taken) and writes its own index into that drone's
++0x806; every other drone is bent by the gap to its neighbors by place, so the pack keeps together but does not chase
+the player, and nothing grows past 300 ft.
+
+### Circuit skill
+
+In a circuit (race type 0x8010C3E8 == 1) `rubber_band_800A1A98` also scales each drone's pace factor $f20 by its skill
+on the course (0x800A230C-0x800A2378): $f20 x= skill / 3 + 0.75, skill = s16 at the circuit standings 0x800D3B28 +
+car x 0x58 + 0x3C + 2 x (track + 7 x backward), track = 0x8010C3F0 (a host slot for an added course), backward =
+0x80119848. Those are 14 entries a car, courses 0-6 forward then backward, which `circuit_generate_800A7DCC` fills from
+the rows at 0x800BD42C (values 0-6, so 0.75x-2.75x) and shuffles. Rush 2's circuits only ran courses 0-6. HALFPIPE to
+MIDWAY (7-10, offered by the Circuit Courses option, src/circuit.cpp) raced forward read entries 7-10 (another course's
+backward skill, in range); raced backward they read entries 14-17, past the car's record, into the next car's place and
+points. CRASH backward read the next car's points, a u16 that grows over the circuit: the drones' +0x808 / +0x814
+targets went far out of range (drone 1's +0x808 at -1.66 25 s in and still falling 0.01 a frame, against ~0.96
+normally), drones stalled, wrecked and were flung off the course (positions of 1e11 ft to inf; the minimap dots leave
+the map) and in 3 of 7 runs the game froze 28 s in (GitHub issue 60). The freeze is the lane walk in
+`drone_driver_80074990` (0x80074CD4-0x80074D80): it steps to the next lane point (`path_next_node_8006DB00`) and takes
+each segment's length off a distance that starts as the drone's distance along its lane (lane state +0) + 80 - the
+segment (+0xC), until it is 0. For a drone 1e11 ft out, subtracting a segment of tens of feet leaves the float
+unchanged, so the loop never ends: cdb showed the physics thread ([Game] 5, physics_tick_drones ->
+physics_car_tick -> drone_driver+0xb5a) spinning and every other game thread waiting on it. The hook at
+0x800A2358 (`rush2_circuit_skill_entry`) keeps the entry within the car's 14 (entry mod 14: backward 7-10 use entries
+0-3; everything Rush 2 itself reads is unchanged).
+
+Test without a circuit: `tools/test_race.py 8 --drones 7 --seconds 105 --env RUSH2_TEST_RACE_BACKWARD=1 --env
+RUSH2_RACE_RECORD=<absolute .r2rc> --env RUSH2_RAM_POKE=8010C3E8:4:1,800D3B2A:2:96,...` (race type circuit, and points
+150 for cars 0-7 at 0x800D3B2A + car x 0x58: what the old code read; src/ram_watch.cpp). To see the bug on the fixed
+build, poke the entry the fix reads instead (entry 1: 0x800D3B66 + car x 0x58). Bug: drones stall by 15 s, are flung out
+by ~28-52 s, freeze in some runs; fixed: every car stays within ~3500 ft. Use your own `--data` folder (the default is
+shared with other sessions' runs). `race_watch.py --peek` stops the run's own samples; watch values with
+RUSH2_RAM_WATCH (drone 1's +0x808 / +0x814: 800F6494:4,800F64A0:4) instead.

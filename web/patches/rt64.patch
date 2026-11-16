@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 8f33330..56e5dd6 100644
+index 4a08a68..bea3953 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -11,7 +11,20 @@ endif()
@@ -1097,10 +1097,10 @@ index 883cf36..d827324 100644
                      skipInterpolation();
                      notifyPresentId(present);
 diff --git a/src/hle/rt64_rsp.cpp b/src/hle/rt64_rsp.cpp
-index bca4525..42d7e7b 100644
+index b772e9e..7899a20 100644
 --- a/src/hle/rt64_rsp.cpp
 +++ b/src/hle/rt64_rsp.cpp
-@@ -1287,9 +1287,89 @@ namespace RT64 {
+@@ -1290,9 +1290,89 @@ namespace RT64 {
              }
          }
  
@@ -1192,7 +1192,7 @@ index bca4525..42d7e7b 100644
              const hlslpp::float3 U = posScreen[globalIndices[1]] - posScreen[globalIndices[0]];
              const hlslpp::float3 V = posScreen[globalIndices[2]] - posScreen[globalIndices[0]];
              const hlslpp::float3 N = hlslpp::cross(V, U);
-@@ -1297,16 +1377,26 @@ namespace RT64 {
+@@ -1300,16 +1380,26 @@ namespace RT64 {
          }
  
          const FixedRect &scissorRect = state->rdp->scissorRectStack[state->rdp->scissorStackSize - 1];
@@ -1229,7 +1229,7 @@ index bca4525..42d7e7b 100644
  
              drawRect = scissorRect.intersection(drawRect);
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
-index 35ab5c9..2a10f1a 100644
+index 4d67b30..31bf3c8 100644
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
 @@ -8,6 +8,13 @@
@@ -1246,7 +1246,7 @@ index 35ab5c9..2a10f1a 100644
  #define ENABLE_HIGH_RESOLUTION_RENDERER 1
  
  namespace RT64 {
-@@ -45,9 +52,28 @@ namespace RT64 {
+@@ -48,9 +55,28 @@ namespace RT64 {
          barrierCursor = int(workloads.size()) - 1;
          workloadId = 0;
          lastPresentId = 0;
@@ -1275,7 +1275,7 @@ index 35ab5c9..2a10f1a 100644
          int nextWriteCursor = (writeCursor + 1) % workloads.size();
          submitTimestamps[writeCursor] = Timer::current();
  
-@@ -67,6 +93,186 @@ namespace RT64 {
+@@ -70,6 +96,186 @@ namespace RT64 {
          cursorCondition.notify_all();
      }
  
@@ -1462,7 +1462,7 @@ index 35ab5c9..2a10f1a 100644
      void WorkloadQueue::repeatLastWorkload() {
          {
              const std::scoped_lock lock(cursorMutex);
-@@ -90,6 +296,23 @@ namespace RT64 {
+@@ -93,6 +299,23 @@ namespace RT64 {
      }
  
      void WorkloadQueue::waitForWorkloadId(uint64_t waitId) {
@@ -1486,7 +1486,7 @@ index 35ab5c9..2a10f1a 100644
          std::unique_lock<std::mutex> workloadLock(workloadIdMutex);
          workloadIdCondition.wait(workloadLock, [&]() {
              return (waitId <= workloadId) || !threadsRunning;
-@@ -99,6 +322,14 @@ namespace RT64 {
+@@ -102,6 +325,14 @@ namespace RT64 {
      void WorkloadQueue::setup(const External &ext) {
          this->ext = ext;
  
@@ -1501,7 +1501,7 @@ index 35ab5c9..2a10f1a 100644
          rspProcessor = std::make_unique<RSPProcessor>(ext.device);
          vertexProcessor = std::make_unique<VertexProcessor>(ext.device);
          framebufferRenderer = std::make_unique<FramebufferRenderer>(ext.workloadGraphicsWorker, true, ext.createdGraphicsAPI, ext.shaderLibrary);
-@@ -112,12 +343,19 @@ namespace RT64 {
+@@ -116,12 +347,19 @@ namespace RT64 {
  
          threadsRunning = true;
          renderThread = new std::thread(&WorkloadQueue::renderThreadLoop, this);
@@ -1521,7 +1521,7 @@ index 35ab5c9..2a10f1a 100644
          framebufferRenderer->updateMultisampling();
      }
  
-@@ -239,6 +477,12 @@ namespace RT64 {
+@@ -243,6 +481,12 @@ namespace RT64 {
          // Store the rate that was chosen for the configuration.
          ext.sharedResources->targetRate = workloadConfig.targetRate;
  
@@ -1534,7 +1534,7 @@ index 35ab5c9..2a10f1a 100644
  #   if RT_ENABLED
          workloadConfig.raytracingEnabled = rtEnabled;
  
-@@ -260,10 +504,27 @@ namespace RT64 {
+@@ -264,10 +508,27 @@ namespace RT64 {
              {
                  // Wait until the other queue has stopped using the interpolated color targets.
                  std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
@@ -1562,7 +1562,7 @@ index 35ab5c9..2a10f1a 100644
              }
  
              std::scoped_lock<std::mutex> managerLock(ext.sharedResources->managerMutex);
-@@ -294,7 +555,7 @@ namespace RT64 {
+@@ -298,7 +559,7 @@ namespace RT64 {
      
      void WorkloadQueue::threadRenderFrame(GameFrame &curFrame, const GameFrame &prevFrame, const WorkloadConfiguration &workloadConfig,
          const DebuggerRenderer &debuggerRenderer, const DebuggerCamera &debuggerCamera, float curFrameWeight, float prevFrameWeight,
@@ -1571,7 +1571,7 @@ index 35ab5c9..2a10f1a 100644
          uint32_t overrideTargetModifier, bool uploadVelocity, bool uploadExtras, bool interpolateTiles, bool interpolateLookAts)
      {
  #   if ENABLE_HIGH_RESOLUTION_RENDERER
-@@ -387,6 +648,9 @@ namespace RT64 {
+@@ -391,6 +652,9 @@ namespace RT64 {
                  rspParams.outputBuffers = &workload.outputBuffers;
                  rspParams.prevFrameWeight = prevFrameWeight;
                  rspParams.curFrameWeight = curFrameWeight;
@@ -1581,7 +1581,7 @@ index 35ab5c9..2a10f1a 100644
                  rspProcessor->process(rspParams);
              }
  
-@@ -401,6 +665,9 @@ namespace RT64 {
+@@ -405,6 +669,9 @@ namespace RT64 {
                  vertexParams.outputBuffers = &workload.outputBuffers;
                  vertexParams.curFrameWeight = curFrameWeight;
                  vertexParams.prevFrameWeight = prevFrameWeight;
@@ -1591,7 +1591,7 @@ index 35ab5c9..2a10f1a 100644
                  vertexProcessor->process(vertexParams);
              }
  
-@@ -428,6 +695,17 @@ namespace RT64 {
+@@ -432,6 +699,17 @@ namespace RT64 {
                      nativeColorWidth = colorImg.width;
                      nativeColorHeight = fbPair.drawColorRect.bottom(true);
  
@@ -1609,7 +1609,7 @@ index 35ab5c9..2a10f1a 100644
                      // When the target is much bigger than the reference height, we reduce the resolution scaling (but clamped to 1.0).
                      const uint32_t heightThreshold = (workload.viFbSize[1] > 0) ? ((workload.viFbSize[1] * 3) / 2) : 360;
                      uint32_t downsampleMultiplier = workloadConfig.downsampleMultiplier;
-@@ -546,8 +824,10 @@ namespace RT64 {
+@@ -550,8 +828,10 @@ namespace RT64 {
                          colorFb->readHeight = 0;
                      }
  
@@ -1621,7 +1621,7 @@ index 35ab5c9..2a10f1a 100644
                          if (dummyDepthTarget == nullptr) {
                              dummyDepthTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Depth, targetManager.multisampling, targetManager.usesHDR);
                              dummyDepthTarget->setupDepth(ext.workloadGraphicsWorker, rtWidth, rtHeight);
-@@ -560,6 +840,7 @@ namespace RT64 {
+@@ -564,6 +844,7 @@ namespace RT64 {
                          if (colorTarget != nullptr) {
                              colorDepthPairs.emplace_back(colorTarget, dummyDepthTarget.get());
                          }
@@ -1629,7 +1629,7 @@ index 35ab5c9..2a10f1a 100644
                      }
                      else if (depthTarget != nullptr) {
                          if (colorTarget != nullptr) {
-@@ -584,6 +865,10 @@ namespace RT64 {
+@@ -588,6 +869,10 @@ namespace RT64 {
                  }
              }
  
@@ -1640,7 +1640,7 @@ index 35ab5c9..2a10f1a 100644
              for (RenderTarget *renderTarget : resizedTargets) {
                  renderFramebufferManager->destroyAllWithRenderTarget(renderTarget);
              }
-@@ -602,6 +887,9 @@ namespace RT64 {
+@@ -606,6 +891,9 @@ namespace RT64 {
              for (uint32_t f = 0; f < fbPairCount; f++) {
                  const FramebufferPair &fbPair = workload.fbPairs[f];
                  fbManager.performDiscards(fbPair.startFbDiscards);
@@ -1650,7 +1650,7 @@ index 35ab5c9..2a10f1a 100644
              }
              
              // Add all framebuffer pairs to the framebuffer renderer and setup the operations.
-@@ -618,7 +906,12 @@ namespace RT64 {
+@@ -622,7 +910,12 @@ namespace RT64 {
              for (uint32_t f = 0; f < fbPairCount; f++) {
                  const FramebufferPair &fbPair = workload.fbPairs[f];
                  if (getTargetsFromPair(f)) {
@@ -1664,7 +1664,7 @@ index 35ab5c9..2a10f1a 100644
                      FramebufferRenderer::DrawParams drawParams;
                      drawParams.worker = ext.workloadGraphicsWorker;
                      drawParams.fbStorage = &fbStorage;
-@@ -638,7 +931,8 @@ namespace RT64 {
+@@ -642,7 +935,8 @@ namespace RT64 {
                      drawParams.rtEnabled = workloadConfig.raytracingEnabled;
                      drawParams.submissionFrame = workload.submissionFrame;
                      drawParams.deltaTimeMs = deltaTimeMs;
@@ -1674,16 +1674,16 @@ index 35ab5c9..2a10f1a 100644
                      drawParams.postBlendNoise = workloadConfig.postBlendNoise;
                      drawParams.postBlendNoiseNegative = workloadConfig.postBlendNoiseNegative;
                      drawParams.maxGameCall = std::min(gameCallCountMax - gameCallCursor, fbPair.gameCallCount);
-@@ -704,7 +998,7 @@ namespace RT64 {
-             ext.workloadGraphicsWorker->commandList->begin();
-             ext.workloadGraphicsWorker->commandList->resetQueryPool(queryPool.get(), 0, 2);
+@@ -711,7 +1005,7 @@ namespace RT64 {
+             framebufferRenderer->carLightQueryCount = 0;
+             framebufferRenderer->occlusionQueryCount = 0;
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
 -            framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
 +            framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workload.drawData.gpuTiles, workload.drawData.rdpTiles, workloadConfig.raytracingEnabled);
              framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
              
              // Record all framebuffer pairs.
-@@ -809,7 +1103,7 @@ namespace RT64 {
+@@ -816,7 +1110,7 @@ namespace RT64 {
                      }
  
                      // Do the resolve if using MSAA while target override is active and we're on the correct framebuffer pair index.
@@ -1692,7 +1692,7 @@ index 35ab5c9..2a10f1a 100644
                          overrideTarget->resize(ext.workloadGraphicsWorker, colorTarget->width, colorTarget->height);
                          overrideTarget->resolveFromTarget(ext.workloadGraphicsWorker, colorTarget, ext.shaderLibrary);
                      }
-@@ -845,15 +1139,30 @@ namespace RT64 {
+@@ -852,12 +1146,21 @@ namespace RT64 {
              framebufferRenderer->waitForUploaders();
              ext.workloadGraphicsWorker->execute();
              ext.workloadGraphicsWorker->wait();
@@ -1712,6 +1712,10 @@ index 35ab5c9..2a10f1a 100644
              rendererGPUProfiler.log(double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0);
 +#       endif
  
+             // Rush 2 recomp: RUSH2_GPU_LOG prints the workloads' mean GPU time every 120 and the car lights' part of it
+             // (FramebufferRenderer::submitCarLights), as "[gpu]" lines in the game log.
+@@ -901,6 +1204,12 @@ namespace RT64 {
+ 
              // Indicate to the texture cache it's safe to delete the textures if no locks are active.
              ext.textureCache->decrementLock();
 +
@@ -1723,7 +1727,7 @@ index 35ab5c9..2a10f1a 100644
          }
  
          if ((overrideTarget != nullptr) && !usingMSAA) {
-@@ -881,6 +1190,11 @@ namespace RT64 {
+@@ -928,6 +1237,11 @@ namespace RT64 {
          workloadIdCondition.notify_all();
      }
  
@@ -1735,7 +1739,7 @@ index 35ab5c9..2a10f1a 100644
      void WorkloadQueue::renderThreadLoop() {
          Thread::setCurrentThreadName("RT64 Workload");
  
-@@ -900,23 +1214,83 @@ namespace RT64 {
+@@ -947,23 +1261,83 @@ namespace RT64 {
          Timestamp variableStart;                 // When the current game frame starts being shown.
          Timestamp variableLastSample;            // When the last frame's weight was taken from the clock.
          int64_t variableSampleMicro = 0;         // Smoothed time between samples: the rate frames are being shown at.
@@ -1822,7 +1826,7 @@ index 35ab5c9..2a10f1a 100644
                  ext.presentQueue->waitForPresentId(workload.presentId);
  
                  if (!threadsRunning) {
-@@ -925,22 +1299,27 @@ namespace RT64 {
+@@ -972,22 +1346,27 @@ namespace RT64 {
  
                  ElapsedTimer workloadTimer;
                  workloadProfiler.start();
@@ -1856,7 +1860,7 @@ index 35ab5c9..2a10f1a 100644
                  int32_t interpolationTargetFbPairIndex = -1;
                  {
                      std::scoped_lock<std::mutex> managerLock(ext.sharedResources->managerMutex);
-@@ -949,8 +1328,9 @@ namespace RT64 {
+@@ -996,8 +1375,9 @@ namespace RT64 {
                      std::unordered_set<uint32_t> &colorSet = ext.sharedResources->colorImageAddressSet;
                      colorVector.clear();
                      colorSet.clear();
@@ -1868,7 +1872,7 @@ index 35ab5c9..2a10f1a 100644
                          bool interpolationCandidate = fbPair.earlyPresentCandidate();
                          if (fbPair.drawColorRect.isEmpty()) {
                              continue;
-@@ -978,6 +1358,7 @@ namespace RT64 {
+@@ -1025,6 +1405,7 @@ namespace RT64 {
                              interpolationTargetKey.address = fbPair.colorImage.address;
                              interpolationTargetKey.siz = fbPair.colorImage.siz;
                              interpolationTargetKey.width = fbPair.colorImage.width;
@@ -1876,7 +1880,7 @@ index 35ab5c9..2a10f1a 100644
                              interpolationTargetFbPairIndex = f;
                          }
                      }
-@@ -992,6 +1373,11 @@ namespace RT64 {
+@@ -1039,6 +1420,11 @@ namespace RT64 {
                  bool tileInterpolationUsed = false;
                  bool lookAtInterpolationUsed = false;
                  if (requiresFrameMatching) {
@@ -1888,7 +1892,7 @@ index 35ab5c9..2a10f1a 100644
                      matchingProfiler.reset();
                      matchingProfiler.start();
                      curFrame.match(ext.workloadGraphicsWorker, *this, prevFrame, ext.workloadVelocityUploader, velocityUploaderUsed, tileInterpolationUsed, lookAtInterpolationUsed);
-@@ -1012,17 +1398,17 @@ namespace RT64 {
+@@ -1059,17 +1445,17 @@ namespace RT64 {
  
                  // The ticks aren't used at a variable rate, and start over when the mode changes back.
                  const bool variableFrames = generateInterpolatedFrames && workloadConfig.variableRate;
@@ -1909,7 +1913,7 @@ index 35ab5c9..2a10f1a 100644
                          variableStart = submitted;
                      }
                      else {
-@@ -1030,7 +1416,7 @@ namespace RT64 {
+@@ -1077,7 +1463,7 @@ namespace RT64 {
                      }
  
                      variableTimelineValid = true;
@@ -1918,7 +1922,7 @@ index 35ab5c9..2a10f1a 100644
                  }
                  else {
                      variableTimelineValid = false;
-@@ -1040,34 +1426,37 @@ namespace RT64 {
+@@ -1087,34 +1473,37 @@ namespace RT64 {
                  uint32_t displayFrames = 1;
                  if (variableFrames) {
                      // The most frames that fit at the target rate. The workload ends when the game frame's time runs out.
@@ -1963,7 +1967,7 @@ index 35ab5c9..2a10f1a 100644
                      ext.sharedResources->interpolatedFramesIndex = ext.sharedResources->interpolatedFramesIndex ^ 1;
                      lastPresentId = workload.presentId;
                  }
-@@ -1081,18 +1470,39 @@ namespace RT64 {
+@@ -1128,18 +1517,39 @@ namespace RT64 {
                  }
  
                  InterpolatedFrameCounters &curFrameCounters = ext.sharedResources->interpolatedFrames[ext.sharedResources->interpolatedFramesIndex];
@@ -2003,7 +2007,7 @@ index 35ab5c9..2a10f1a 100644
                      uint32_t previousSize = uint32_t(interpolatedTargets.size());
                      interpolatedTargets.resize(requiredFrames);
                      for (uint32_t i = previousSize; i < requiredFrames; i++) {
-@@ -1100,7 +1510,7 @@ namespace RT64 {
+@@ -1147,7 +1557,7 @@ namespace RT64 {
                      }
                  }
                  
@@ -2012,7 +2016,7 @@ index 35ab5c9..2a10f1a 100644
                  const int64_t setupTimeMicro = workloadTimer.elapsedMicroseconds();
                  const int64_t adjustedTimeWindowMicro = originalTimeMicro - setupTimeMicro;
                  const int64_t maxTimePerFrameMicro = adjustedTimeWindowMicro / displayFrames;
-@@ -1108,6 +1518,21 @@ namespace RT64 {
+@@ -1155,6 +1565,21 @@ namespace RT64 {
                  bool skipWorkloadNow = false;
                  uint32_t targetIndex = 0;
                  uint32_t framesRendered = 0;
@@ -2034,7 +2038,7 @@ index 35ab5c9..2a10f1a 100644
                  int64_t renderTimeTotalMicro = 0;
                  bool variableLastFrame = false;
                  for (uint32_t frame = 0; (frame < displayFrames) && !skipWorkloadNow; frame++) {
-@@ -1117,7 +1542,7 @@ namespace RT64 {
+@@ -1164,7 +1589,7 @@ namespace RT64 {
                          const int64_t expectedTimeMicro = frame * maxTimePerFrameMicro;
                          const int64_t measuredFrameMicro = renderTimeTotalMicro / framesRendered;
                          if ((currentTimeMicro > expectedTimeMicro) || ((currentTimeMicro + measuredFrameMicro) > adjustedTimeWindowMicro)) {
@@ -2043,7 +2047,7 @@ index 35ab5c9..2a10f1a 100644
                              skippedFrames = true;
                              continue;
                          }
-@@ -1157,7 +1582,15 @@ namespace RT64 {
+@@ -1204,7 +1629,15 @@ namespace RT64 {
                                  {
                                      std::unique_lock<std::mutex> cursorLock(cursorMutex);
                                      nextQueued = cursorCondition.wait_until(cursorLock, frameEnd + frameTime / 2, [&]() {
@@ -2059,7 +2063,7 @@ index 35ab5c9..2a10f1a 100644
                                      });
                                  }
  
-@@ -1195,22 +1628,55 @@ namespace RT64 {
+@@ -1242,22 +1675,55 @@ namespace RT64 {
                      }
                      else if (generateInterpolatedFrames) {
                          prevFrameWeight = std::clamp((workloadConfig.targetRate + displayTicks - logicalTicks) / float(workloadConfig.targetRate), 0.0f, 1.0f);
@@ -2121,7 +2125,7 @@ index 35ab5c9..2a10f1a 100644
                                  });
                              }
  
-@@ -1218,7 +1684,7 @@ namespace RT64 {
+@@ -1265,7 +1731,7 @@ namespace RT64 {
                          }
                      }
                      else if (workload.paused) {
@@ -2130,7 +2134,7 @@ index 35ab5c9..2a10f1a 100644
                          prevFrameWeight = 1.0f - curFrameWeight;
                      }
                      else {
-@@ -1228,28 +1694,30 @@ namespace RT64 {
+@@ -1275,28 +1741,30 @@ namespace RT64 {
  
                      const bool uploadExtras = (frame == 0) && workloadConfig.raytracingEnabled;
                      if (uploadExtras) {
@@ -2170,7 +2174,7 @@ index 35ab5c9..2a10f1a 100644
  
                          {
                              std::scoped_lock<std::mutex> managerLock(ext.sharedResources->interpolatedMutex);
-@@ -1259,7 +1727,7 @@ namespace RT64 {
+@@ -1306,7 +1774,7 @@ namespace RT64 {
  
                          // Add the amount of display ticks that correspond to the remaining frames.
                          if (skipWorkloadNow) {
@@ -2179,7 +2183,7 @@ index 35ab5c9..2a10f1a 100644
                          }
  
                          ext.sharedResources->interpolatedCondition.notify_all();
-@@ -1288,8 +1756,43 @@ namespace RT64 {
+@@ -1335,8 +1803,43 @@ namespace RT64 {
  
                  threadConfigurationValidate();
  
@@ -2223,6 +2227,483 @@ index 35ab5c9..2a10f1a 100644
                  }
  
                  processCursor = -1;
+diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
+index 485e7be..01f3ae5 100644
+--- a/src/render/rt64_framebuffer_renderer.cpp
++++ b/src/render/rt64_framebuffer_renderer.cpp
+@@ -163,6 +163,7 @@ namespace RT64 {
+ 
+         shaderUploader = std::make_unique<BufferUploader>(worker->device);
+         descCommonSet = std::make_unique<FramebufferRendererDescriptorCommonSet>(shaderLibrary->samplerLibrary, worker->device->getCapabilities().raytracing, worker->device);
++        usePerDrawTextures = perDrawTextures(worker->device->getCapabilities());
+ 
+ #   if RT_ENABLED
+         if (rtSupport) {
+@@ -173,6 +174,8 @@ namespace RT64 {
+     }
+ 
+     FramebufferRenderer::~FramebufferRenderer() {
++        drawTextureSets.clear();
++        dummyTileTexture.reset();
+         dummyColorTargetView.reset();
+         dummyDepthTargetView.reset();
+         dummyColorTarget.reset();
+@@ -204,7 +207,7 @@ namespace RT64 {
+ 
+         // Create dummy depth target if it hasn't been created yet.
+         if (dummyDepthTarget == nullptr) {
+-            RenderTextureDesc dummyDepthDesc = RenderTextureDesc::DepthTarget(4, 4, RenderFormat::D32_FLOAT, multisampling);
++            RenderTextureDesc dummyDepthDesc = RenderTextureDesc::DepthTarget(4, 4, RenderTarget::depthBufferFormat(), multisampling);
+             dummyDepthTarget = worker->device->createTexture(dummyDepthDesc);
+             dummyDepthTarget->setName("Framebuffer Renderer Depth Dummy");
+             dummyDepthTargetView = dummyDepthTarget->createTextureView(RenderTextureViewDesc::Texture2D(dummyDepthDesc.format));
+@@ -341,12 +344,12 @@ namespace RT64 {
+         assert(worker != nullptr);
+         assert(drawBuffers != nullptr);
+         
+-        const bool createSet = (descTextureSet == nullptr) || (descTextureSet->textureCacheSize < (textureCacheSize + 1));
++        const bool createSet = !usePerDrawTextures && ((descTextureSet == nullptr) || (descTextureSet->textureCacheSize < (textureCacheSize + 1)));
+         if (createSet) {
+             descTextureSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, ((textureCacheSize + 1) * 3) / 2);
+         }
+ 
+-        if (createSet || (descriptorTextureReplacementMapEnabled != textureCacheReplacementMapEnabled)) {
++        if (!usePerDrawTextures && (createSet || (descriptorTextureReplacementMapEnabled != textureCacheReplacementMapEnabled))) {
+             descriptorTextureVersions.clear();
+             descriptorTextureGlobalVersion = 0;
+             descriptorTextureReplacementMapEnabled = textureCacheReplacementMapEnabled;
+@@ -404,10 +407,36 @@ namespace RT64 {
+ 
+         descCommonSet->setBuffer(descCommonSet->FrParams, frameParamsBuffer.get(), sizeof(interop::FrameParams));
+         descCommonSet->setBuffer(descCommonSet->instanceRenderIndices, renderIndicesBuffer.get(), RenderBufferStructuredView(sizeof(interop::RenderIndices)));
++#   ifdef __EMSCRIPTEN__
++        // A workload makes a draw buffer the first time it has something to put in it, so one whose draws have used
++        // no tile yet (an untextured boot logo) has no GPU tiles buffer. On WebGPU a set's layout is built from what
++        // is bound (plume), so binding nothing left GPUTiles out of it, and a pipeline built in the background for
++        // that layout with a pixel shader that reads GPUTiles failed ("Binding doesn't exist"), and every command
++        // buffer that drew with it was dropped. A zeroed buffer stands in until the workload has one.
++        if (dummyStorageBuffer == nullptr) {
++            const uint64_t dummySize = std::max({ sizeof(interop::RDPParams), sizeof(interop::RDPTile), sizeof(interop::GPUTile), sizeof(interop::RenderParams) });
++            dummyStorageBuffer = worker->device->createBuffer(RenderBufferDesc::DefaultBuffer(dummySize, RenderBufferFlag::STORAGE));
++        }
++
++        auto drawBuffer = [this](const BufferPair &pair) -> const RenderBuffer * {
++            return (pair.get() != nullptr) ? pair.get() : dummyStorageBuffer.get();
++        };
++
++        descCommonSet->setBuffer(descCommonSet->instanceRDPParams, drawBuffer(drawBuffers->rdpParamsBuffer), RenderBufferStructuredView(sizeof(interop::RDPParams)));
++        descCommonSet->setBuffer(descCommonSet->RDPTiles, drawBuffer(drawBuffers->rdpTilesBuffer), RenderBufferStructuredView(sizeof(interop::RDPTile)));
++        descCommonSet->setBuffer(descCommonSet->GPUTiles, drawBuffer(drawBuffers->gpuTilesBuffer), RenderBufferStructuredView(sizeof(interop::GPUTile)));
++        descCommonSet->setBuffer(descCommonSet->DynamicRenderParams, drawBuffer(drawBuffers->renderParamsBuffer), RenderBufferStructuredView(sizeof(interop::RenderParams)));
++#   else
+         descCommonSet->setBuffer(descCommonSet->instanceRDPParams, drawBuffers->rdpParamsBuffer.get(), RenderBufferStructuredView(sizeof(interop::RDPParams)));
+         descCommonSet->setBuffer(descCommonSet->RDPTiles, drawBuffers->rdpTilesBuffer.get(), RenderBufferStructuredView(sizeof(interop::RDPTile)));
+         descCommonSet->setBuffer(descCommonSet->GPUTiles, drawBuffers->gpuTilesBuffer.get(), RenderBufferStructuredView(sizeof(interop::GPUTile)));
+         descCommonSet->setBuffer(descCommonSet->DynamicRenderParams, drawBuffers->renderParamsBuffer.get(), RenderBufferStructuredView(sizeof(interop::RenderParams)));
++#   endif
++
++        // The textures are bound per draw instead, by updateDrawTextureSets().
++        if (usePerDrawTextures) {
++            return;
++        }
+ 
+         // Make sure the versions vector matches the texture cache size.
+         descriptorTextureVersions.resize(textureCacheSize, 0);
+@@ -504,6 +533,7 @@ namespace RT64 {
+         interop::RasterParams rasterParams = {};
+         RenderDescriptorSet *descRealFbSet = framebuffer.descRealFbSet->get();
+         RenderDescriptorSet *descDummyFbSet = framebuffer.descDummyFbSet->get();
++        const RenderDescriptorSet *previousDrawTextureSet = nullptr;
+ 
+         auto switchToGraphicsPipeline = [&]() {
+             previousCallType = InstanceDrawCall::Type::Unknown;
+@@ -512,8 +542,15 @@ namespace RT64 {
+             previousScissor = RenderRect();
+             worker->commandList->setGraphicsPipelineLayout(rendererPipelineLayout);
+             worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
+-            worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
+-            worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
++            if (usePerDrawTextures) {
++                previousDrawTextureSet = nullptr;
++                worker->commandList->setGraphicsDescriptorSet(descTMEMSet->get(), 2);
++            }
++            else {
++                worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
++                worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
++            }
++
+             worker->commandList->setGraphicsDescriptorSet(depthState ? descRealFbSet : descDummyFbSet, 3);
+             worker->commandList->setViewports(framebuffer.viewport);
+         };
+@@ -530,12 +567,13 @@ namespace RT64 {
+             }
+         };
+ 
++        uint32_t firstInstance = 0;
+         auto drawCallTriangles = [&](const InstanceDrawCall &drawCall) {
+             if (drawCall.type == InstanceDrawCall::Type::IndexedTriangles) {
+-                worker->commandList->drawIndexedInstanced(drawCall.triangles.faceCount * 3, 1, drawCall.triangles.indexStart, 0, 0);
++                worker->commandList->drawIndexedInstanced(drawCall.triangles.faceCount * 3, 1, drawCall.triangles.indexStart, 0, firstInstance);
+             }
+             else {
+-                worker->commandList->drawInstanced(drawCall.triangles.faceCount * 3, 1, drawCall.triangles.indexStart, 0);
++                worker->commandList->drawInstanced(drawCall.triangles.faceCount * 3, 1, drawCall.triangles.indexStart, firstInstance);
+             }
+         };
+ 
+@@ -970,13 +1008,14 @@ namespace RT64 {
+             }
+ 
+             // A new pass must be started if decals are required and something wrote to the depth buffer before this call.
++            // A prebuilt decal on WebGPU reads no depth and writes the stencil, so it needs the pass that writes them.
+             const interop::OtherMode otherMode = triangles.shaderDesc.otherMode;
+             bool depthDecal = (otherMode.zMode() == ZMODE_DEC);
+             bool depthWrite = otherMode.zUpd();
+-            if (depthDecal) {
++            if (depthDecal && (triangles.decalMarkPipeline == nullptr)) {
+                 switchToDepthRead();
+             }
+-            else if (!depthDecal && depthWrite) {
++            else if (depthWrite || (triangles.decalMarkPipeline != nullptr)) {
+                 switchToDepthWrite();
+             }
+ 
+@@ -989,10 +1028,35 @@ namespace RT64 {
+                 worker->commandList->setPipeline(triangles.pipeline);
+                 previousPipeline = triangles.pipeline;
+             }
++
++            if (usePerDrawTextures) {
++                RenderDescriptorSet *drawTextureSet = drawTextureSets[drawTextureSetIndices[i]]->get();
++                if (previousDrawTextureSet != drawTextureSet) {
++                    worker->commandList->setGraphicsDescriptorSet(drawTextureSet, 1);
++                    previousDrawTextureSet = drawTextureSet;
++                }
++            }
+             
+             rasterParams.renderIndex = i;
+             rasterParams.screenScale = triangles.screenScale;
+             rasterParams.screenOffset = triangles.screenOffset;
++#       ifdef RT64_RENDER_INDEX_BY_INSTANCE
++            // The shaders take the draw's index as its first instance instead (rt64_raster_params.h).
++            rasterParams.renderIndex = 0;
++            firstInstance = i;
++#       endif
++
++            // A prebuilt decal's first draw marks the stencil where the surface is no deeper than its high bound
++            // (RasterShader::createPipeline()), padding0 1 for it: nothing else reads padding0 in a raster draw.
++            if (triangles.decalMarkPipeline != nullptr) {
++                worker->commandList->setPipeline(triangles.decalMarkPipeline);
++                rasterParams.padding0 = 1;
++                worker->commandList->setGraphicsPushConstants(0, &rasterParams);
++                drawCallTriangles(drawCall);
++                worker->commandList->setPipeline(triangles.pipeline);
++                rasterParams.padding0 = 0;
++            }
++
+             worker->commandList->setGraphicsPushConstants(0, &rasterParams);
+ 
+             drawCallTriangles(drawCall);
+@@ -1241,7 +1305,12 @@ namespace RT64 {
+                 const interop::RSPVertexTestZCB &testZCB = drawCall.vertexTestZ;
+                 switchToDepthRead();
+ 
++#           if defined(__EMSCRIPTEN__)
++                // A target without MSAA has a sample count of 1, and WebGPU refuses the multisampled shader on it.
++                const bool useMSAA = (fbStorage->colorTarget->multisampling.sampleCount > 1);
++#           else
+                 const bool useMSAA = (fbStorage->colorTarget->multisampling.sampleCount > 0);
++#           endif
+                 const auto &rspVertexTestZ = useMSAA ? shaderLibrary->rspVertexTestZMS : shaderLibrary->rspVertexTestZ;
+                 worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(testZIndexBuffer, RenderBufferAccess::WRITE));
+                 worker->commandList->setPipeline(rspVertexTestZ.pipeline.get());
+@@ -2493,8 +2562,15 @@ namespace RT64 {
+         memcpy(paramBufferBytes, &fbParams, sizeof(interop::FramebufferParams));
+         framebuffer.paramsBuffer->unmap();
+ 
++#   if RT64_WGSL
++        // Only the raytracing shaders read the background color, and WebGPU refuses a pass that draws into a texture
++        // a bound set samples, which without MSAA the resolved texture is.
++        RenderTexture *backgroundColorTexture = dummyColorTarget.get();
++        RenderTextureView *backgroundColorTextureView = dummyColorTargetView.get();
++#   else
+         RenderTexture *backgroundColorTexture = (p.fbStorage->colorTarget != nullptr) ? p.fbStorage->colorTarget->getResolvedTexture() : dummyColorTarget.get();
+         RenderTextureView *backgroundColorTextureView = (p.fbStorage->colorTarget != nullptr) ? p.fbStorage->colorTarget->getResolvedTextureView() : dummyColorTargetView.get();
++#   endif
+         framebuffer.descRealFbSet->setBuffer(framebuffer.descRealFbSet->FbParams, framebuffer.paramsBuffer.get(), sizeof(interop::FramebufferParams));
+         framebuffer.descRealFbSet->setTexture(framebuffer.descRealFbSet->gBackgroundColor, backgroundColorTexture, RenderTextureLayout::SHADER_READ, backgroundColorTextureView);
+         framebuffer.descRealFbSet->setTexture(framebuffer.descRealFbSet->gBackgroundDepth, p.fbStorage->depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, p.fbStorage->depthTarget->textureView.get());
+@@ -3209,8 +3285,10 @@ namespace RT64 {
+                         triangles.shaderDesc = call.shaderDesc;
+ 
+                         RasterShader *gpuShader = p.ubershadersOnly ? nullptr : p.rasterShaderCache->getGPUShader(call.shaderDesc);
++                        triangles.decalMarkPipeline = nullptr;
+                         if (gpuShader != nullptr) {
+                             triangles.pipeline = gpuShader->pipeline.get();
++                            triangles.decalMarkPipeline = gpuShader->decalMarkPipeline.get();
+                         }
+                         else {
+                             const bool copyMode = (call.shaderDesc.otherMode.cycleType() == G_CYC_COPY);
+@@ -3220,7 +3298,7 @@ namespace RT64 {
+                                 (call.shaderDesc.otherMode.cvgDst() == CVG_DST_WRAP) || (call.shaderDesc.otherMode.cvgDst() == CVG_DST_SAVE));
+                         }
+                         
+-                        triangles.faceCount = call.callDesc.triangleCount;
++                        triangles.faceCount = p.drawsNothing ? 0 : call.callDesc.triangleCount;
+                         triangles.vertexTestZ = (vertexTestZCallIndex >= 0);
+                         triangles.postBlendDitherNoise = false;
+ 
+@@ -3244,6 +3322,16 @@ namespace RT64 {
+                         switch (proj.type) {
+                         case Projection::Type::Perspective:
+                         case Projection::Type::Orthographic: {
++#                       if RT64_STRETCH_SCREEN_COVERS
++                            // A screen cover (RSP::drawIndexedTri) in a perspective viewport widened to the picture (its
++                            // projInvRatioScale 1 in a picture wider than 4:3, drawn at a screen scale of 1) is stretched
++                            // across it, as a rect that spans the scissor's width is, so it still covers the picture. An
++                            // orthographic one is left as it is: a quad that fills a 2D screen is more often a menu's
++                            // picture than a cover. Only here does the scale change between a projection's calls.
++                            if ((proj.type == Projection::Type::Perspective) && (projInvRatioScale == 1.0f) && (aspectRatioScale > 1.0f)) {
++                                triangles.screenScale.x = call.callDesc.coversViewport ? aspectRatioScale : 1.0f;
++                            }
++#                       endif
+                             instanceDrawCall.type = InstanceDrawCall::Type::IndexedTriangles;
+                             triangles.indexStart = triangles.vertexTestZ ? vertexTestZFaceIndicesStart : call.meshDesc.faceIndicesStart;
+                             invRatioScale = projInvRatioScale;
+@@ -3435,7 +3523,215 @@ namespace RT64 {
+         checkRasterScene(rasterScene);
+     }
+ 
+-    void FramebufferRenderer::endFramebuffers(RenderWorker *worker, const DrawBuffers *drawBuffers, const OutputBuffers *outputBuffers, bool rtEnabled) {
++    size_t FramebufferRenderer::DrawTextureStampsHash::operator()(const DrawTextureStamps &stamps) const {
++        size_t hash = 0;
++        for (uint64_t stamp : stamps) {
++            hash ^= std::hash<uint64_t>()(stamp) + 0x9E3779B97F4A7C15ULL + (hash << 6) + (hash >> 2);
++        }
++
++        return hash;
++    }
++
++    // Without descriptor indexing: finds the texture at every texture cache index that changed, and writes the TMEM of
++    // the entries that are only TMEM into the pool, uploading the runs of entries that changed. Not the range from the
++    // first to the last: a scene that makes new TMEM textures every frame (a framebuffer read back line by line, ~200 a
++    // frame) has them all over the cache, and that range was most of a pool of thousands, 10 MB a frame or more. Runs
++    // closer than TMEMPoolRunGap entries go as one upload, each run being a write and a copy. An entry the cache emptied keeps
++    // its version (eviction doesn't change it), so indexTextures can still hold its deleted texture: only an index the
++    // cache has a texture at this workload is read from it (updateDrawTextureSets).
++    void FramebufferRenderer::updateIndexTextures(std::vector<BufferUploader::Upload> &shaderUploads) {
++        if (descriptorTextureReplacementMapEnabled != textureCacheReplacementMapEnabled) {
++            descriptorTextureVersions.clear();
++            descriptorTextureGlobalVersion = 0;
++            descriptorTextureReplacementMapEnabled = textureCacheReplacementMapEnabled;
++        }
++
++        const uint32_t cacheTextureCount = uint32_t(textureCacheVersions.size());
++        descriptorTextureVersions.resize(cacheTextureCount, 0);
++        indexTextures.resize(cacheTextureCount);
++        if (tmemPoolBytes.size() < (std::max(cacheTextureCount, 1U) * TMEMBytes)) {
++            tmemPoolBytes.resize(std::max(cacheTextureCount, 1U) * TMEMBytes, 0);
++        }
++
++        const uint32_t TMEMPoolRunGap = 16;
++        tmemPoolRuns.clear();
++        if (descriptorTextureGlobalVersion != textureCacheGlobalVersion) {
++            for (uint32_t i = 0; i < cacheTextureCount; i++) {
++                if (textureCacheVersions[i] == descriptorTextureVersions[i]) {
++                    continue;
++                }
++
++                descriptorTextureVersions[i] = textureCacheVersions[i];
++                DrawTexture &indexTexture = indexTextures[i];
++                indexTexture = DrawTexture();
++                const Texture *cacheTexture = textureCacheTextures[i];
++                if (cacheTexture == nullptr) {
++                    continue;
++                }
++
++                if (textureCacheReplacementMapEnabled && (textureCacheTextureReplacements[i] != nullptr)) {
++                    indexTexture.texture = textureCacheTextureReplacements[i]->texture.get();
++                }
++                else if (cacheTexture->texture != nullptr) {
++                    indexTexture.texture = cacheTexture->texture.get();
++                }
++                else {
++                    uint8_t *poolBytes = &tmemPoolBytes[size_t(i) * TMEMBytes];
++                    const size_t byteCount = std::min(cacheTexture->bytesTMEM.size(), size_t(TMEMBytes));
++                    memcpy(poolBytes, cacheTexture->bytesTMEM.data(), byteCount);
++                    memset(poolBytes + byteCount, 0, TMEMBytes - byteCount);
++                    if (!tmemPoolRuns.empty() && (i <= tmemPoolRuns.back().second + TMEMPoolRunGap)) {
++                        tmemPoolRuns.back().second = i + 1;
++                    }
++                    else {
++                        tmemPoolRuns.emplace_back(i, i + 1);
++                    }
++                }
++
++                indexTexture.stamp = ++drawTextureStampCounter;
++            }
++
++            descriptorTextureGlobalVersion = textureCacheGlobalVersion;
++        }
++
++        // The pool must exist to be bound, even with no TMEM in it. A pool made anew (a first or a larger one) gets
++        // everything up to the last change in one upload, which the uploader starts from the pool's first entry.
++        const uint32_t tmemEnd = tmemPoolRuns.empty() ? 1 : tmemPoolRuns.back().second;
++        if ((tmemPoolBuffer.defaultBuffer == nullptr) || (tmemPoolBuffer.allocatedSize < (uint64_t(tmemEnd) * TMEMBytes))) {
++            shaderUploads.push_back({ tmemPoolBytes.data(), { 0, tmemEnd }, TMEMBytes, RenderBufferFlag::STORAGE, { }, &tmemPoolBuffer });
++        }
++        else {
++            for (const std::pair<uint32_t, uint32_t> &run : tmemPoolRuns) {
++                shaderUploads.push_back({ tmemPoolBytes.data(), run, TMEMBytes, RenderBufferFlag::STORAGE, { }, &tmemPoolBuffer });
++            }
++        }
++    }
++
++    // Without descriptor indexing: gives every draw a set with the textures of its tiles, a slot per tile, shared by
++    // the draws that use the same textures and samplers. A slot's sampler is the linear one for the address modes
++    // RasterPS samples that tile with: the draw's nativeSampler0 for slot 0 and nativeSampler1 for the others (with LOD
++    // and the same modes on every tile, both are tile 0's), or with dynamic tiles each tile's own. Sets are kept from one workload to the next and only the slots whose
++    // texture changed are written, since WebGPU makes a new bind group for a set that changed. A slot with no texture
++    // (no tile, a TMEM tile, or a tile past the draw's) gets a blank one, so every set has the same layout.
++    void FramebufferRenderer::updateDrawTextureSets(RenderWorker *worker, const std::vector<interop::GPUTile> &gpuTiles, const std::vector<interop::RDPTile> &rdpTiles) {
++        if (dummyTileTexture == nullptr) {
++            dummyTileTexture = worker->device->createTexture(RenderTextureDesc::Texture2D(1, 1, 1, RenderFormat::R8G8B8A8_UNORM));
++            dummyTileTexture->setName("Framebuffer Renderer Tile Dummy");
++        }
++
++        if (!dummyTileTextureTransitioned) {
++            worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(dummyTileTexture.get(), RenderTextureLayout::SHADER_READ));
++            dummyTileTextureTransitioned = true;
++        }
++
++        if (descTMEMSet == nullptr) {
++            descTMEMSet = std::make_unique<FramebufferRendererDescriptorTMEMSet>(worker->device);
++        }
++
++        if (tmemPoolBufferBound != tmemPoolBuffer.get()) {
++            descTMEMSet->setBuffer(descTMEMSet->gTMEMPool, tmemPoolBuffer.get(), tmemPoolBuffer.allocatedSize);
++            tmemPoolBufferBound = tmemPoolBuffer.get();
++        }
++
++        // Tile copies and render targets are put at an index for this workload only, a free one of the cache's or one
++        // past its end, and may be gone by the next.
++        dynamicIndexTextures.clear();
++        for (const DynamicTextureView &dynamicView : dynamicTextureViewVector) {
++            dynamicIndexTextures[dynamicView.dstIndex] = { dynamicView.texture, dynamicView.textureView, ++drawTextureStampCounter };
++        }
++
++        auto indexTexture = [&](uint32_t textureIndex) -> const DrawTexture * {
++            auto dynamicIt = dynamicIndexTextures.find(textureIndex);
++            if (dynamicIt != dynamicIndexTextures.end()) {
++                return &dynamicIt->second;
++            }
++
++            const bool inCache = (textureIndex < textureCacheTextures.size()) && (textureCacheTextures[textureIndex] != nullptr);
++            if (inCache && (textureIndex < indexTextures.size()) && (indexTextures[textureIndex].texture != nullptr)) {
++                return &indexTextures[textureIndex];
++            }
++
++            return nullptr;
++        };
++
++        const DrawTexture dummyTexture = { dummyTileTexture.get(), nullptr, 0 };
++        const SamplerSet &linear = shaderLibrary->samplerLibrary.linear;
++        const RenderSampler *nativeSamplers[] = {
++            linear.clampClamp.get(), // NATIVE_SAMPLER_NONE, which is sampled another way.
++            linear.wrapWrap.get(), linear.wrapMirror.get(), linear.wrapClamp.get(),
++            linear.mirrorWrap.get(), linear.mirrorMirror.get(), linear.mirrorClamp.get(),
++            linear.clampWrap.get(), linear.clampMirror.get(), linear.clampClamp.get()
++        };
++
++        const uint32_t TileCount = FramebufferRendererDescriptorDrawTextureSet::TileCount;
++        const uint32_t drawCount = uint32_t(std::min(instanceDrawCallVector.size(), renderIndicesVector.size()));
++        uint32_t setCount = 0;
++        drawTextureSetMap.clear();
++        drawTextureSetIndices.assign(instanceDrawCallVector.size(), 0);
++        for (uint32_t i = 0; i < drawCount; i++) {
++            switch (instanceDrawCallVector[i].type) {
++            case InstanceDrawCall::Type::IndexedTriangles:
++            case InstanceDrawCall::Type::RawTriangles:
++            case InstanceDrawCall::Type::RegularRect:
++                break;
++            default:
++                continue;
++            }
++
++            std::array<DrawTexture, TileCount> drawTextures;
++            std::array<uint32_t, TileCount> drawSamplers;
++            DrawTextureStamps drawStamps;
++            const interop::RenderIndices &renderIndices = renderIndicesVector[i];
++            const interop::RenderFlags &flags = instanceDrawCallVector[i].triangles.shaderDesc.flags;
++            for (uint32_t t = 0; t < TileCount; t++) {
++                const uint32_t tileIndex = renderIndices.rdpTileIndex + t;
++                drawTextures[t] = dummyTexture;
++                if ((t < renderIndices.rdpTileCount) && (tileIndex < gpuTiles.size())) {
++                    const DrawTexture *tileTexture = indexTexture(gpuTiles[tileIndex].textureIndex);
++                    if (tileTexture != nullptr) {
++                        drawTextures[t] = *tileTexture;
++                    }
++                }
++
++                uint32_t nativeSampler = (t == 0) ? flags.nativeSampler0 : flags.nativeSampler1;
++                if (flags.dynamicTiles) {
++                    const bool tileUsed = (t < renderIndices.rdpTileCount) && (tileIndex < rdpTiles.size());
++                    nativeSampler = tileUsed ? rdpTiles[tileIndex].nativeSampler : NATIVE_SAMPLER_NONE;
++                }
++
++                drawSamplers[t] = (nativeSampler <= NATIVE_SAMPLER_CLAMP_CLAMP) ? nativeSampler : NATIVE_SAMPLER_NONE;
++                drawStamps[t] = (drawTextures[t].stamp << 4) | drawSamplers[t];
++            }
++
++            auto it = drawTextureSetMap.find(drawStamps);
++            if (it != drawTextureSetMap.end()) {
++                drawTextureSetIndices[i] = it->second;
++                continue;
++            }
++
++            if (setCount == drawTextureSets.size()) {
++                drawTextureSets.emplace_back(std::make_unique<FramebufferRendererDescriptorDrawTextureSet>(worker->device));
++                DrawTextureStamps unwrittenStamps;
++                unwrittenStamps.fill(UINT64_MAX);
++                drawTextureSetStamps.emplace_back(unwrittenStamps);
++            }
++
++            FramebufferRendererDescriptorDrawTextureSet *drawTextureSet = drawTextureSets[setCount].get();
++            DrawTextureStamps &setStamps = drawTextureSetStamps[setCount];
++            for (uint32_t t = 0; t < TileCount; t++) {
++                if (setStamps[t] != drawStamps[t]) {
++                    drawTextureSet->setTexture(drawTextureSet->gTileTextures[t], drawTextures[t].texture, RenderTextureLayout::SHADER_READ, drawTextures[t].textureView);
++                    drawTextureSet->setSampler(drawTextureSet->gTileSamplers[t], nativeSamplers[drawSamplers[t]]);
++                    setStamps[t] = drawStamps[t];
++                }
++            }
++
++            drawTextureSetMap.emplace(drawStamps, setCount);
++            drawTextureSetIndices[i] = setCount++;
++        }
++    }
++
++    void FramebufferRenderer::endFramebuffers(RenderWorker *worker, const DrawBuffers *drawBuffers, const OutputBuffers *outputBuffers, const std::vector<interop::GPUTile> &gpuTiles, const std::vector<interop::RDPTile> &rdpTiles, bool rtEnabled) {
+         bool shaderViewRtEnabled = false;
+         std::vector<BufferUploader::Upload> shaderUploads = {
+             { renderIndicesVector.data(), { 0, renderIndicesVector.size() }, sizeof(interop::RenderIndices), RenderBufferFlag::STORAGE, { }, &renderIndicesBuffer},
+@@ -3491,8 +3787,16 @@ namespace RT64 {
+         }
+ #   endif
+ 
++        if (usePerDrawTextures) {
++            updateIndexTextures(shaderUploads);
++        }
++
+         shaderUploader->submit(worker, shaderUploads);
+         updateShaderViews(worker, drawBuffers, outputBuffers, shaderViewRtEnabled);
++
++        if (usePerDrawTextures) {
++            updateDrawTextureSets(worker, gpuTiles, rdpTiles);
++        }
+     }
+ 
+     void FramebufferRenderer::advanceFrame(bool rtEnabled) {
 diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.cpp
 index 3fb62bb..930f474 100644
 --- a/src/render/rt64_raster_shader.cpp
@@ -3530,10 +4011,10 @@ index 2e33dae..4326213 100644
          RasterShader *getGPUShader(const ShaderDescription &desc);
          RasterShaderUber *getGPUShaderUber() const;
 diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library.cpp
-index e2acd4d..604e2a2 100644
+index c594fa8..2292410 100644
 --- a/src/render/rt64_shader_library.cpp
 +++ b/src/render/rt64_shader_library.cpp
-@@ -4,64 +4,123 @@
+@@ -4,6 +4,9 @@
  
  #include "rt64_shader_library.h"
  
@@ -3543,6 +4024,7 @@ index e2acd4d..604e2a2 100644
  #include "common/rt64_common.h"
  #include "shared/rt64_ambient_occlusion.h"
  #include "shared/rt64_sky_fog.h"
+@@ -11,65 +14,128 @@
  #include "shared/rt64_render_target_copy.h"
  #include "shared/rt64_rsp_vertex_test_z.h"
  
@@ -3590,11 +4072,18 @@ index e2acd4d..604e2a2 100644
 -#include "shaders/AmbientOcclusionPS.hlsl.spirv.h"
 -#include "shaders/AmbientOcclusionPSMS.hlsl.spirv.h"
 -#include "shaders/AmbientOcclusionApplyPS.hlsl.spirv.h"
+-#include "shaders/AmbientOcclusionApplyPSMS.hlsl.spirv.h"
 -#include "shaders/CarReflectionCS.hlsl.spirv.h"
 -#include "shaders/CarReflectionVS.hlsl.spirv.h"
 -#include "shaders/CarReflectionPS.hlsl.spirv.h"
 -#include "shaders/SkyFogPS.hlsl.spirv.h"
 -#include "shaders/SkyFogPSMS.hlsl.spirv.h"
+-#include "shaders/CarLightPS.hlsl.spirv.h"
+-#include "shaders/CarLightPSMS.hlsl.spirv.h"
+-#include "shaders/CarGlowPS.hlsl.spirv.h"
+-#include "shaders/CarGlowPSMS.hlsl.spirv.h"
+-#include "shaders/CarLightCompositePS.hlsl.spirv.h"
+-#include "shaders/CarLightCompositePSMS.hlsl.spirv.h"
 -#include "shaders/DebugPS.hlsl.spirv.h"
 -#include "shaders/Im3DPS.hlsl.spirv.h"
 -#include "shaders/PostProcessPS.hlsl.spirv.h"
@@ -3643,11 +4132,18 @@ index e2acd4d..604e2a2 100644
 +#   include "shaders/AmbientOcclusionPS.hlsl.wgsl.h"
 +#   include "shaders/AmbientOcclusionPSMS.hlsl.wgsl.h"
 +#   include "shaders/AmbientOcclusionApplyPS.hlsl.wgsl.h"
++#   include "shaders/AmbientOcclusionApplyPSMS.hlsl.wgsl.h"
 +#   include "shaders/CarReflectionCS.hlsl.wgsl.h"
 +#   include "shaders/CarReflectionVS.hlsl.wgsl.h"
 +#   include "shaders/CarReflectionPS.hlsl.wgsl.h"
 +#   include "shaders/SkyFogPS.hlsl.wgsl.h"
 +#   include "shaders/SkyFogPSMS.hlsl.wgsl.h"
++#   include "shaders/CarLightPS.hlsl.wgsl.h"
++#   include "shaders/CarLightPSMS.hlsl.wgsl.h"
++#   include "shaders/CarGlowPS.hlsl.wgsl.h"
++#   include "shaders/CarGlowPSMS.hlsl.wgsl.h"
++#   include "shaders/CarLightCompositePS.hlsl.wgsl.h"
++#   include "shaders/CarLightCompositePSMS.hlsl.wgsl.h"
 +#   include "shaders/DebugPS.hlsl.wgsl.h"
 +#   include "shaders/Im3DPS.hlsl.wgsl.h"
 +#   include "shaders/PostProcessPS.hlsl.wgsl.h"
@@ -3696,11 +4192,18 @@ index e2acd4d..604e2a2 100644
 +#   include "shaders/AmbientOcclusionPS.hlsl.spirv.h"
 +#   include "shaders/AmbientOcclusionPSMS.hlsl.spirv.h"
 +#   include "shaders/AmbientOcclusionApplyPS.hlsl.spirv.h"
++#   include "shaders/AmbientOcclusionApplyPSMS.hlsl.spirv.h"
 +#   include "shaders/CarReflectionCS.hlsl.spirv.h"
 +#   include "shaders/CarReflectionVS.hlsl.spirv.h"
 +#   include "shaders/CarReflectionPS.hlsl.spirv.h"
 +#   include "shaders/SkyFogPS.hlsl.spirv.h"
 +#   include "shaders/SkyFogPSMS.hlsl.spirv.h"
++#   include "shaders/CarLightPS.hlsl.spirv.h"
++#   include "shaders/CarLightPSMS.hlsl.spirv.h"
++#   include "shaders/CarGlowPS.hlsl.spirv.h"
++#   include "shaders/CarGlowPSMS.hlsl.spirv.h"
++#   include "shaders/CarLightCompositePS.hlsl.spirv.h"
++#   include "shaders/CarLightCompositePSMS.hlsl.spirv.h"
 +#   include "shaders/DebugPS.hlsl.spirv.h"
 +#   include "shaders/DebugPSPerDraw.hlsl.spirv.h"
 +#   include "shaders/Im3DPS.hlsl.spirv.h"
@@ -3709,7 +4212,7 @@ index e2acd4d..604e2a2 100644
  
  #ifdef _WIN32
  #   include "shaders/FbChangesClearCS.hlsl.dxil.h"
-@@ -180,22 +239,30 @@
+@@ -202,22 +268,30 @@
  #include "rt64_descriptor_sets.h"
  #include "rt64_render_target.h"
  
@@ -3750,7 +4253,7 @@ index e2acd4d..604e2a2 100644
          ENTRY_NAME,\
          SHADER_FORMAT
  #endif
-@@ -221,7 +288,7 @@ namespace RT64 {
+@@ -243,7 +317,7 @@ namespace RT64 {
          RenderPipelineLayoutBuilder layoutBuilder;
  
          // Create shaders shared across all pipelines.
@@ -3759,7 +4262,7 @@ index e2acd4d..604e2a2 100644
          
          auto fillSamplerSet = [&](SamplerSet &set, RenderFilter filter, bool anisotropyEnabled) {
              RenderSamplerDesc samplerDesc;
-@@ -290,7 +357,7 @@ namespace RT64 {
+@@ -312,7 +386,7 @@ namespace RT64 {
              layoutBuilder.end();
              bicubicScaling.pipelineLayout = layoutBuilder.create(device);
              
@@ -3768,7 +4271,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(bicubicScaling.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              bicubicScaling.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -304,7 +371,7 @@ namespace RT64 {
+@@ -326,7 +400,7 @@ namespace RT64 {
              layoutBuilder.end();
              boxFilter.pipelineLayout = layoutBuilder.create(device);
  
@@ -3777,7 +4280,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(boxFilter.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              boxFilter.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -317,7 +384,7 @@ namespace RT64 {
+@@ -339,7 +413,7 @@ namespace RT64 {
              layoutBuilder.end();
              compose.pipelineLayout = layoutBuilder.create(device);
  
@@ -3786,7 +4289,7 @@ index e2acd4d..604e2a2 100644
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.pipelineLayout = compose.pipelineLayout.get();
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::AlphaBlend();
-@@ -377,7 +444,7 @@ namespace RT64 {
+@@ -399,7 +473,7 @@ namespace RT64 {
              layoutBuilder.end();
              idle.pipelineLayout = layoutBuilder.create(device);
  
@@ -3795,7 +4298,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(idle.pipelineLayout.get(), computeShader.get(), 1, 1, 1);
              idle.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -390,7 +457,7 @@ namespace RT64 {
+@@ -412,7 +486,7 @@ namespace RT64 {
              layoutBuilder.end();
              fbChangesClear.pipelineLayout = layoutBuilder.create(device);
  
@@ -3804,7 +4307,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(fbChangesClear.pipelineLayout.get(), computeShader.get(), 1, 1, 1);
              fbChangesClear.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -407,10 +474,10 @@ namespace RT64 {
+@@ -429,10 +503,10 @@ namespace RT64 {
              fbReadAnyChanges.pipelineLayout = layoutBuilder.create(device);
              fbReadAnyFull.pipelineLayout = layoutBuilder.create(device);
  
@@ -3817,7 +4320,7 @@ index e2acd4d..604e2a2 100644
              fbReadAnyFull.pipeline = device->createComputePipeline(RenderComputePipelineDesc(fbReadAnyFull.pipelineLayout.get(), fullShader.get(), 8, 8, 1));
          }
  
-@@ -423,7 +490,7 @@ namespace RT64 {
+@@ -445,7 +519,7 @@ namespace RT64 {
              layoutBuilder.end();
              fbReinterpret.pipelineLayout = layoutBuilder.create(device);
  
@@ -3826,7 +4329,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(fbReinterpret.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              fbReinterpret.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -441,13 +508,13 @@ namespace RT64 {
+@@ -463,13 +537,13 @@ namespace RT64 {
              fbWriteDepth.pipelineLayout = layoutBuilder.create(device);
              fbWriteDepthMS.pipelineLayout = layoutBuilder.create(device);
  
@@ -3843,7 +4346,7 @@ index e2acd4d..604e2a2 100644
              fbWriteDepthMS.pipeline = device->createComputePipeline(RenderComputePipelineDesc(fbWriteDepthMS.pipelineLayout.get(), depthShaderMS.get(), 8, 8, 1));
          }
  
-@@ -460,7 +527,7 @@ namespace RT64 {
+@@ -482,7 +556,7 @@ namespace RT64 {
              layoutBuilder.end();
              gaussianFilterRGB3x3.pipelineLayout = layoutBuilder.create(device);
  
@@ -3852,7 +4355,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(gaussianFilterRGB3x3.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              gaussianFilterRGB3x3.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -474,7 +541,7 @@ namespace RT64 {
+@@ -496,7 +570,7 @@ namespace RT64 {
              layoutBuilder.end();
              histogramAverage.pipelineLayout = layoutBuilder.create(device);
  
@@ -3861,7 +4364,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(histogramAverage.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              histogramAverage.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -487,7 +554,7 @@ namespace RT64 {
+@@ -509,7 +583,7 @@ namespace RT64 {
              layoutBuilder.end();
              histogramClear.pipelineLayout = layoutBuilder.create(device);
  
@@ -3870,7 +4373,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(histogramClear.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              histogramClear.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -501,7 +568,7 @@ namespace RT64 {
+@@ -523,7 +597,7 @@ namespace RT64 {
              layoutBuilder.end();
              histogramSet.pipelineLayout = layoutBuilder.create(device);
  
@@ -3879,7 +4382,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(histogramSet.pipelineLayout.get(), computeShader.get(), 1, 1, 1);
              histogramSet.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -515,7 +582,7 @@ namespace RT64 {
+@@ -537,7 +611,7 @@ namespace RT64 {
              layoutBuilder.end();
              luminanceHistogram.pipelineLayout = layoutBuilder.create(device);
  
@@ -3888,7 +4391,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(luminanceHistogram.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
              luminanceHistogram.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -529,7 +596,7 @@ namespace RT64 {
+@@ -551,7 +625,7 @@ namespace RT64 {
              layoutBuilder.end();
              rspModify.pipelineLayout = layoutBuilder.create(device);
  
@@ -3897,7 +4400,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(rspModify.pipelineLayout.get(), computeShader.get(), 64, 1, 1);
              rspModify.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -538,12 +605,12 @@ namespace RT64 {
+@@ -560,12 +634,12 @@ namespace RT64 {
          {
              RSPProcessDescriptorSet descriptorSet;
              layoutBuilder.begin();
@@ -3912,7 +4415,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(rspProcess.pipelineLayout.get(), computeShader.get(), 64, 1, 1);
              rspProcess.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -557,7 +624,7 @@ namespace RT64 {
+@@ -579,7 +653,7 @@ namespace RT64 {
              layoutBuilder.end();
              rspSmoothNormal.pipelineLayout = layoutBuilder.create(device);
  
@@ -3921,7 +4424,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(rspSmoothNormal.pipelineLayout.get(), computeShader.get(), 64, 1, 1);
              rspSmoothNormal.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -571,7 +638,7 @@ namespace RT64 {
+@@ -593,7 +667,7 @@ namespace RT64 {
              layoutBuilder.end();
              carReflection.pipelineLayout = layoutBuilder.create(device);
  
@@ -3930,7 +4433,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(carReflection.pipelineLayout.get(), computeShader.get(), 64, 1, 1);
              carReflection.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -580,12 +647,12 @@ namespace RT64 {
+@@ -602,12 +676,12 @@ namespace RT64 {
          {
              RSPWorldDescriptorSet descriptorSet;
              layoutBuilder.begin();
@@ -3945,7 +4448,7 @@ index e2acd4d..604e2a2 100644
              RenderComputePipelineDesc pipelineDesc(rspWorld.pipelineLayout.get(), computeShader.get(), 64, 1, 1);
              rspWorld.pipeline = device->createComputePipeline(pipelineDesc);
          }
-@@ -599,7 +666,7 @@ namespace RT64 {
+@@ -621,7 +695,7 @@ namespace RT64 {
              layoutBuilder.end();
              textureCopy.pipelineLayout = layoutBuilder.create(device);
  
@@ -3954,7 +4457,7 @@ index e2acd4d..604e2a2 100644
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.pipelineLayout = textureCopy.pipelineLayout.get();
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
-@@ -619,15 +686,15 @@ namespace RT64 {
+@@ -641,15 +715,15 @@ namespace RT64 {
              layoutBuilder.end();
              textureDecode.pipelineLayout = layoutBuilder.create(device);
  
@@ -3973,7 +4476,7 @@ index e2acd4d..604e2a2 100644
  
              VideoInterfaceDescriptorSet nearestDescriptorSet(samplerLibrary.nearest.borderBorder.get());
              VideoInterfaceDescriptorSet linearDescriptorSet(samplerLibrary.linear.borderBorder.get());
-@@ -640,7 +707,7 @@ namespace RT64 {
+@@ -662,7 +736,7 @@ namespace RT64 {
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.vertexShader = fullScreenVertexShader.get();
              pipelineDesc.pixelShader = regularShader.get();
@@ -3982,7 +4485,7 @@ index e2acd4d..604e2a2 100644
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
              pipelineDesc.renderTargetCount = 1;
              pipelineDesc.pipelineLayout = videoInterfaceNearest.pipelineLayout.get();
-@@ -673,7 +740,7 @@ namespace RT64 {
+@@ -695,7 +769,7 @@ namespace RT64 {
          RenderPipelineLayoutBuilder layoutBuilder;
  
          // Create shaders shared across all pipelines.
@@ -3991,7 +4494,7 @@ index e2acd4d..604e2a2 100644
  
          // Select shader blobs based on sample count.
          const void *TextureResolvePSBlob = nullptr;
-@@ -758,6 +825,41 @@ namespace RT64 {
+@@ -780,6 +854,41 @@ namespace RT64 {
          }
          else
  #   endif
@@ -4033,7 +4536,7 @@ index e2acd4d..604e2a2 100644
          if (shaderFormat == RenderShaderFormat::SPIRV) {
              RtCopyDepthToColorPSBlob = RtCopyDepthToColorPSBlobSPIRV;
              RtCopyDepthToColorPSBlobSize = std::size(RtCopyDepthToColorPSBlobSPIRV);
-@@ -791,6 +893,7 @@ namespace RT64 {
+@@ -813,6 +922,7 @@ namespace RT64 {
                  break;
              }
          }
@@ -4041,7 +4544,7 @@ index e2acd4d..604e2a2 100644
          else {
              assert(false && "Unknown shader format.");
          }
-@@ -805,7 +908,7 @@ namespace RT64 {
+@@ -827,7 +937,7 @@ namespace RT64 {
              fbChangesDrawColor.pipelineLayout = layoutBuilder.create(device);
              fbChangesDrawDepth.pipelineLayout = layoutBuilder.create(device);
  
@@ -4050,7 +4553,7 @@ index e2acd4d..604e2a2 100644
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.pipelineLayout = fbChangesDrawColor.pipelineLayout.get();
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
-@@ -816,13 +919,13 @@ namespace RT64 {
+@@ -838,13 +948,13 @@ namespace RT64 {
              pipelineDesc.multisampling = multisampling;
              fbChangesDrawColor.pipeline = device->createGraphicsPipeline(pipelineDesc);
  
@@ -4066,7 +4569,7 @@ index e2acd4d..604e2a2 100644
              fbChangesDrawDepth.pipeline = device->createGraphicsPipeline(pipelineDesc);
          }
  
-@@ -859,7 +962,7 @@ namespace RT64 {
+@@ -881,7 +991,7 @@ namespace RT64 {
              pipelineDesc.depthEnabled = true;
              pipelineDesc.depthFunction = RenderComparisonFunction::ALWAYS;
              pipelineDesc.depthWriteEnabled = true;
@@ -4075,7 +4578,7 @@ index e2acd4d..604e2a2 100644
              pipelineDesc.pipelineLayout = rtCopyColorToDepth.pipelineLayout.get();
              pipelineDesc.pixelShader = colorToDepthShader.get();
              pipelineDesc.multisampling = RenderMultisampling();
-@@ -881,7 +984,7 @@ namespace RT64 {
+@@ -903,7 +1013,7 @@ namespace RT64 {
              layoutBuilder.end();
              postProcess.pipelineLayout = layoutBuilder.create(device);
  
@@ -4084,20 +4587,22 @@ index e2acd4d..604e2a2 100644
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.pipelineLayout = postProcess.pipelineLayout.get();
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::AlphaBlend();
-@@ -905,9 +1008,9 @@ namespace RT64 {
-             ambientOcclusionMS.pipelineLayout = layoutBuilder.create(device);
+@@ -935,10 +1045,10 @@ namespace RT64 {
              ambientOcclusionApply.pipelineLayout = layoutBuilder.create(device);
+             ambientOcclusionApplyMS.pipelineLayout = layoutBuilder.create(device);
  
 -            std::unique_ptr<RenderShader> occlusionShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionPSBlobDXIL, AmbientOcclusionPSBlobSPIRV, AmbientOcclusionPSBlobMSL, "PSMain", shaderFormat));
 -            std::unique_ptr<RenderShader> occlusionMSShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionPSMSBlobDXIL, AmbientOcclusionPSMSBlobSPIRV, AmbientOcclusionPSMSBlobMSL, "PSMain", shaderFormat));
 -            std::unique_ptr<RenderShader> applyShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionApplyPSBlobDXIL, AmbientOcclusionApplyPSBlobSPIRV, AmbientOcclusionApplyPSBlobMSL, "PSMain", shaderFormat));
+-            std::unique_ptr<RenderShader> applyMSShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionApplyPSMSBlobDXIL, AmbientOcclusionApplyPSMSBlobSPIRV, AmbientOcclusionApplyPSMSBlobMSL, "PSMain", shaderFormat));
 +            std::unique_ptr<RenderShader> occlusionShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionPS, "PSMain", shaderFormat));
 +            std::unique_ptr<RenderShader> occlusionMSShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionPSMS, "PSMain", shaderFormat));
 +            std::unique_ptr<RenderShader> applyShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionApplyPS, "PSMain", shaderFormat));
++            std::unique_ptr<RenderShader> applyMSShader = device->createShader(CREATE_SHADER_INPUTS(AmbientOcclusionApplyPSMS, "PSMain", shaderFormat));
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
              pipelineDesc.renderTargetFormat[0] = RenderFormat::R16G16_FLOAT;
-@@ -949,8 +1052,8 @@ namespace RT64 {
+@@ -984,8 +1094,8 @@ namespace RT64 {
              skyFog.pipelineLayout = layoutBuilder.create(device);
              skyFogMS.pipelineLayout = layoutBuilder.create(device);
  
@@ -4108,7 +4613,33 @@ index e2acd4d..604e2a2 100644
              RenderBlendDesc fogBlend;
              fogBlend.blendEnabled = true;
              fogBlend.srcBlend = RenderBlend::SRC_ALPHA;
-@@ -997,8 +1100,8 @@ namespace RT64 {
+@@ -1025,10 +1135,10 @@ namespace RT64 {
+             carGlow.pipelineLayout = layoutBuilder.create(device);
+             carGlowMS.pipelineLayout = layoutBuilder.create(device);
+ 
+-            std::unique_ptr<RenderShader> carLightShader = device->createShader(CREATE_SHADER_INPUTS(CarLightPSBlobDXIL, CarLightPSBlobSPIRV, CarLightPSBlobMSL, "PSMain", shaderFormat));
+-            std::unique_ptr<RenderShader> carLightMSShader = device->createShader(CREATE_SHADER_INPUTS(CarLightPSMSBlobDXIL, CarLightPSMSBlobSPIRV, CarLightPSMSBlobMSL, "PSMain", shaderFormat));
+-            std::unique_ptr<RenderShader> carGlowShader = device->createShader(CREATE_SHADER_INPUTS(CarGlowPSBlobDXIL, CarGlowPSBlobSPIRV, CarGlowPSBlobMSL, "PSMain", shaderFormat));
+-            std::unique_ptr<RenderShader> carGlowMSShader = device->createShader(CREATE_SHADER_INPUTS(CarGlowPSMSBlobDXIL, CarGlowPSMSBlobSPIRV, CarGlowPSMSBlobMSL, "PSMain", shaderFormat));
++            std::unique_ptr<RenderShader> carLightShader = device->createShader(CREATE_SHADER_INPUTS(CarLightPS, "PSMain", shaderFormat));
++            std::unique_ptr<RenderShader> carLightMSShader = device->createShader(CREATE_SHADER_INPUTS(CarLightPSMS, "PSMain", shaderFormat));
++            std::unique_ptr<RenderShader> carGlowShader = device->createShader(CREATE_SHADER_INPUTS(CarGlowPS, "PSMain", shaderFormat));
++            std::unique_ptr<RenderShader> carGlowMSShader = device->createShader(CREATE_SHADER_INPUTS(CarGlowPSMS, "PSMain", shaderFormat));
+             RenderBlendDesc addBlend;
+             addBlend.blendEnabled = true;
+             addBlend.srcBlend = RenderBlend::ONE;
+@@ -1070,8 +1180,8 @@ namespace RT64 {
+ 
+             const bool compositeMS = (multisampling.sampleCount > 1);
+             std::unique_ptr<RenderShader> compositeShader = compositeMS ?
+-                device->createShader(CREATE_SHADER_INPUTS(CarLightCompositePSMSBlobDXIL, CarLightCompositePSMSBlobSPIRV, CarLightCompositePSMSBlobMSL, "PSMain", shaderFormat)) :
+-                device->createShader(CREATE_SHADER_INPUTS(CarLightCompositePSBlobDXIL, CarLightCompositePSBlobSPIRV, CarLightCompositePSBlobMSL, "PSMain", shaderFormat));
++                device->createShader(CREATE_SHADER_INPUTS(CarLightCompositePSMS, "PSMain", shaderFormat)) :
++                device->createShader(CREATE_SHADER_INPUTS(CarLightCompositePS, "PSMain", shaderFormat));
+             RenderBlendDesc noBlend = RenderBlendDesc::Copy();
+             noBlend.renderTargetWriteMask = uint8_t(RenderColorWriteEnable::RED) | uint8_t(RenderColorWriteEnable::GREEN) | uint8_t(RenderColorWriteEnable::BLUE);
+             RenderGraphicsPipelineDesc pipelineDesc;
+@@ -1107,8 +1217,8 @@ namespace RT64 {
                  RenderInputElement("TEXCOORD", 1, 2, RenderFormat::R32G32B32A32_FLOAT, 2, 0)
              };
  
@@ -4119,7 +4650,7 @@ index e2acd4d..604e2a2 100644
              RenderBlendDesc alphaBlend;
              alphaBlend.blendEnabled = true;
              alphaBlend.srcBlend = RenderBlend::SRC_ALPHA;
-@@ -1032,17 +1135,25 @@ namespace RT64 {
+@@ -1142,17 +1252,25 @@ namespace RT64 {
          // Raytracing debug.
          {
              FramebufferRendererDescriptorCommonSet descriptorCommonSet(samplerLibrary, deviceCapabilities.raytracing);
@@ -4149,7 +4680,7 @@ index e2acd4d..604e2a2 100644
              RenderGraphicsPipelineDesc pipelineDesc;
              pipelineDesc.pipelineLayout = debug.pipelineLayout.get();
              pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::AlphaBlend();
-@@ -1066,10 +1177,10 @@ namespace RT64 {
+@@ -1176,10 +1294,10 @@ namespace RT64 {
              rspVertexTestZ.pipelineLayout = layoutBuilder.create(device);
              rspVertexTestZMS.pipelineLayout = layoutBuilder.create(device);
  
@@ -4163,7 +4694,7 @@ index e2acd4d..604e2a2 100644
          }
  
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
-index bb0b3f5..f43c122 100644
+index f0df2b3..d8d4685 100644
 --- a/src/render/rt64_texture_cache.cpp
 +++ b/src/render/rt64_texture_cache.cpp
 @@ -450,14 +450,17 @@ namespace RT64 {
@@ -4210,7 +4741,7 @@ index bb0b3f5..f43c122 100644
          // Wait for the streaming threads to be finished.
          waitForAllStreamThreads(true);
  
-@@ -2285,6 +2297,8 @@ namespace RT64 {
+@@ -2303,6 +2315,8 @@ namespace RT64 {
      }
  
      bool TextureCache::applyReplacementDirectories(std::unique_ptr<PreparedReplacements> p, bool waitForPreloads) {
@@ -4220,7 +4751,7 @@ index bb0b3f5..f43c122 100644
          if ((p == nullptr) || !p->valid) {
              return false;
 diff --git a/src/shaders/RasterPS.hlsl b/src/shaders/RasterPS.hlsl
-index d107485..d54b19d 100644
+index 03b2dc5..70ea2ae 100644
 --- a/src/shaders/RasterPS.hlsl
 +++ b/src/shaders/RasterPS.hlsl
 @@ -5,6 +5,7 @@
@@ -4471,7 +5002,7 @@ index d107485..d54b19d 100644
      // Color combiner.
      float4 shadeColor = vertexColor;
      float4 combinerColor;
-@@ -302,8 +423,16 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
+@@ -320,8 +441,16 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
          resultColor.a = resultCvg;
      }
      
@@ -4489,7 +5020,7 @@ index d107485..d54b19d 100644
      if (highlightColorUint > 0) {
          float4 highlightColor = RGBA32ToFloat4(highlightColorUint);
          resultColor = lerp(resultColor, highlightColor, highlightColor.a);
-@@ -320,7 +449,7 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
+@@ -338,7 +467,7 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
  
  #if defined(DYNAMIC_RENDER_PARAMS)
  RenderParams getRenderParams() {
@@ -4498,7 +5029,7 @@ index d107485..d54b19d 100644
      return DynamicRenderParams[instanceIndex];
  }
  #elif defined(SPEC_CONSTANT_RENDER_PARAMS)
-@@ -335,19 +464,32 @@ void PSMain(
+@@ -353,19 +482,32 @@ void PSMain(
  #if defined(DYNAMIC_RENDER_PARAMS) || defined(VERTEX_FLAT_COLOR)
      , nointerpolation in float4 vertexFlatColor : COLOR1
  #endif
@@ -4533,7 +5064,7 @@ index d107485..d54b19d 100644
  #if !defined(DYNAMIC_RENDER_PARAMS)
  #if !defined(VERTEX_FLAT_COLOR)
      float4 vertexFlatColor = 0.0f;
-@@ -363,8 +505,16 @@ void PSMain(
+@@ -381,8 +523,16 @@ void PSMain(
      }
  
      pixelColor = resultColor;
@@ -4972,3 +5503,46 @@ index 844f11c..ecab072 100644
  #else
      textureSamples[0] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[0], usesHDR);
      
+diff --git a/src/shared/rt64_raster_params.h b/src/shared/rt64_raster_params.h
+index 81e3912..b0c304c 100644
+--- a/src/shared/rt64_raster_params.h
++++ b/src/shared/rt64_raster_params.h
+@@ -6,12 +6,25 @@
+ 
+ #include "shared/rt64_hlsl.h"
+ 
++// A WGSL build gives each raster draw its index into instanceRenderIndices as the draw's first instance, which RasterVS
++// reads as SV_InstanceID (WGSL's instance_index counts from it) and hands the pixel shaders as a flat varying
++// (RasterRenderIndex.hlsli), and leaves renderIndex 0: the push constants are then the same block draw after draw, which
++// plume's WebGPU backend binds once in a pass, where a block a draw was a slot of its ring and a setBindGroup on the
++// page's thread each. Defined here, beside the block, so that the renderer and the shaders follow the same header: a
++// build with its own copy of this file draws by renderIndex in both.
++#if (defined(HLSL_CPU) && defined(RT64_WGSL)) || (!defined(HLSL_CPU) && defined(WEBGPU))
++#   define RT64_RENDER_INDEX_BY_INSTANCE
++#endif
++
+ #ifdef HLSL_CPU
+ namespace interop {
+ #endif
+     struct RasterParams {
+         uint renderIndex;
+-        uint3 padding;
++        // Three words, not a uint3: WGSL starts a vec3 on 16 bytes, which would move what follows it.
++        uint padding0;
++        uint padding1;
++        uint padding2;
+         float2 screenScale;
+         float2 screenOffset;
+         // Rush 2 recomp: a particle's car light (gEXSetParticleLight): rgb the light it scatters (already eased, as
+@@ -19,6 +32,10 @@ namespace interop {
+         // every other draw.
+         float4 particleLight;
+     };
++#ifdef HLSL_CPU
++    // Rush 2 recomp: 48 with its particleLight, which starts on 16 bytes as WGSL starts a vec4.
++    static_assert(sizeof(RasterParams) == 48, "RasterParams must keep the layout WGSL gives it.");
++#endif
+ #ifdef HLSL_CPU
+ };
+ #endif
+\ No newline at end of file

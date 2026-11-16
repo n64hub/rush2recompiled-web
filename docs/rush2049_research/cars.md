@@ -151,13 +151,28 @@ Rims + 2049's rims (file 81). Rush 2 cars keep their stock rows and values. Choi
 ## 8. Implementation [V]
 
 - **Types.** The 2049 cars are Rush 2 types 23-35 (type 22 stays Rush 2's "no car" marker). The 22-entry per-type
-  tables (§2) and the per-type box tables move to copies for every type at 0x80200000.. (73 types with California
-  Speed's 36-56, docs/calspeed_research.md#7-cars, and the mod cars' 57-72, docs/car_mods.md#new-cars; the layout is
+  tables (§2) and the per-type box tables move to copies for every type at 0x80200000.. (121 types with California
+  Speed's 36-56, docs/calspeed_research.md#7-cars, and the mod cars' 57-120, docs/car_mods.md#new-cars; the layout is
   `include/car_types.h`, and `tools/rush2049/cartypes.py` generates the matching us.toml patches); preview ids become
-  player * 73 + type, so the race/preview per-car arrays move to 146-entry copies in two windows (from 0x80208000,
-  and the ones that don't fit from 0x8022A000). A fill loop that steps a pointer to an
+  player * 121 + type, so the race/preview per-car arrays move to 242-entry copies (about 134 KB) from 0x80178000, in
+  the RDRAM the game heap left when it moved (0x80170CC0-0x80200000, src/assets.cpp; a RAM dump of a 4-player race
+  showed nothing else there). Code addresses only each array's first 8 entries (the race cars), so an array starts
+  where those share one lui value. The car select's carousel is 0x1010 bytes a player (0x18 a car), the physics
+  descriptor pointers (0x80219200) have room for 112, and each player record's side slot holds 99 types' 13-byte
+  option blocks (0x510 bytes). Types stay below 128 (the game reads a type as a byte, often `lb`), and preview ids
+  (up to 241) are read unsigned. A fill loop that steps a pointer to an
   end (bne) needs that end a whole step from its start: cartypes.py rounds it up (func_8008A1FC's part-handle clear
   steps 8 bytes).
+- **The car select's part matrices are per preview id too.** On the car select (game state 2),
+  `race_scene_load_assets_8008A1FC` takes one matrix from the scene matrix pool (0x800EBE40, 0x30 each, count
+  0x80111878) and stores it at 0x8011921C; `scene_node_new_with_matrix_ex_80085ED8` then gives a preview car's part
+  matrix k at *0x8011921C + (id x 8 + k) x 0x30 (0x180 bytes an id; `car_build_scene_nodes_80085FD0` uses it for the
+  wheels, the car select's wheel placer `car_preview_copy_matrices_800878C8` scales them). Rush 2's 44 ids fit;
+  242 put ids 160 and up past 0x800FAE58, so building one (player panel 1, type 39 or later: the 486SE's neighbor)
+  wrote its wheel scale over the scene node count 0x800FAE58 and the world polygon count 0x800FAEF0, and
+  `view_fog_setup_8007C624` then drew thousands of garbage polygons and crashed (issue 67, from 1.0.53's 16 -> 64 mod
+  cars). The hook at 0x8008A2D4 (`rush2_preview_matrix_base`) points 0x8011921C at their own 242 x 0x180 bytes after
+  the preview id arrays (`car_types::preview_matrices`, 0x80199650).
 - **The part-handle table 0x8010C480 is not just 44 cars x 39 parts.** Indices 1716 and up hold track-object,
   debris and smoke model handles (the 0x800C5400 table: CONE1 = 1814, ...; func_80059450 uses 0x6C5), indexed from
   the same base by the object and particle code (func_80059450, func_8005AEA4, func_8005E918/F718/F900/FC08,
@@ -178,8 +193,9 @@ Rims + 2049's rims (file 81). Rush 2 cars keep their stock rows and values. Choi
   using Rush 2's table so the car matches the select screen's swatches. 2049's artists mostly use COLOR 1 for the body,
   COLOR 2 for the second colour (lower body, side panels, the Bruiser's racing stripes) and COLOR 3 for trim and
   pinstripes; the Euro LX differs (COLOR 3 is its roof and hood, COLOR 1 a band along its sides) and is kept as 2049
-  authored it. Rush 2's STRIPE patterns are not drawn on the 2049 cars: Rush 2 stamps its stripe tiles onto its own
-  cars' panel textures (func_80083F50), which don't exist on a 2049 body. 2049's per-car defaults (COLOR 1-3:
+  authored it. Rush 2 stamps its stripe tiles onto its own cars' panel textures (func_80083F50), which don't exist on
+  a 2049 body; Rush 2's STRIPE patterns are drawn on the N64 ROM's 2049 cars by their own code instead, in COLOR 3
+  (docs/car_mods.md#stripes-on-one-body-cars). 2049's per-car defaults (COLOR 1-3:
   0x80111604, 0x80111648, 0x8011168C; func_800BB140 gives them to the drones) become the 2049 types' default rows
   (0x800C0ED0 / 0F14 / 0F9C, relocated) and seed new save slots (record block: MAIN bits 5-7 of +1 and 0-1 of +2,
   ACCENT bits 2-6 of +2, STRIPE bits 0-2 and STRIPE COLOR bits 3-7 of +3; func_800B266C / 2640 / 2608 / 25D0).
@@ -265,9 +281,9 @@ grip), DURABILITY (record byte / 100: the weight). The 2049 cars keep Rush 2's l
 - **SUSPENSION** and **TIRES** keep their full Rush 2 effect (yaw damping and suspension curve; steering, yaw and
   off-road grip, from the analogue's base values). 2049's HANDLING stays at each car's own setup; its 0x801116D0 +9
   value (1.0 / 0.5 / 0.0) is untraced, so a HANDLING row is left for later.
-- MAIN, ACCENT and STRIPE COLOR are 2049's COLOR 1-3 (§8 Paint); STRIPE COLOR reads TERTIARY COLOR on a 2049 car.
-  TRANSMISSION, TIRE RIMS, HORN, TORQUE and the tire sizes keep Rush 2's effect; STRIPE has nothing to draw on a 2049
-  body and is hidden. A Dreamcast disc's car has paint jobs in place of the three colors: one STYLE row (see Car select
+- MAIN, ACCENT and TERTIARY COLOR (a row of its own, docs/car_mods.md#tertiary-color) are 2049's COLOR 1-3 (§8 Paint).
+  TRANSMISSION, TIRE RIMS, HORN, TORQUE and the tire sizes keep Rush 2's effect; STRIPE draws Rush 2's stripe in COLOR 3
+  (docs/car_mods.md#stripes-on-one-body-cars). A Dreamcast disc's car has paint jobs in place of the three colors: one STYLE row (see Car select
   rows). 2049's WINGS are the Rush 2049 tab's wings; TEAM and SHEEN have no Rush 2 counterpart.
 - **WINGS is never locked, but style 3 is stunt-only** [V]. The setup overlay (ROM 0xB5C534, vram 0x8038A400) copies
   the setup items into the race rows at 0x803A17E8-0x803A1960: ENGINE, TIRES and FRAME are each walked down until
@@ -275,6 +291,7 @@ grip), DURABILITY (record byte / 100: the weight). The 2049 cars keep Rush 2's l
   WINGS (item 4, 0x803A1924) has no unlock check. Instead, unless the game type 0x8014A110 is 4 (STUNT), a value of
   2 or more is cut to 1 (0x803A1928-0x803A1954). So any player can use any wings, and races, circuits, battles and
   the obstacle course fly with style 1 or 2 (gravity x1.0 / x0.8); only stunt arenas get style 3 (gravity x0.5).
+  The car select's WINGS row names them SMALL, LARGE and STUNT (src/rush2049/wings_menu.cpp).
   The port (src/rush2049/wings_state.cpp, style_of) doesn't apply that limit yet.
 - **TIRE SIZE F / R** (wheel model scale only, func_8005A598; no physics): Rush 2's per-type scale tables 0x800C0A6C /
   0x800C0B74 (relocated to 0x802006E8 / 0x802009B8, 5 rows) get 2049's own row-0 scales 0x801112DC / 0x801113E0: 1.0
@@ -309,7 +326,7 @@ shown row 0x803CB3A0[slot] (4 shown), car type 0x803CB362[slot] (s8).
 | Car | Rows |
 |---|---|
 | Rush 2 | unchanged |
-| 2049 (N64 ROM) | STRIPE hidden; STRIPE COLOR labelled TERTIARY COLOR |
+| 2049 (N64 ROM) | TERTIARY COLOR row of its own under ACCENT (docs/car_mods.md#tertiary-color); STRIPE and STRIPE COLOR draw the stripe |
 | 2049 (Dreamcast disc) | ACCENT COLOR, STRIPE, STRIPE COLOR hidden; MAIN COLOR labelled STYLE, value STYLE n, no swatch |
 
 STYLE is the MAIN COLOR byte (MAIN's table copy + (slot + 1) * types + type) modulo the car's paint jobs. func_803B9478 adds a

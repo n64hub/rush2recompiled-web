@@ -2,6 +2,7 @@
 #define __RUSH2_H__
 
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -86,6 +87,9 @@ namespace rush2 {
     // before the game's first frame (mods' packs otherwise reach RT64 only when the game loads its mods, seconds
     // later). Once per launch.
     void load_font_pack_early();
+    // librecomp has scanned the mods folder and read which mods are enabled (it calls update_gfx only after that).
+    // Until then load_font_pack_early waits and font_pack_ready is false.
+    void note_mods_scanned();
     // The font pack is drawn with (or isn't wanted: Fonts not High Resolution, its mod off). The launcher holds the
     // game's start on it, black, for at most 2 s.
     bool font_pack_ready();
@@ -100,6 +104,10 @@ namespace rush2 {
         // Performs a copy scheduled by set_portable. Call at startup, before the config path is registered.
         void apply_pending_move();
     }
+
+    // The running executable's full path (src/data_location.cpp), empty if the OS won't say. On macOS it's inside the
+    // app bundle (Contents/MacOS).
+    std::filesystem::path executable_path();
 
     // Split screen layout of 2 player races (src/splitscreen.cpp).
     namespace splitscreen {

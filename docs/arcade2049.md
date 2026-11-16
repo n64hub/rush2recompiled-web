@@ -112,7 +112,8 @@ docs/rush2049_research/audio.md). So the arcade's soundtrack is its own [I]; con
 The game plays them (src/music_streams.cpp) straight from the arcade data folder, nothing converted: the first whole
 frame after the header is frame 43 (byte 516); the six channels carry different parts (the centre and rears hold
 their own instruments, uncorrelated with the fronts), so they are folded to stereo (FL + 0.707 C + 0.707 BL, likewise
-right; src/stream_decode.cpp), and turned down 9.7 dB (folded, they measure -6.4 LUFS against Rush 2's -16.1). Each
+right; src/stream_decode.cpp), and leveled to Rush 2's songs: folded, they measure -6.4 LUFS as files against Rush 2's -16.1 in the game, which
+halves every source at the output (`file_song_makeup`, include/audio2049.h), so they play at 0.656 (-3.65 dB). Each
 TRACKn's song is the Original of its arcade version (`track4` Alcatraz's); `therock` (TRACK8's) is no raced track's
 own song, so it plays only in shuffles; `select` is a main menu song (Sound tab: Rush 2049 >
 Arcade > Main Menu). They are listed under Rush 2049's Arcade heading in the Sound tab.
@@ -394,6 +395,14 @@ ft/s x 60 / 88 / 1.2 (Rush 2049's lane speeds over Rush 2's, docs/rush2049_resea
   not help: with the 4 g crest cap the drones left other crests slow and flipped, corners only lost 3 and 4 of 5, and
   either way they were 25% slower from CP1 to CP2. Not changed; what keeps Rush 2049's own drones upright off these
   crests is not worked out (no drone air control found in the registry; wings are the player's).
+- **Shortcut lines and table 0 off the lines (2026-11-13, both arcade games).** A racing line that leaves table 0
+  by more than 60 ft for 5 points in a row where fewer than half of the lines go with it is left out (`build_one`,
+  "Shortcut lines"): Rush The Rock's Golden Gate and Embarcadero table 7, The Rock's tables 2 and 5 and The Heights'
+  table 3, and Rush 2049 Metro's tables 1-3 (a route of their own for 28 records). Rush 2 drones on them drove into
+  the walls every lap. Where every racing line is more than 45 ft from table 0 across the ground, the lap point moves
+  across the ground to their mean, fully from 60 ft (The Heights, up to 121 ft; Sunset, 65 ft): table 0 is
+  AIPATH_main, the race's progress line and the drones' speeds. Wide roads put every line 30-46 ft to one side of it
+  (Civic Center, Haight), hence 45. Race audit: docs/sfrush_arcade.md#checks.
 - **Civic Center's tables 3-7 open with a standing start** (1, 25, 39, 48, 56 mph) on a closed lap: drones in those
   lanes braked to a crawl at the line every lap. On a closed lap the converter gives that rising ramp the speed the
   lap arrives at the line with.
@@ -460,6 +469,26 @@ These are the N64 2049 default descriptor's points (Rush 2's descriptor: y -0.8 
 
 A `COL` folder is a whole livery, not a paint color. Its texture names differ (the 'Cuda's `COL2` is a `B_` set,
 `COL8` a police car with `COP_` textures and a light bar), and some add parts (a blower, a hood scoop).
+
+### Light bars
+
+A `COL` folder can have a `dobs.rom` of its own, in the tracks' format ([dobs.rom](#dobsrom-dynamic-objects)): one
+flipbook, drawn on the car. **[V]** (the files; how the car code draws it isn't traced)
+
+| Folder | Entry | Script | Frames |
+| --- | --- | --- | --- |
+| CAR3 COL1, 3, 6 | `ROCKET` | `flipbook 20`, `alpha 2` | `ROCKET_1`-`8`, the exhaust flame (`FLAME`) |
+| CAR3 COL2 / COL4, 5 | `REDROCKET` (at (0, -5.38, 2.76)) / `GRNROCKET` | `rocketflame`, `flipbook 20`, `alpha 2` | 8 flames each (`R_FLAME`, ...) |
+| CAR4 COL7 (Magnum, NYC police) | `NYCSIREN` at 0 | `flipbook 24`, `alpha 2`, `reflect 0` | `NYCSIREN_1`-`16`: the bar (`C47_SIREN`, red and blue lenses by vertex color), frames 3-4, 7-8 with a `GS_REDLIGHT` glow on one side, 10-11, 14-15 on the other |
+| CAR7 COL8 (Bruiser, police) | `COPSIREN` at (0.01, -0.01, -0.04) | `flipbook 16`, `alpha 2`, `reflect 0` | `COPSIREN_1`-`8`: the bar (`COP_SIRENS`, the body has none of its own), 2-4 with a red glow (`GS_REDLIGHT`), 6-8 a blue one (`AL_BLULIGHT`) |
+| CAR7 COL6 (Bruiser) | `REDSIREN` at (-2.78, -0.28, 0) | `flipbook 20`, `alpha 2` | `REDSIREN_1`-`3`: a glow card (`REDLIGHT`) over the body's `R_SIREN` lamp |
+| CAR5 COL8 | `ORNAMENT` | `alpha 0`, `view2` | no flipbook (a hood ornament, not ported) |
+
+The glow textures are AYIQ8422 with soft alpha; the bars' are opaque YIQ. The entries' matrices are the identity.
+The position is in the car's axes as the vertices are, (x, y, z): REDSIREN's puts its glow card's middle at (-1.23,
+3.8, -0.9), on the body's R_SIREN lamp (-1.27, 3.79, -0.79); read as the tracks' (x, z, y) it would sit 0.3 ft high and
+back. **[I]** The arcade cars mod (src/arcade2049/arcade_cars.cpp `convert_sirens`) gives the Magnum and Bruiser
+liveries these as [sirens](car_mods.md#sirens); CAR3 (the Rocket) isn't converted, so its flames aren't either.
 
 `src/arcade2049/arcade_cars.cpp` builds the `rush2049_arcade_cars` mod (docs/car_mods.md#rush-2049-arcade-cars). Most
 arcade cars are the arcade forms of N64 cars: matched by side and top silhouette against the N64 cars' bodies (the
@@ -548,12 +577,14 @@ the Progress tab and unlocks don't change. The arcade's own `coin` score pickups
     KEYL1 (`track1::convert_container`), each with behaviour 8.
   - Records: KEYS0-7 / KEYG0-7, or KEY1-8, at their world position, as children of the nearest opaque section. That
     section's box and radius grow to hold them.
+  - The PS1 SF Rush's keys are in the same table (KEYP1-4, the same tool with `--ps1`): Embarcadero Arcade and Market
+    Arcade get 3 each, and the sfrush_ps1 mod's tracks get theirs the same way ([sfrush_ps1.md](sfrush_ps1.md#keys)).
   - The models and records are in the conversion's cache key. Without the 2049 source (coins) or the SF Rush ROM
     (keys), the version has none.
 - **In the race.** `collectibles.cpp` takes the raced version's course at the race's object setup
   (`rush2_collect_race_reset`) and counts its pickups as that course's. The coin rules are the stock tracks': 9 ft
-  pickup radius, glow, the 2049 sound. On an SF Rush course's version, `track2049.cpp` points KEY1-8 at KEYL1 and
-  turns on SF Rush's key hit test (`track1::set_redirects` with `rush1_hits`), as on the N64 course.
+  pickup radius, glow, the 2049 sound. On an SF Rush course's version, `track2049.cpp` points KEY1-8 and KEYP1-4 at
+  KEYL1 and turns on SF Rush's key hit test (`track1::set_redirects` with `rush1_hits`), as on the N64 course.
 - **Pause box.** It counts only the pickups the race placed (`collectibles::race_pickups`). When the version has
   fewer than the course, the course's total follows in brackets: Haight Arcade shows `0/3 (8)` for its silver coins.
   A kind with none placed has no row; a version with none has no box.

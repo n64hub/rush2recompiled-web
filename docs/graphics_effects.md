@@ -1,4 +1,4 @@
-# Graphics effects: ambient occlusion, car reflections and car light probes
+# Graphics effects: ambient occlusion, car reflections, car light probes and car lights
 
 Renderer effects the original game doesn't have, in Settings > Graphics > Effects and switchable while the game
 runs. It is a change to RT64, kept in `lib/patches/rt64.patch` (edit under `lib/rt64`, then
@@ -13,7 +13,8 @@ runs. It is a change to RT64, kept in `lib/patches/rt64.patch` (edit under `lib/
 | Car Reflections (`car_reflections`) | 5% to 100%, steps of 5 | 70% | `RT64::CarReflectionStrength` (0 to 1) |
 | Car Lighting (`car_lighting`) | Original, Light Probes | Original | none: game side only (`rush2::probes::set_mode`, [Car light probes](#car-light-probes)) |
 | Sky Fog (`sky_fog`) | Off, On | Off | none: the game marks each race view with `gEXSetSkyFog` ([Sky fog](#sky-fog)) |
-| Fill Scenery Gaps (`scenery_fill`) | Off, On | Off (Enhanced setup: On) | none: `gEXSetTwoSidedWalls` around the track's models, and the game draws the ground underlay ([Fill scenery gaps](#fill-scenery-gaps)) |
+| Car Lights (`car_lights`) | Off, On | On | none: the game places each car's lamps with `gEXSetCarLight` ([Car lights](#car-lights)) |
+| Fill Scenery Gaps (`scenery_fill`) | Off, On | Off (Enhanced setup: On) | none: the game draws the ground underlay ([Fill scenery gaps](#fill-scenery-gaps)) |
 
 The option lives in `src/config.cpp` (`add_ambient_occlusion_option`). The global is
 declared in `lib/rt64/src/common/rt64_enhancement_configuration.h` and read every frame by
@@ -41,17 +42,27 @@ ones `RSPProcessCS.hlsl` transforms vertices with):
 Screen space ambient occlusion, two full-screen passes per run of 3D draws:
 
 1. `AmbientOcclusionPS.hlsl` (and `AmbientOcclusionPSMS`, for a multisampled depth buffer, which reads sample 0)
-   reads the depth buffer into a half-float two-channel target the size of the color target (made on first use and
-   kept in the framebuffer storage, `RenderFramebufferStorage::occlusionTexture`). Per pixel it rebuilds the view
+   reads the depth buffer into a half-float two-channel target at half the color target's size each way (made on
+   first use and kept in the framebuffer storage, `RenderFramebufferStorage::occlusionTexture`). Each of its pixels
+   works out the full resolution pixel at twice its position, with that pixel's full resolution neighbors for the
+   normal, so only a quarter of the pixels are shaded. Per pixel it rebuilds the view
    position from w and the pixel (`AmbientOcclusionCB.focal` = pixels per unit of y / w, the ratio of the matrix's y
    and w column lengths times half the viewport height; `center` = the viewport's center), takes the surface normal
    from the nearer neighbor on each axis, and tests 12 points on a disc of 6 ft. Each point above the surface adds
    `max(cos - 0.25, 0) * (1 - d^2 / r^2)`; the 0.25 leaves gentle folds (two slopes of a road) alone. The disc turns by
-   the pixel's place in a 4x4 ordered dither tile. Output: the ambient (1 open) and w. Occlusion fades out from 200 ft
-   to 400 ft.
-2. `AmbientOcclusionApplyPS.hlsl` averages the first pass over 4x4 pixels, which holds each turn once, skipping
-   pixels whose w differs by more than 4%, and the pipeline multiplies it into the color target's RGB (blend
-   ZERO / SRC_COLOR, alpha untouched).
+   the pixel's place in a 4x4 ordered dither tile of the half resolution target. Output: the ambient (1 open) and w.
+   Occlusion fades out from 200 ft to 400 ft. The pass covers the area halved outward plus one half resolution pixel
+   before and two after, which the apply reads.
+2. `AmbientOcclusionApplyPS.hlsl` (and `AmbientOcclusionApplyPSMS`), at full resolution, averages the 4x4 half
+   resolution pixels round each pixel (each turn once), each counted by how near its w is to the pixel's own w from
+   the depth buffer (none past 4%), which upsamples it along edges without bleeding across them; a pixel no
+   neighbor matches (a thin pole the first pass stepped over) is left open. The pipeline multiplies it into the color
+   target's RGB (blend ZERO / SRC_COLOR, alpha untouched).
+
+GPU cost (`RUSH2_GPU_LOG=1` prints it on the `[gpu]` lines, with the occlusion and apply passes apart): on the Presidio
+start with MSAA 4x and Medium, the full resolution first pass made ambient occlusion 0.40 to 0.65 ms of a 0.9 to 1.4 ms
+workload (occlusion 0.36 to 0.44); at half resolution it is 0.15 to 0.26 ms (occlusion 0.11 to 0.17), about 2.5 times
+cheaper, the apply unchanged.
 
 When it runs (`submitRasterScene`): every opaque, depth-writing draw with a perspective projection
 (`triangles.occlusionIndex >= 0`) marks occlusion as pending and grows the screen rectangle it covers. The passes run
@@ -274,6 +285,244 @@ a fixed cube (above white, +x green, the rest dark gray): the roof lit, the tail
 left, the game's x points left) green. Checked 2026-10-14: the cube on a Rush 2 car (Seattle) and a Rush 2049 car
 (NY Two), Presidio's tunnel start against Original, and the bake times above in game.
 
+## Car lights
+
+Car Lights = **On** in the Enhanced preset, **Off** in Original and as the option's own default (setup rule `car_lights`, src/setup.cpp; GitHub issue 65): on a night track every race car's headlamps and tail lamps light
+the road and whatever else is round them from where the lamps really are on the car, and the lamps themselves glow
+(src/car_lights.cpp, lib/rt64 `CarLightPS.hlsl`, `CarGlowPS.hlsl` and `CarLightCompositePS.hlsl`, `FramebufferRenderer::carLightOf` and
+`submitCarLights`). It is hot-swappable. Stock Rush 2 courses are never night ones, so it changes nothing there.
+
+- **Night tracks:** `rush2::track2049::night_race`, a converted course (Rush 2049, custom, arcade) whose fog color is
+  near black (luminance under 0.1). Rush 2049's fog table (main 0x80114658, 3 bytes per track) is gray-blue for the
+  day tracks (0.55-0.61) and black for race tracks 4 and 6 (Presidio) and the stunt and battle arenas; the SF Rush
+  PlayStation night versions set #080808. Covered sections of day tracks (car state +0x344) are left out.
+- **Buses:** SF Rush Sunset's eight traffic buses (src/rush1/track1_buses.cpp, `track1::bus_pose`) get headlamps
+  too on its NIGHT version, with the same option: BUSO1's two lamps under its orange band (x +-5.3, y 2.9, z 20 ft
+  in the model's axes, read off its front), always on, markers only (no lens glow), drawn from battle_render slots
+  324-331 placed with each bus's pose (trampolines 0x80E1F380, 32 bytes a bus). 2026-11-14, user request.
+- **When:** headlamps always (at night); tail lamps dim to drive by (a fifth of full) and full while Rush 2 lights the
+  car's brake lights itself (braking, the car's flags 0x1000 set and 0x10 clear: func_800599A0, read in its hook
+  `rush2_calspeed_brake_lights`). A lamp goes out once its corner's panel is damaged at all (panels 0 front right,
+  1 front left, 2 rear right, 3 rear left: car state +0xE4, masks 0x800CE188, shifts 0x800CE180): level 1, the most
+  collisions give (func_8006B730, func_8009A264 and func_800715E8 stop at `slti 2`), the level that swaps in its
+  damaged model. Which x sign is the right comes from the collision box's rear right corner (physics car +0xE8,
+  panel 2). A wrecked car, a car out of the race and a ghost show none.
+
+### Finding the lamps
+
+`work_out`, on a worker thread (`find` starts it, one car a call, and takes the result up when it is done, if the
+car's body is still the one it looked at), again when the car's type, parts or damage stage change:
+
+- **The body:** its lists (frame, corners, top: `rush2::car_types::part_record`; a 2049 car's four corners are one
+  list, walked once) walked with their texture state (G_SETTIMG, G_SETTILE with its palette, G_LOADBLOCK /
+  G_LOADTILE / G_LOADTLUT, G_SETTILESIZE, G_TEXTURE). The parts draw with the texture their caller turned on, so the
+  walk starts with texturing on. CI textures whose lists load no palette use the car's own, which the game loads
+  before drawing it: its palette record (`rush2::car_types::car_palette_records` + car x 0x18: +0x10 first entry,
+  +0x11 last, +0x14 the data).
+- **Texels** are read where the RDP reads them (`texel_index`: the tile's clamp bit, then its mask's wrap, flipped on
+  every other repeat with the mirror bit). California Speed's bodies mirror one texture half onto both sides; read
+  with a plain wrap, the far side's lamps landed next to the middle.
+- **Tail lamps:** what the game lights when the car brakes, each texel put back on its triangle by the triangle's
+  texture coordinates (barycentric): Rush 2's palette lighting's CI8 entries 161-175 (Rush 2's cars, Rush 2049's on
+  the N64 ROM); for a California Speed or Dreamcast car the texels its lit copies change
+  (`rush2::car2049::brake_light_sources`); a mod car's or livery's brake light lists (docs/car_mods.md#brake-lights),
+  only those whose switch (`BrakeLightSources::switches`, `rush2::car2049::brake_switch`) is in the lists the body
+  draws: a car's copy holds every paint scheme's brake lists and a livery adds its own, and taking them all put lamps
+  between and beside the real ones (the first pass on the arcade Mustang's liveries). Their texels at least half as
+  bright as the car's brightest brake texel count (the textures are soft glows, a red core in near black; the N64
+  copy's alpha bit isn't kept reliably, the transparency comes from the full-size replacements), since those lists
+  are often textured quads spanning both lamps (the arcade Truck's covers the whole tailgate); an untextured one's
+  triangles by their area. A lit switch's call isn't walked as body. Only triangles in the back half of the body facing backward (outward normal z at most
+  -0.25) count: lit texels on a side face are markers or spill, not the lamp. The texels are grouped (two are one lamp
+  when nearer than 1.5 texels of the coarser triangle, never over 0.25 ft, so round lamps side by side stay apart; a
+  an untextured brake light triangle's corners are always one lamp), and the groups at least 6% of all become lamps, the
+  biggest first, at most two a side (a center stop lamp counts on one side), a group centered inside a lamp
+  already taken skipped (overlapping brake quads). A lamp sits at its group's middle, its
+  radius sqrt 2 times the texels' RMS distance from it (a disc's radius), so a stray texel doesn't swell it.
+- **Headlamps:** nothing in the games marks them. Texels at least 175 bright (luma, 0-255), near gray or white
+  (channels within 30% of the brightest, not yellow-orange) on triangles facing forward (normal z at least 0.35,
+  turned away from the body's middle) in the front quarter of the body, grouped the same way, and mirrored pairs of
+  groups (across the body's middle within 0.5 ft, within 0.35 ft in height and 0.5 ft in depth, at least 0.6 ft
+  apart, each more than 35% of the half width out from the middle: nearer, a pair is a stripe over the grille or the
+  grille's chrome) taken, the biggest first: the best one, and a second if it shares no group with it, is at least
+  40% as big, sits within 0.4 ft of its height (quad headlamps side by side; one well below is hubs or bumper ends)
+  and at least 0.25 ft across from it (nearer, it is the same lamp in two groups).
+- **By hand:** `assets/car_lamps.json` (checked in, keyed `rush2:<type>`, `rush2049:<car>`, `rush2049dc:<car>`,
+  `calspeed:<car>`, `mod:<name>`, and `<car key>/<livery file stem>` for a livery (`rush2::car_mods::livery_name`),
+  feet in the car's axes) and a mod car's .json `"lights"`
+  (docs/car_mods.md, `rush2::car_lights::set_mod_lamps`) replace what is found, kind by kind. A hand placed lamp's
+  lens is the texels within its radius on triangles facing its way, those at least 60% as bright as the brightest
+  there (so a gray lens on dark paint glows and the paint doesn't); `"lens": false` for hidden lamps (rush2:2's
+  closed pop-ups) or none at all (open-wheel racers). Gray headlamps (most of Rush 2049's, several of Rush 2's)
+  are below the finder's 175 and come from the table.
+- **What is still missing** (no headlamp pair, no lit texels: the SF Rush PlayStation UFO, the one PS1 car without
+  brake lights, docs/car_mods.md#brake-lights) gets a pair from the body's shape: 34% of its width either side of its
+  middle, at 32% (heads) or 42% (tails) of its height, on the frontmost or rearmost surface straight along z from there.
+- **Kept on disk:** `track_cache::directory()/car_lamps.bin`, every result keyed by what the body is drawn from (its
+  lists' commands, its vertices, the first bytes of its textures and palettes, not palette entries 161-175, which
+  braking relights) and by the build; read on a worker when the option is switched on, written on one a few seconds
+  after something new was found. A miss costs the worker 2-5 ms; the game thread never waits.
+
+### Drawing them
+
+Each car is one `rush2::battle_render` model (`CAR_LAMPS<car>`, slots 186-193), placed every view at the car's body
+pose (`rush2::battle::car_body_pose`), so it rides with the car through frame interpolation; it is pushed 0.15 ft
+toward the camera so the lens glow sits on the lenses. The model is a trampoline in RDRAM (0x80E1F200, 32 bytes a car:
+`gEXSetRDRAMExtended(1)`, G_DL, `gEXSetRDRAMExtended(0)`) into the car's list above 16 MB (`recomp::alloc`: a
+0x18000-byte block a car, the lens masks then three list buffers used in turn, so a rebuild never rewrites a list the
+renderer may still read). The list is rebuilt when a lamp comes on or goes off or the brakes change:
+
+- **Lens glow:** each lit lamp's triangles again over its lens (copies of the part's vertices), an IA8 mask of the
+  lamp's texels over the part's own tile (size, wrap and G_TEXTURE scale copied), PRIM the lamp's color (its alpha the
+  mask's opacity: a headlamp 0xF0, a braking tail lamp 0xFF, a dim one 0x90), unshaded and unfogged, blended without
+  writing depth (G_RM_PASS, G_RM_ZB_XLU_SURF2), inside a push and pop of the other mode, combiner, PRIM and geometry
+  mode. Each copied triangle is wound counterclockwise seen from outside the body (its normal away from the body's
+  middle) and drawn with G_CULL_FRONT: Rush 2's camera frame flips handedness, so that is the face seen from inside
+  (G_CULL_BACK left the backs drawn). A lens glows only seen from in front: the bumper camera sits behind the car's
+  own lamps, and on Rush 2049's Magnum and GX-2 the backs of the headlamp lenses floated in front of the view (GitHub
+  issue 70; `RUSH2_TEST_LAMP_CULL=0` draws them two-sided again, `b` culls back faces, to compare). It is a model of its own drawn after the cars, not a change to the cars' lists (the first try, which injected
+  the overlay into the body part's list, turned the parts drawn after it black).
+- **The lamps for RT64:** `gEXSetCarLight(level, head reach, tail reach)` (110 of 255, 150 ft, 22 ft), then a vertex
+  per lit lamp in triangles of three: its position, its color times its strength (0-255 of its kind's), alpha 0x80
+  for a headlamp plus its glow's radius (1/32 ft, the lens's: 1.6 times it washed a livery's paint round its brake
+  lights), and `gEXSetCarLight(0, 0, 0)`.
+
+RT64 doesn't draw a marker (`InstanceDrawCall::triangles.carLightIndex`, a `CarLightGroup` of `CarLightPass`es): each
+vertex becomes a lamp through the marker's interpolated world transform (`lerpWorldTransforms`), relative to the
+camera through the reconstruction Sky Fog uses (`viewReconOf`); a headlamp points along the car's z axis dipped 1.5
+degrees, a tail lamp straight back. Once the view's 3D draws end (its next 2D draw or the end of the scene, after
+ambient occlusion):
+
+1. The lamps add into two float targets (R16G16B16A16, no multisampling, cleared over the lamps' area first):
+   - **light** (`CarLightPS`, at half the color target's resolution each way, over the screen box of the cube round
+     the lamp's reach): each half resolution pixel stands for the full resolution pixel at twice its position (its
+     2 x 2 block's top left). A car's mirrored lamps (two headlamps, two tail lamps: same kind and color, x turned
+     over, y and z within 2 units; `carLightOf`) light in one pass: both shaded, from their midpoint and half the gap
+     along the car's side (`dirW.w`), one march toward the midpoint. Light under 0.002 (brightest channel) is dropped,
+     and light under 0.03 skips the march (its shadow wouldn't show on a night track's dark surfaces).
+     Intensity x shape x Lambert / (d^2 + 1), d in feet, windowed to nothing at the reach. The Lambert normal comes
+     from the full resolution depth buffer one pixel away each way, across and down each from the side whose depth is
+     nearer the pixel's own, and only where the light before Lambert is worth drawing. (It was cross(ddx, ddy) of the
+     position: at half resolution that spans a 2 x 2 quad, 4 full resolution pixels, and a quad straddling an outline
+     or crease gave its whole 4 x 4 block a normal mixed from both surfaces: blocky light along every edge.) Windowed to
+     nothing at the reach ((1 - (d / reach)^4)^2). Intensities: headlamp 15000, tail lamp 14 (braking). A headlamp is
+     a low-beam spot: Gaussian falloff in tangents off its axis, 0.52 across, 0.065 below, 0.025 above (a sharp top
+     cut), so the long pool on the road comes from the grazing angle. A tail lamp is a lobe ((0.3 + 0.7 cos)^2)
+     backward. Either lights only what lies beyond its face (fading in from 0.3 ft past the lens to 1 ft): its own
+     car's paint a few inches round the lens, where the inverse square is strongest, stays unlit. Then a 14-step march from the surface toward the lamp, stepped evenly in 3D (each step's screen point
+     from its w, so steps don't bunch near the camera) and stopping 9 ft short of the lamp (its own car): a step whose
+     depth buffer sample is more than 0.5 ft (plus 1% of the distance) and less than 7 ft in front of the ray blocks
+     it, softly at both ends, three blocks a full shadow. No jitter (it stippled the pool). A car ahead shadows the
+     beam.
+   - **glow** (`CarGlowPS`, full resolution, one pass per lamp over the box its 6 radii reach): a halo at the lamp's
+     pixel (a Gaussian core the lens's size and a faint short bloom, 8% out to 6
+     radii: a wide one tinted the car's paint round its brake lights), scaled by how
+     squarely the lamp faces the camera (a headlamp glares straight on) and kept only where the depth buffer at and
+     round the lamp shows nothing nearer than it.
+2. The scene is copied (`copyTexture`, same format and samples) and `CarLightCompositePS` writes scene + albedo x
+   light + glow over the lamps' area, per sample with multisampling, leaving pixels no lamp reached alone. The light
+   is upsampled from the half resolution pixels round each pixel (the one at half its position, and on an odd row or
+   column the next along): their bilinear average, unless the sample is on an edge: its w more than 10% (relative)
+   off its first light pixel's, or, where the light pixels disagree by more than a tenth, off one of the others' (a
+   surface at a grazing angle changes far less per pixel; light varying over one surface stays bilinear: testing the
+   light alone sent most of the road down the edge path, 0.77 ms). On an edge every light pixel within 3 full resolution pixels (3 x 3 to 4 x 4 of
+   them; the light target is cleared two past the area for it) is weighed by a tent 4 pixels wide times how near its
+   own pixel's depth is to this sample's (exp(-40 x relative w gap), the nearest alone if none is near), so light
+   doesn't bleed across a car's outline and each sample of an antialiased edge pixel takes light from its own surface:
+   the light's edge follows the scene's at full resolution. (With only the bilinear set an even pixel had just its own
+   light pixel, and its other samples took the other surface's light: a stepped edge.) A dark first light pixel doesn't
+   discard an edge sample. The albedo
+   is estimated: scene / level (the marker's, 110 / 255), never under 0.015, so a black surface still lifts a little,
+   and never over 1 (uncapped, a car's paint or lane paint brighter than the level reflected more than all the light
+   and the cars in a beam went white).
+   The light is first compressed, light / (1 + its brightest channel / 1.5), so a surface right in front of a lamp is
+   lit to at most 1.5 times its albedo instead of going flat white (the beam washed the scene out without it). A
+   shoulder over the brightest channel, from 0.8 or the scene's own brightest channel if higher, scales all three
+   alike, so a red light on a gray road rolls off to a brighter red instead of clipping to pink (the first version
+   multiplied the target by 1 + light in 8 bits: gray road 0.3 under red at 3x came out (1.2, 0.36, 0.33), salmon).
+
+The pipelines are made with the shader library at startup and the targets on a view's first lamps, so nothing hitches
+when a light first appears.
+
+### Particles in the beams
+
+Wheel dust, smoke and spray are see-through and write no depth, so the composite used to light them as the road
+behind them: that surface's light (its distance and angle to the lamp, the full beam close in) times the puff's own
+color taken for an albedo, and a puff in a beam went flat white. They are lit as a cloud instead:
+
+- **Which draws:** each race car's particles are a ring of 48 scene nodes (indices, s32) at +0x64 of its car record
+  (`rush2::car_types::car_states`, 0x134 a car, +0x124 the next one used), each thrown by
+  `particle_emitter_spawn_8008270C` (callback `particle_spawn_explosion_8005AEA4` at the state's +0x18, the node
+  index at +0x8). While any lamp is lit, `rush2_car_lights_view` marks those nodes (`rush2::car_lights::particle_node`)
+  and the scene walk's matrix hook (`rush2_interp_node_matrix`, src/interpolation.cpp) puts
+  `gEXSetParticleLight(node + 1)` after each one's G_MTX; its pop, the next node's matrix, a world polygon or the
+  view's end puts `gEXSetParticleLight(0)`. A new id starts a new draw, so each puff is a draw of its own.
+- **RT64:** a marked draw records where it is from the camera (its world transform's origin, the interpolated frame's)
+  and its view (`triangles.particle`, `particleRel`). It is held back until the view's 3D draws end (`finish3D` in
+  `submitRasterScene`), drawn after the car light composite, with `RasterParams::particleLight` set from the lamps of
+  its own view's markers: each light pass's lamp (or mirrored pair) evaluated at the puff with CarLightPS's shape,
+  falloff and window but no Lambert term or shadow march, eased as the composite eases a surface's light
+  (/ (1 + peak / 1.5)), times 0.5 (`ParticleScatter`). RasterPS adds albedo x that light to the combiner's color (the
+  albedo its color / level, at most 1) and applies the composite's shoulder, so a tan puff brightens toward a lighter
+  tan and gray smoke toward a light gray, never past white.
+
+### Car lights GPU cost
+
+`RUSH2_GPU_LOG=1` prints a `[gpu]` line to the game log every 120 workloads: the workload's GPU time and the car
+lights' part of it, split into light, glow, scene copy and composite (timestamps round `submitCarLights`, read in
+`WorkloadQueue`). Measure with `tools/test_race.py 17 --user-settings --show --env RUSH2_GPU_LOG=1 --data <own dir>`
+(Presidio, night) and compare car lights over the rest of the workload: the GPU's clock changes between runs (other
+games running), so milliseconds alone don't compare. The first version (every lamp full resolution, light and glow in
+one pass) cost 1.42 times the rest of the frame at the start and 0.65 later in the race (1600 x 900, MSAA 4x); half
+resolution light, the glow's own small passes and mirrored pairs bring that to 0.33 and 0.25. Of what's left later
+in the race, about half is the scene copy and the composite, which run over the lamps' whole area.
+
+### Reviewing the lamps
+
+`tools/car_lamps.py sweep DUMP` races on Presidio (track 17) with the player's car and the seven opponents' set to the
+next eight types until every type is covered, with `RUSH2_CAR_LIGHTS_DUMP=DUMP` (the game writes each car's body and
+lamps as `<car key>.json`); `--dreamcast` takes the 2049 cars from the disc. `tools/car_lamps.py sheet DUMP OUT.png`
+draws each car from the front, back, side and top, shaded by its texels (an n x n grid of samples a triangle),
+headlamps ringed cyan and tail lamps yellow (dashed: from its shape; the front view leaves out the tail lamps, the
+back view the headlamps). `sweep DUMP --types 23-35 --livery N` dumps the new cars' liveries (style N, through
+`RUSH2_TEST_LIVERY`), keyed `<car key>/<livery>`. `table DUMP` prints the lamps as `assets/car_lamps.json`
+entries to paste in and correct. `tools/car_lamps.py pick DUMP KEY head|tail --x LO HI --y LO HI` measures a hand
+entry from the dump: the samples on triangles facing the lamp's way that the front (back) view sees inside the box,
+kept by brightness (`--rel`, `--neutral` for gray and white, `--color r,g,b`), their middle and radius by the game's
+own rule, the mirrored box measured on its own; `--save assets/car_lamps.json` writes them in, and `sheet --table
+assets/car_lamps.json --grid --views front back` draws them over the car with half-foot lines to check. A livery's
+lamps are measured on its glb instead (`tools/car_lamps.py glb <livery>.glb DIR/<livery>.json --key
+rush2049:<car>/<livery>`: the body sampled from its full-size textures, in the same axes): the game's dump reads the
+N64-size copies, too coarse to see a livery's lamps. Every entry's measurement is in `tools/car_lamps_picks.sh`
+(rerun it after a sweep to measure them again); `pick` writes the lens's color into the entry (the game takes the
+texels near it as the lens). The sweep switches Car Lights on in its runs (`graphics.car_lights=On`): the option is
+off by default, and without it nothing is found or dumped. The PlayStation SF Rush cars and the arcade cars are mod
+glbs, measured on them the same way (`glb <car>.glb DIR/<car>.json --key "mod:<NAME>"`).
+
+The finder's headlamps change with the paint: bright, near-white texels are taken as glass, so white or silver paint,
+a white bumper or chrome trim is found instead of a gray lens (GitHub issue 79: the white Bandit, the Dreamcast GX-2's
+white bumper, the pickup's chrome bar). A car whose lamps a player reports gets a hand entry, which no paint moves.
+
+In game: `RUSH2_TEST_LOOK_BACK=1` holds every view's LOOK BACK (docs/camera.md#look-back), so a 2-4 player
+`tools/test_race.py 17 --cars a,b,c,d --env RUSH2_TEST_LOOK_BACK=1 --env RUSH2_TEST_WINDOW=3840x2160 --shots 50
+--config graphics.car_lights=On` shoots four cars' fronts at once (1080p views; a plain chase view in the tunnel start
+leaves views 2-4 over their car's roof, so shoot rear views one car a run). `tools/quad_crops.py SHOT OUT --labels
+...` cuts out each view's car, and `tools/lamp_compare.py OUT DUMP "SHOT|KEY|front|x0,y0,x1,y1"` puts a player's
+screenshot beside the car's gridded view with its lamps.
+
+### Testing
+
+`RUSH2_CAR_LIGHTS_LOG=1` prints each car's lamps as they are found (where each came from, how long it took, cache hit
+or not) and each change of what is lit; `RUSH2_CAR_LIGHTS_TEST=1` lights every car's tail lamps as if braking. For
+example `python tools/test_race.py 17 --cars 0 --seconds 46 --shots 40,44 --env RUSH2_CAR_LIGHTS_TEST=1` (a new build
+spends its first launch's first 30 s rebuilding caches, so shots at 40 s and later land in the race).
+
+Particles in the beams: `RUSH2_TEST_PARTICLE_LIGHT=0` leaves the particles unmarked (the composite lights them as
+the road behind, as before) to compare. The Heights night version's start is a pack kicking tire smoke and then dirt
+just ahead of the player: `python tools/test_race.py the_heights_night --drones 7 --user-settings --data tmp/pl_data
+--env RUSH2_RACE_RECORD=<absolute path> --shots 24.5,25,25.5 --seconds 29`, once with the switch and once without
+(racing starts about 22 s in on a warm launch).
+
 ## Sky fog
 
 Settings > Graphics > Sky Fog = **On**: the race's sky is hazed toward the fog color by height above the horizon, as
@@ -342,8 +591,8 @@ follows the camera's height, not the world's (the world's fog doesn't either).
 
 Settings > Graphics > Fill Scenery Gaps = **On** (Off is the original game; the Enhanced setup turns it on,
 `rules()` in src/setup.cpp): the tracks were built for a 4:3 view from the road, so a wide screen, a high camera or
-the wings see past where the scenery ends, sky under the edges of the ground and through open-backed buildings. Two
-parts, both decided per frame (hot-swappable). Code: `src/scenery_fill.cpp` (game), `src/scenery_fill_build.cpp`
+the wings see past where the scenery ends, sky under the edges of the ground. It extends the ground, decided per
+frame (hot-swappable). Code: `src/scenery_fill.cpp` (game), `src/scenery_fill_build.cpp`
 (the underlay, nothing of the game), `include/scenery_fill.h`.
 
 **Which draws are the track.** `race_load_track_800A5110` calls `placement_walk_80081790` at 0x800A5704, which makes a
@@ -353,44 +602,97 @@ signs. The sky model (`sky_setup_800A45A8`) and the cars are made elsewhere. `ru
 `rush2_model_draw`, model_draw_8007AA48 at 0x8007AF84, $s7 = node) acts on those nodes only, in a race (game states
 3, 6, 9, 10).
 
-**Two-sided walls** (RT64, `lib/patches/rt64.patch`): each track node's model list is called between
-`gEXSetTwoSidedWalls(1)` and `(0)` (`G_EX_SETTWOSIDEDWALLS_V1` 0x38). In `RSP::drawIndexedTri`, a triangle drawn with
-culling on whose face is within about 17 degrees of vertical (|n.y| < 0.3 |n|, from its vertices through the world
-transform: the game keeps the view's rotation in the projection matrix, so the modelview's axes are the world's, y up)
-gets its indices pushed again in reverse order: whichever side faces the camera survives the culling, with the front's
-texture and vertex colors. Exact per triangle, no shader change (the render flag word is full). **A face that already
-has a back side is left alone.** Every other model in a race is called between `gEXSetTwoSidedWalls(2)` and `(0)`:
-its triangles are seen but get no copies. The frame's near-vertical triangles in marked draws are kept by plane
-(facing yaw in 128 steps, plane distance in steps of 8 units) with their corners, and a triangle gets no copy, and
-copies already made there are made degenerate (so the triangle count stays the same every frame, which frame
-interpolation matches draws by), when its plane has over it (overlap in the plane, by separating axes):
-- a modeled back: a triangle facing the other way within 16 units (1 ft), culled or not;
-- a two-sided surface: a triangle drawn without culling, either facing, within 16 units;
-- a layered face: a culled triangle facing the same way within 2 units, overlapping by more than half a unit (an arrow
-  over a sign board): their copies would fight each other from behind.
-History (2026-11-08): copies fought or beat real backs three times. Hawaii's start banner (its back isn't split into
-the same triangles as its front, so matching exact corners missed it), and Civic Dreamcast's blinking arrow signs
-(z-fighting with the plane match limited to culled backs 1/8 ft away); the user's rule: zero unintended z-fighting.
+**Two-sided walls, removed 2026-11-13.** The setting also drew the track's near-vertical faces from behind (RT64's
+`gEXSetTwoSidedWalls`, `G_EX_SETTWOSIDEDWALLS_V1` 0x38, around each track model's draw; `gEXSetTwoSidedSkip` 0x3A for
+listed textures), to fill gaps seen through open-backed buildings. The tracks draw some faces one-sided on purpose, so
+they hide from behind, and every such face needed an exception: New York Downtown's N.Y.P.D. barricade (issue 62, a
+texture hash list) and the SF Rush arcade CRASH WALL barricades, whose exception never worked in game; copies also
+fought real backs (Hawaii's start banner, Civic Dreamcast's arrow signs). The game side is gone (src/scenery_fill.cpp,
+src/rush2049dc/dc_translucent.cpp, the underlay cache's road block list); RT64 still has the two commands in
+`lib/patches/rt64.patch`, sent by nothing.
 
 **Extended ground.** A ground underlay built from the raced track's own models (the same inputs as the
 [car light probes](#car-light-probes): the slot's geometry and placement assets as loaded, `rush2::probes::raced_track`,
 and the shared containers 0x12 and 0x14, through `rush2::catalog::for_each_placed_triangle`):
 1. A 32 ft grid over the ground and 4000 ft past it. A cell is covered where an upward-facing triangle (normal y over
    0.5) lies over its center; it takes the lowest such surface's height, vertex color and texture.
+   **Roofs with no floor under them** are not ground: a group of covered cells (neighbors joined where their heights
+   are within 24 ft, a dome's curve) of at most 100 cells that stands over 20 ft above all the covered ground within 4
+   cells (128 ft) of it, water textures left out, stops counting as covered, so the ground round it fills in under it
+   (the floors, step 5, keep it under the roof). A group with no ground near (an island, a pier over a sea plane) stays
+   ground. Reported 2026-11-10: the PlayStation Golden Gate's rotunda (Palace of Fine Arts) has no floor under its dome,
+   so the dome was the lowest surface in its cells and the underlay rose to it as a green cone, in every time of day.
+   On the stock tracks the rule takes building roofs and towers (the Space Needle's top) and fills sky gaps beside
+   them (LA); checked against the build without it with `car_probes_test --fill` on every Rush 2, SF Rush and PS1 track.
 2. Heights and colors of the rest by pull-push (a pyramid of averages, then each empty cell blended from the level
    above): the ground carries on smoothly from its edges and flattens far away.
 3. Textures: the ground textures covering the most cells (up to 8, each at least 2% of the ground), each one's coverage
    pull-pushed the same way; each cell takes the strongest. Big areas (grass, water, sand) carry on. Taking the
    nearest covered cell's texture instead drew roads that reach the edge on out as stripes.
-4. Drawn: the fine layer, the empty cells within 10 cells (320 ft) of the ground and the covered cells beside them;
-   the coarse layer, 256 ft cells with no ground in them that the fine layer doesn't fill, out to the margin, under the
-   fine layer where they overlap so no gap opens between them.
+4. Drawn: the fine layer, the empty cells within 10 cells (320 ft) of the ground and the covered cells beside them,
+   out to whole 256 ft cells; the coarse layer, the 256 ft cells with no ground or fine cells in them, out to the
+   margin. The two never overlap: a coarse quad under fine ones had to come down to the lowest of them, on a shore the
+   sea's level, which stood the land over it on a wall. Where the fine layer ends over a lower coarse surface, each
+   outer fine edge hangs a **skirt** down to it (the coarse height there less 1 ft), so the sky never shows through the
+   step (steep slopes, seen in game on Golden Gate snow).
 5. **Never through the track**: every triangle drawn, whichever way it faces, sets a floor on each cell it overlaps (a
    lower bound of its height there: the larger of its plane's lowest at the cell's corners and its lowest vertex). A
-   fine corner sits 2 ft under the heights and floors of its four cells, a coarse corner 6 ft under every fine corner of
-   its four coarse cells, so every quad (a mix of its corners) stays under everything over its cell. Heights from
-   upward faces alone let the sheet come up through embankments and walls falling away from a road's edge (Chinatown,
-   reported 2026-11-08).
+   fine corner sits 2 ft under the heights and floors of its four cells, a coarse corner 6 ft under the fine corners
+   within a coarse cell of it that touch the track (its ground or any of its triangles), so every quad (a mix of its
+   corners) stays under everything over its cell; far from the track a coarse corner follows its own height. Heights
+   from upward faces alone let the sheet come up through embankments and walls falling away from a road's edge
+   (Chinatown, reported 2026-11-08).
+6. **The sea**: a custom track's `SEA` mesh ([custom tracks](custom_tracks.md#sea): model FILLSEA, never placed) and a
+   [diorama's](#diorama-guides) water. A cell over the sea is sea, at its height and with its texture, unless the
+   track's own ground there is within 30 ft of it (a quay, a ship's deck); higher ground is a deck over it (a bridge),
+   with the sea drawn under. The sea is left out of the texture vote and the color fill (it turned the inland city to
+   water), and only the track's own ground counts as covered, so open sea is drawn coarse.
+
+**Pages of pictures.** A texture of which a triangle maps only a rectangle (the corners' span in texels, whole repeats
+taken out, under 3/4 of the texture on an axis) is a source of its own: that rectangle, resampled (nearest) to 16-64
+texels a side. The PlayStation SF Rush's textures are pages of many pictures (the converter's 32 x 32 tiles of its 256 x
+256 pages, the pictures at any offset), each face a quad mapping one; the whole page repeated drew a patchwork of
+facades and fences over the snow. Only the textures the strips draw are kept.
+
+### Diorama guides
+
+Every Rush 2 and SF Rush track's track select diorama is a small model of the course and what lies round it: the
+red route line, the sea, parks, city, beach, hills. `src/scenery_fill_guide.cpp` lays it over the track and the
+builder follows it past the track's own ground (reported 2026-11-10: Golden Gate's ground carried on as a dome with a
+bump where the bay is, Embarcadero's city texture ran on under the ships).
+
+- **The fit** (`fits` in src/scenery_fill_guide.cpp, made with `tools/diorama_fit.py`): a similarity transform (scale,
+  turn, mirror, offset) that lays the diorama's red route line (triangles whose color is mostly red) over the track's
+  AI path, seen from above: a search over turns and mirroring, then ICP both ways. Mean distances 36-300 ft against
+  courses 4,000-13,000 ft long. Rush 2's eight race tracks (NY One is NYLTRACK, NY Two NYUTRACK), SF Rush's seven
+  (TRK1O2 ... TRK7O5, from its asset 10 through `rush2::track1::convert_container`), their arcade versions (Rush The
+  Rock: the N64 frames, within a few feet; arcade Sunset's shorter figure 8 fit badly on its own, so it takes the N64
+  fit too) and the PlayStation versions of tracks 1-3 (the N64 courses turned a quarter, fitted on their own; the
+  snow and night ones carry the PlayStation's water colors). The stunt and battle arenas' dioramas have no route line.
+- **Kinds** by the diorama's color (its texture's mean times its vertex colors): route (red), water (blue), green,
+  sand (tan, brown), city (the rest: greys, whites). Per 32 ft cell: the lowest land surface (a building stands on the
+  ground) gives the kind and the lie; water where only water is there. Past the diorama's edge both carry on from it
+  by pull-push (the sea round an island stays sea).
+- **Sea**: the diorama's water where the track has no ground, at the track's own water (its blue textures under the
+  diorama's water: the commonest one, at its median height), else the SEA mesh's, else a flat texture of the version's
+  water color (FILLWATER, with a faint ripple) 4 ft under the lowest ground within 320 ft of the water.
+- **Lie**: the diorama's land height times a factor fitted (least squares, 0 to 1) to the track's ground where both
+  are (the dioramas' hills are drawn taller: 0.2-0.7 on hilly courses, 0 on the flat city ones, 1 on The Rock and
+  Alcatraz), plus the track's ground's difference from that, filled in from where it is known (land only: the sea's
+  level pulled the land down to it a few hundred feet out). Land within 12 cells (384 ft) of the sea slopes down to the
+  sea's level (smoothstep), a shore instead of a cliff.
+- **Textures**: each kind of land takes the track's commonest texture in the diorama's areas of that kind, weighted by
+  how near its hue (color over brightness, so snow and night versions compare alike) is to the diorama's there
+  (1 / (1 + (d / 0.1)^2)), never a water texture (Hawaii's sea plane is the lowest surface under its land) or a
+  striped one (texels changing over twice as much across one axis as along the other: lane lines measure 2.5-7, ground
+  1.0-1.2; a city's streets repeated over the city drew lane lines across it). A kind with under 20 cells of the
+  track's ground keeps the plain vote. The snow and night versions use their own pages, so their ground is snow or
+  dark.
+- **Game side**: `guide_key` (view_begin): an SF Rush track (`rush2::track1::race_track`) is `sfrush:<n>`, a custom
+  track its folder (`rush2::track_mod::race_folder`), a stock Rush 2 slot `rush2:<SLOT>`; the worker reads the
+  diorama containers once (Rush 2's asset 3, SF Rush's asset 10) and the guide's hash joins the cache key.
+- **Offline**: `car_probes_test --fill --guide 2 r1:1 dir:<converted>=<key>` (r1:N converts SF Rush track N from
+  RUSH1_ROM) also writes `tmp/scenery_fill/<TRACK>_guide.glb`, the diorama as laid in its kinds' colors.
 
 The textures are the track's own, re-encoded in their own format and palette (`encode_texture`, checked by decoding
 them as RT64 does, `image_of`, against the catalog's image), so texture packs replace them by content
@@ -414,9 +716,9 @@ between `gEXPush/PopGeometryMode`, `OtherMode` and `CombineMode`: 2-cycle, TEXEL
 `G_RM_AA_ZB_OPA_SURF2`, fog and depth like the track, no culling (a mirrored race needs none); the palette cache
 (0x80111954) is cleared after, as the battle models do.
 
-Offline: `tools/car_probes_test.cpp --fill [TRACK ...]` (build with `tools\car_probes_test.bat`) prints each track's
-underlay size and writes `tmp/scenery_fill/<TRACK>.glb`, the track with the underlay as node SCENERYFILL, for
-`tools/glb_view.py`.
+Offline: `tools/car_probes_test.cpp --fill [--guide] [TRACK ...]` (build with `tools\car_probes_test.bat`) prints each
+track's underlay size and writes `tmp/scenery_fill/<TRACK>.glb`, the track with the underlay as node SCENERYFILL, for
+`tools/glb_view.py`. TRACK: a Rush 2 slot, `r1:N`, or `dir:<folder>` (tools/track_mod_test output).
 
 ## Soft particles (removed)
 

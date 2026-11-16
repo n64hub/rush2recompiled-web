@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(Rush2Recompiled LANGUAGES C CXX)
+if (APPLE)
+    # RT64's Metal backend and recompui's macOS helpers are Objective-C++ (.mm).
+    enable_language(OBJC OBJCXX)
+endif()
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -212,6 +216,7 @@ target_sources(Rush2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/sky_fog.cpp
     ${CMAKE_SOURCE_DIR}/src/scenery_fill.cpp
     ${CMAKE_SOURCE_DIR}/src/scenery_fill_build.cpp
+    ${CMAKE_SOURCE_DIR}/src/scenery_fill_guide.cpp
     ${CMAKE_SOURCE_DIR}/src/cheats.cpp
     ${CMAKE_SOURCE_DIR}/src/fonts.cpp
     ${CMAKE_SOURCE_DIR}/src/texture_upscale.cpp
@@ -229,6 +234,7 @@ target_sources(Rush2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_data.cpp
     ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_glb.cpp
     ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_track.cpp
+    ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_seams.cpp
     ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_cars.cpp
     ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_install.cpp
     ${CMAKE_SOURCE_DIR}/src/arcade2049/arcade_checkpoints.cpp
@@ -239,6 +245,7 @@ target_sources(Rush2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/sfrush_ps1/ps1_diorama.cpp
     ${CMAKE_SOURCE_DIR}/src/sfrush_ps1/ps1_cars.cpp
     ${CMAKE_SOURCE_DIR}/src/sfrush_ps1/ps1_install.cpp
+    ${CMAKE_SOURCE_DIR}/src/sfrush_ps1/fancy_ufo.cpp
     ${CMAKE_SOURCE_DIR}/lib/Clipper2/CPP/Clipper2Lib/src/clipper.engine.cpp
     ${CMAKE_SOURCE_DIR}/lib/Clipper2/CPP/Clipper2Lib/src/clipper.offset.cpp
     ${CMAKE_SOURCE_DIR}/lib/Clipper2/CPP/Clipper2Lib/src/clipper.rectclip.cpp
@@ -262,6 +269,9 @@ target_sources(Rush2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/linux_devices.cpp
     ${CMAKE_SOURCE_DIR}/src/linux_window.cpp
     ${CMAKE_SOURCE_DIR}/src/circuit.cpp
+    ${CMAKE_SOURCE_DIR}/src/explosive.cpp
+    ${CMAKE_SOURCE_DIR}/src/time_sprint.cpp
+    ${CMAKE_SOURCE_DIR}/src/checkpoint_time.cpp
     ${CMAKE_SOURCE_DIR}/src/npc_cars.cpp
     ${CMAKE_SOURCE_DIR}/src/paint_colors.cpp
     ${CMAKE_SOURCE_DIR}/src/game_fixes.cpp
@@ -321,6 +331,11 @@ target_sources(Rush2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/surface_fx.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/track2049.cpp
     ${CMAKE_SOURCE_DIR}/src/track_cache.cpp
+    ${CMAKE_SOURCE_DIR}/src/track_traction.cpp
+    ${CMAKE_SOURCE_DIR}/src/car_lights.cpp
+    ${CMAKE_SOURCE_DIR}/src/car_flashers.cpp
+    ${CMAKE_SOURCE_DIR}/src/car_stripes.cpp
+    ${CMAKE_SOURCE_DIR}/src/snowfall.cpp
     ${CMAKE_SOURCE_DIR}/src/race_time_model.cpp
     ${CMAKE_SOURCE_DIR}/src/prewarm.cpp
     ${CMAKE_SOURCE_DIR}/src/texture_prewarm.cpp
@@ -347,12 +362,14 @@ target_sources(Rush2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src/rush2049/car2049.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/audio2049.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049dc/audio2049_dc.cpp
+    ${CMAKE_SOURCE_DIR}/src/rush2049dc/dc_translucent.cpp
     ${CMAKE_SOURCE_DIR}/src/rush1/car1_decals.cpp
     ${CMAKE_SOURCE_DIR}/src/rush1/car1_stripes.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/wings.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/wings_rom.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/wings_state.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/wings_render.cpp
+    ${CMAKE_SOURCE_DIR}/src/rush2049/wings_contrails.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/wings_sound.cpp
     ${CMAKE_SOURCE_DIR}/src/rush2049/wings_menu.cpp
     ${CMAKE_SOURCE_DIR}/rsp/aspMain.cpp
@@ -441,14 +458,23 @@ if (WIN32)
     target_sources(Rush2Recompiled PRIVATE ${CMAKE_SOURCE_DIR}/icons/app.rc)
 elseif (NOT EMSCRIPTEN)
     find_package(SDL2 REQUIRED)
-    add_compile_definitions("PLUME_SDL_VULKAN_ENABLED")
-    add_compile_definitions("RT64_SDL_WINDOW_VULKAN")
+    if (NOT APPLE)
+        # macOS draws through RT64's Metal backend into an SDL Metal view (create_window in src/main.cpp).
+        add_compile_definitions("PLUME_SDL_VULKAN_ENABLED")
+        add_compile_definitions("RT64_SDL_WINDOW_VULKAN")
+    endif()
     target_include_directories(Rush2Recompiled PRIVATE ${SDL2_INCLUDE_DIRS})
     find_package(Freetype REQUIRED)
     target_link_libraries(Rush2Recompiled PRIVATE ${FREETYPE_LIBRARIES} SDL2::SDL2)
     set(THREADS_PREFER_PTHREAD_FLAG TRUE)
     find_package(Threads REQUIRED)
-    target_link_libraries(Rush2Recompiled PRIVATE "-latomic -static-libstdc++" ${CMAKE_DL_LIBS} Threads::Threads)
+    if (APPLE)
+        # macOS packaging (the .app bundle, its libraries and signature) is tools/build_macos.sh. Notes: docs/macos.md.
+        target_link_libraries(Rush2Recompiled PRIVATE ${CMAKE_DL_LIBS} Threads::Threads
+            "-framework Cocoa" "-framework Metal" "-framework QuartzCore" "-framework IOKit")
+    else()
+        target_link_libraries(Rush2Recompiled PRIVATE "-latomic -static-libstdc++" ${CMAKE_DL_LIBS} Threads::Threads)
+    endif()
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # DualSense haptics play on the controller's sound card through PulseAudio (or PipeWire's pulse server), or
         # ALSA when the card is split by alsa-ucm-conf (src/dualsense_haptics.cpp). GTK (nfd's file pickers) to keep
@@ -481,6 +507,15 @@ set (DXC_RT_OPTS "${DXC_COMMON_OPTS}" "-D" "RT_SHADER" "-T" "lib_6_3" "-fspv-tar
 # (the page is 32-bit wasm, which would pick the arm64 dxc-linux on an x86-64 Linux host).
 if (CMAKE_HOST_WIN32)
     set (DXC "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc.exe")
+elseif (APPLE)
+    # As lib/rt64/CMakeLists.txt: RecompFrontend's shaders go HLSL -> SPIR-V -> Metal with RT64's dxc-macos.
+    if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+        find_library(ZLIB_LIBRARY NAMES z)
+        get_filename_component(ZLIB_PATH ${ZLIB_LIBRARY} DIRECTORY)
+        set (DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64:${ZLIB_PATH}" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-macos")
+    else()
+        set (DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos")
+    endif()
 elseif (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-linux")
 else()

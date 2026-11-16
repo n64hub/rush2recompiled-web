@@ -38,10 +38,13 @@ namespace rush2::wings {
     struct Pose {
         int style;            // 0-2
         float slide;          // Sideways slide of each wing, world units.
+        float emit_slide;     // The slide the contrails start from: the full slide unless the wings are sliding (func_800924F4's sp+0xD0).
         float height;         // Height above the car's origin, world units.
         float tilt;           // Rotation about the car's X axis, radians.
         bool flames;
         float flame_scale[2]; // Flame stretch along Y, left and right.
+        float stick_x, stick_y; // The stick steering the car in the air (-1..1): pitch torque -= y, roll += x x mirror.
+        float mirror;           // -1 on a mirrored track, else 1.
     };
     // The wing pose of car index (0-7), or false if its wings are away.
     bool get_pose(uint8_t* rdram, int index, Pose& out);

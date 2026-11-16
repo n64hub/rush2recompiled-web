@@ -13,7 +13,7 @@
 // prefix: PICKUP, INTEG, VETTE, ...) replaces that car with the mesh, any number of triangles, drawn as one body that
 // dents like a Rush 2049 car's (rush2::car2049::set_body_car). Its textures are drawn at their full size in the car's
 // paint (rush2::derive::set_mod_textures). Turning the mod off in the Mods menu brings the car back. A mod's
-// rush2/new_cars/<ID>.glb with <ID>.json adds a car to the car select instead (mod car types 57-72,
+// rush2/new_cars/<ID>.glb with <ID>.json adds a car to the car select instead (mod car types 57-120,
 // docs/car_mods.md#new-cars).
 namespace rush2::car_mods {
     // At boot, after the car tables and assets are set up (rush2_heap_init): installs what prepare made for the enabled
@@ -31,6 +31,8 @@ namespace rush2::car_mods {
     // Online races (docs/online.md#mod-cars): each mod car slot's car as a hash of its mod, car id and files (0 an empty
     // slot). Two machines with the same value have the same car, whatever slot it is in. Any thread.
     std::array<uint32_t, rush2::car_types::count_mod> online_car_checks();
+    // The car type of a mod's new car (rush2/new_cars/<car_id>), or -1 while it isn't installed. Any thread.
+    int new_car_type(const std::string& mod_id, const std::string& car_id);
 
     // Liveries (docs/car_mods.md#liveries): a mod's rush2/liveries/<ID>.json gives an existing car (a Rush 2 or Rush
     // 2049 car) more looks, each a whole mesh drawn as authored, picked with the car select's STYLE row. STYLE 1 is the
@@ -43,8 +45,20 @@ namespace rush2::car_mods {
     // Shows the picked livery on car `id`'s loaded copy (a car select preview id, or a race car 0-7), or the car's own
     // body for STYLE 1: from the end of func_8008582C (rush2_car49_paint), and when STYLE changes.
     void paint_livery(uint8_t* rdram, int id);
+    // Steps the liveries' flipbooks (the arcade's light bars) on every car copy showing one; once a frame, game thread.
+    void animate(uint8_t* rdram);
     // The livery body (rush2::car2049::add_livery_body id) car `id`'s copy shows, and the copy's base; -1 for none.
     int livery_body(uint8_t* rdram, int id, uint32_t& base);
+    // The file name (no folder or extension) of the livery car `id`'s copy shows, "" for none (Car Lights' key).
+    std::string livery_name(uint8_t* rdram, int id);
+    // The color race car `id` (0-7) reads as from afar, 0xRRGGBB, when its look is drawn as authored rather than in
+    // Rush 2's MAIN COLOR: a livery, a new car's color scheme (or its one look without a paint mask), or a Dreamcast
+    // disc's Rush 2049 paint job. False when MAIN COLOR paints it. The track map's dots (rush2_map_dot_colors). Game
+    // thread.
+    bool look_color(uint8_t* rdram, int id, uint32_t& rgb);
+    // Whose car copy `id` is (a car select preview id while the car select is up, else a race car 0-7): its type, its
+    // player (0-3, -1 for a computer car) and that player's profile (record address in the save area, 0 for none).
+    void car_identity(uint8_t* rdram, int id, int& type, int& player, uint32_t& profile);
 }
 
 // Files in the enabled mods (car models, HUD placements).

@@ -82,7 +82,9 @@ row's index, never a fixed number.
   2049 Arcade Build and Install at launch (docs/arcade2049.md#building-it-in-the-game).
 - Car select (state 2): A on the last row picks the car; with every player done the race starts. B goes back to the
   track select. Rows on an N64 2049 car (RUSH2_TEST_CAR=24, the 8-Ball): CAR, STYLE, TRANSMISSION, MAIN, ACCENT,
-  TERTIARY COLOR, RIMS, HORN, ENGINE (8 DD), TORQUE, SUSPENSION, TIRES (11 DD), WINGS, DURABILITY; the rows follow the
+  TERTIARY COLOR (only on a car whose textures use it, not the 8-Ball: then every row below moves up one), STRIPE,
+  STRIPE COLOR, RIMS, HORN, ENGINE, TORQUE, SUSPENSION, TIRES, WINGS, DURABILITY
+  (docs/car_mods.md#tertiary-color); the rows follow the
   car and its STYLE, so changing STYLE on the way down moves the rest. Space DD presses 1 s apart: presses 0.5 s apart
   are partly dropped. `tools/test_race.py menus --config cheats.unlock_all_parts=true --env RUSH2_TEST_TRACK=0 --env
   RUSH2_TEST_CAR=24 --script "8:START,11:A,13.5:A,17:A,..." --shots ...` reaches it at 17 s as JUST PLAY in its own
@@ -94,6 +96,11 @@ L and R (LB / RB and the right trigger on a controller, Q / E on the keyboard) s
 CAR on the car select from any row, as left and right do on that row (issue #48, src/select_shoulders.cpp: the
 press becomes a D-pad left or right and the row's id TRACK's or CAR's for that step; the track select's cursor is
 moved to TRACK's row for the step and put back at 0x803AC410 / 0x803AC554). In an input script they are `L` and `R`.
+The car select only steps a row its car allows (`carselect_title_flag_803CB3AC[slot]`, checked at 0x803B984C), and
+that flag is the cursor row's: a shoulder press forces it on there, since CAR can always change (issue #75: with the
+cursor on STRIPE, the Formula's locked STRIPE stopped L / R). Test: `--config cheats.unlock_all_cars=true --env
+RUSH2_TEST_CAR=18 --script "T1:START,T4:A,T6.5:A,T10:A,T11.5:DD,T12.5:DD,T13.5:DD,T14.5:DD,T16:R,T18:L,T20:L"`
+(Formula, cursor on STRIPE, then Prototype, Formula, Hotrod).
 
 ### Game filter
 
@@ -126,7 +133,11 @@ was). A course whose other versions are locked (Metro, Mission, Presidio before 
 shows its arcade version and still names it; `--config cheats.unlock_all_tracks=true` opens them for a test run
 (src/rush2049/track2049_menu.cpp `rush2_track49_filter_frame`, drawn by `rush2::game_filter::draw`). The pick is saved
 per course in the saves' "track_select" section ("versions") and the screen is rebuilt as after a filter change, on
-the new version. `RUSH2_TEST_TRACK=ID` with a course's other version opens on that version (picked for the run).
+the new version. `RUSH2_TEST_TRACK=ID` with a course's other version opens on that version (picked for the run). The rebuild happens in the switch's own frame (teardown, then the game's own func_803AB294(1) builds and draws),
+so no frame goes without the screen, and a carousel slide in progress carries on: each entry's distance from its
+target (+0x4 x minus +0x10 target, by display index) and the highlight's x (0x803CB40C) are put back after the build
+(hook 0x803AB9B8, `rush2_track49_carousel_restore`). Carousel entry (0x1C bytes): +0x0 track, +0x4/+0x8/+0xC position,
++0x10 target x, +0x14 place, +0x18 model node; each frame every entry moves by the shown entry's (target - x) / 10 * dt * 30.
 
 Each version's preview has a thin ring around the round picture in its version's color: N64 blue, DC orange, ARCADE
 red (`version_ring_*`, include/track2049.h). The ring shows only when the X prompt names the version
@@ -195,7 +206,10 @@ up, for a script through the real menus (it starts as JUST PLAY: the folder has 
 
 To look at a spot on a track, don't hold the gas and hope: watch a drone drive the AI lanes there,
 `tools/test_race.py TRACK --drones 1 --env RUSH2_TEST_RACE_VIEW_CAR=1 --env RUSH2_TEST_RACE_VIEW_LANE=1` (the view on
-drone 1, kept to lane 1 of 0-3, left to right), with `--shots` as it passes.
+drone 1, kept to lane 1 of 0-3, left to right), with `--shots` as it passes. `--env RUSH2_TEST_RACE_VIEW_MODE=1`
+puts that camera in the hood view (0 bumper, 1 hood, 2 and 3 chase; docs/camera.md), as a player's screenshot from
+the hood or bumper camera shows the spot. Without `RUSH2_TEST_RACE_VIEW_CAR` it sets every player's camera, so
+`--cars A,B,C,D` shows four cars in that view at once (split screen).
 
 `--env RUSH2_TEST_RACE_FINISH_BANNER=1` turns the finish banner to FINISH as the race starts (Rush 2's last-lap swap,
 which otherwise needs a player past the last checkpoint of the last lap). The grid is under or past most banners, so

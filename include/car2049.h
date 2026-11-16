@@ -1,6 +1,8 @@
 #ifndef __CAR2049_H__
 #define __CAR2049_H__
 
+#include "car_flashers.h"
+#include "car_lights.h"
 #include <array>
 #include <cstdint>
 #include <map>
@@ -17,14 +19,14 @@ namespace rush2::rom2049 {
 namespace rush2::online::sync { class Walker; }
 
 // Rush 2049 cars as Rush 2 car types 23-35 (src/rush2049/car2049.cpp); type 22 is Rush 2's "no car" marker. This file
-// also keeps what every extra type (2049's, California Speed's 36-56 and mod cars 57-72, include/car_types.h) shares:
+// also keeps what every extra type (2049's, California Speed's 36-56 and mod cars 57-120, include/car_types.h) shares:
 // the widened per-type tables, assets, side slots for the player records' options, denting and the car select's list.
 namespace rush2::car2049 {
     constexpr int rush2_types = rush2::car_types::rush2_types;
     constexpr int car_count = rush2::car_types::count_2049;
     constexpr int first_type = rush2::car_types::first_2049;
     constexpr int end_type = first_type + car_count; // 36: past the 2049 types
-    constexpr int types = rush2::car_types::types;   // 73: every type (the tables' width)
+    constexpr int types = rush2::car_types::types;   // 121: every type (the tables' width)
 
     // The car select's per-player car list, moved from 0x803CB368 to hold every type: car i of player p at
     // + 2 * i + p (count: s16 [2] at 0x803CB398).
@@ -71,6 +73,20 @@ namespace rush2::car2049 {
     // The number of paint jobs (car select STYLEs) of a car type: a 2049 car from a Dreamcast disc has its own, any
     // other car 0.
     int paint_jobs(int type);
+    // Whether an N64 ROM's 2049 car's textures use its third paint ramp, so the car select shows TERTIARY COLOR.
+    bool has_tertiary(int type);
+    // A Dreamcast disc's car's paint job color (0xRRGGBB, the disc job's paint) for MAIN COLOR `main` (its STYLE, main %
+    // jobs); false for a car without paint jobs.
+    bool paint_job_color(int type, int main, uint32_t& rgb);
+    // TERTIARY COLOR of an N64 ROM's 2049 car: its third paint ramp (2049's COLOR 3), a car select row of its own
+    // under ACCENT COLOR (STRIPE COLOR colors the STRIPE). Kept per profile and car type in the saves' "tertiary"
+    // section; `owner` is the profile's record address, or 1-4 for player 1-4 without one (JUST PLAY: kept for the
+    // session only). -1 when none is kept: the car takes its STRIPE COLOR, as before the row was its own (a computer
+    // car always does). docs/car_mods.md#tertiary-color.
+    int tertiary_color(uint32_t owner, int type);
+    void set_tertiary_color(uint32_t owner, int type, int color);
+    // Paints car select preview / race car `id`'s third ramp with its owner's TERTIARY COLOR (after the row changes).
+    void repaint_tertiary(uint8_t* rdram, int id);
     // A Rush 2 car type drawn as one body, as a 2049 car is (a car mod's mesh, src/car_mods.cpp): its asset (0x1D +
     // type) becomes `car`, a car container whose <prefix>FRAME1 is the body and whose other parts are empty, dented
     // by the car's panel damage like a 2049 car's body. scuffed: the body's textures' damaged copies (file offset of
@@ -129,6 +145,16 @@ namespace rush2::car2049 {
     }
     // Opens the brake light blocks branched past for the mirror walk (begin), closes them again after.
     void brake_mirror(uint8_t* rdram, bool begin);
+    // A livery's flipbook frames (its .json's "sirens": the arcade's light bars, docs/car_mods.md#sirens): each frame a
+    // list of its own, named as a model, and in each body list a switch per frame after the brake light switch: a
+    // G_NOOP holding the frame's number in its low 24 bits (siren_marker(1)), which rush2::car_mods turns into a G_DL
+    // call to the frame's list while that frame shows, then a G_NOOP holding the list's file offset (siren_marker(2)).
+    constexpr uint32_t siren_marker(int which) {
+        return 0x5C500000u | uint32_t(which);
+    }
+    inline std::array<std::pair<uint32_t, uint32_t>, 2> siren_switch(uint32_t list, int frame) {
+        return { { { uint32_t(frame) & 0xFFFFFFu, siren_marker(1) }, { list & 0xFFFFFFu, siren_marker(2) } } };
+    }
     struct ModCar {
         std::string name;              // the car select logo's text
         int base = 0;                  // Rush 2 type 0-21
@@ -153,9 +179,28 @@ namespace rush2::car2049 {
         bool wings_hidden = false;     // "no_wings": the wings work but aren't drawn (src/rush2049/wings_render.cpp)
         bool marks_hidden = false;     // "no_skid_marks": its wheels lay no tire marks (src/surface_fx.cpp)
         bool dust_hidden = false;      // "no_wheel_dust": its wheels throw no dust, smoke or spray (src/surface_fx.cpp)
+        bool stripes_above_widest = false; // "stripes_above_widest": STRIPE paints nothing below the body's widest point
         float shadow_radius = 0.0f;    // "round_shadow": a round shadow this many feet across the middle (src/mod_car_shadow.cpp); 0: the game's
         std::vector<uint8_t> logo;     // "logo": the car select name logo, an encoded 128 x 32 image; empty: lettered
+        // "lights": its headlamps and tail lamps for Car Lights (src/car_lights.cpp); empty: found on the body.
+        std::vector<rush2::car_lights::LampSpec> lamps;
+        // "flashers": roof lights that pulse while it races (src/car_flashers.cpp); empty: none.
+        rush2::car_flashers::Spec flashers;
     };
+    // What race car `car`'s brake lights are drawn from while it brakes (src/car_lights.cpp): its textures' lit copies
+    // (texels -> the lit copy, both RDRAM; the texels whose bytes differ are the lights), lit copies kept outside RDRAM
+    // (a Dreamcast car's job-less tail light textures: texels -> their lit bytes), its brake light lists (RDRAM; every
+    // triangle is a light) and whether Rush 2's own palette lighting shows on it (its CI textures' entries 161-175:
+    // false for a California Speed car, whose those entries are grays). Game thread.
+    struct BrakeLightSources {
+        std::vector<std::pair<uint32_t, uint32_t>> lit_copies;
+        std::vector<std::pair<uint32_t, std::vector<uint8_t>>> lit_bytes;
+        std::vector<uint32_t> lists;
+        std::vector<uint32_t> switches;   // each list's switch (rush2::car2049::brake_switch) in the body's lists
+        bool palette = true;
+        uint32_t base = 0;   // the car copy's base (0: a Rush 2 car of its own)
+    };
+    void brake_light_sources(uint8_t* rdram, int car, BrakeLightSources& out);
     // Mod car n from the car container `car` (as set_body_car's), parts named `prefix` (at most 7 characters).
     void set_mod_car(uint8_t* rdram, int n, std::vector<uint8_t> car, const std::string& prefix,
                      const std::map<uint32_t, std::vector<uint8_t>>& scuffed, const ModCar& spec);
@@ -293,6 +338,8 @@ namespace rush2::car2049 {
     // the road under it on a 2049 track); on a 2049 track any other car part is drawn from a copy of its list whose
     // combiners multiply by that colour (through ENV and PRIM).
     void light_model(uint8_t* rdram, recomp_context* ctx, uint32_t dl);
+    // The race car (0-7) the scene node at `node` belongs to, -1 for none (light_model's tables, built per view).
+    int model_car(uint32_t node);
 
     // Car sheen (Graphics > Car Sheen): Rush 2's translucent sheen layers over the cars. Original draws them on the
     // Rush 2 cars, All Off on none, All On on the Rush 2049 cars too (layers made from their bodies). Cube Map has

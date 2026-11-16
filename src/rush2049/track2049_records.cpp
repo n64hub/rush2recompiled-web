@@ -36,10 +36,13 @@
 // Custom tracks (src/track_mod/) race in the host slot too and get one more course, numbered 15 below, which holds
 // the raced custom track's records: the save file keeps every custom track's as { "mod": "<its folder>" }, and when
 // another one is raced the course is swapped (sync_mod). The high-score screen's seed is the track's best_times.
+// The stock games' courses that are only custom tracks here (the game-built mods' Alcatraz, Rush 2049 arcade, and
+// Chinatown, SF Rush PlayStation; pinned_courses) are listed on the records screen too: shown, the course is swapped
+// to their folder's records the same way.
 //
 // The records screen in the menus lists the added courses after Rush 2's (screen_entries): while one is shown the
 // screen's index stays on HAWAII's, HAWAII's logo container holds the course's logo, and the list's rows, best times,
-// stats and seed move to the course's as in a race. Custom tracks aren't listed. 2049 results don't count toward
+// stats and seed move to the course's as in a race. Other custom tracks than the pinned courses aren't listed. 2049 results don't count toward
 // Rush 2's unlocks. Clearing a profile's records there, or deleting the profile, clears its 2049 records as well.
 //
 // Rush 2049's stunt arenas are hosted by STUNT1 (track 11), which has no lap records, only stats (the stunt counters
@@ -71,7 +74,9 @@
 #include "librecomp/addresses.hpp"
 #include "util/file.h"
 
+#include "arcade2049.h"
 #include "data_files.h"
+#include "sfrush_ps1.h"
 #include "rush2_hooks.h"
 #include "collectibles.h"
 #include "track1.h"
@@ -218,12 +223,14 @@ namespace {
         if (k == rush2::track2049::obstacle) {
             return obstacle_track;
         }
+        // A custom track first: a version raced on an N64 SF Rush course ([track] base) has its own records, under its
+        // folder, though the course is what is raced (rush2::track1::race_track is set too).
+        if (rush2::track_mod::race_track() >= 0) {
+            return mod_track;
+        }
         int r = rush2::track1::race_track();
         if (r >= 1 && r <= r1_count) {
             return track_count + r;
-        }
-        if (rush2::track_mod::race_track() >= 0) {
-            return mod_track;
         }
         int c = rush2::calspeed::race_track();
         if (c >= 1 && c <= cs_count) {
@@ -579,9 +586,13 @@ namespace {
         }
     }
 
-    // Makes the mod_track course (store, side blocks, session rows) hold the raced custom track's records.
+    // Makes the mod_track course (store, side blocks, session rows) hold a custom track's records: the raced one's,
+    // or a pinned course's the records screen shows (never while rows are swapped in).
+    void sync_mod(uint8_t* rdram, const std::string& folder);
     void sync_mod(uint8_t* rdram) {
-        std::string folder = rush2::track_mod::race_folder();
+        sync_mod(rdram, rush2::track_mod::race_folder());
+    }
+    void sync_mod(uint8_t* rdram, const std::string& folder) {
         if (folder.empty() || folder == loaded_mod) {
             return;
         }
@@ -850,14 +861,23 @@ namespace {
         swapped = 0;
     }
 
-    float seed_2049(int k, int backward) {
+    // The pinned course the records screen shows (its folder), and its best_times, or "".
+    std::string screen_folder;
+    std::vector<float> screen_best_times;
+    int screen_base = 0;    // its [track] base course (1-7), 0 none
+
+    float seed_2049(int k, int backward, bool screen = false) {
         if (k == mod_track) {
             // The fastest of the track's best_times (track.toml), or 90 s.
             rush2::track_mod::Settings settings;
+            std::vector<float> times;
+            int base = 0;
+            if (screen) times = screen_best_times, base = screen_base;
+            else if (rush2::track_mod::race_settings(settings)) times = settings.best_times, base = rush2::track_mod::base_course(settings);
             float best = 0.0f;
-            if (rush2::track_mod::race_settings(settings)) {
-                for (float t : settings.best_times) if (t > 1.0f && (best == 0.0f || t < best)) best = t;
-            }
+            for (float t : times) if (t > 1.0f && (best == 0.0f || t < best)) best = t;
+            // A version raced on an N64 SF Rush course without best_times: the course's own seed.
+            if (best <= 1.0f && base > 0) best = rush2::track1::record_seed(base, backward != 0);
             return best > 1.0f ? std::min(best, 479.0f) : 90.0f;
         }
         if (is_cs(k)) {
@@ -918,9 +938,58 @@ namespace {
     constexpr int icon_asset = 2;
     bool coin_icons = false;        // The coin pictures are in KEYICON / DEWICON.
     uint16_t icon_bits = 0;         // The shown course's mask, worked out by the list each frame.
+    // An SF Rush course's keys (rush2::collectibles::key_bits on the versions installed: its N64 keys and the PS1's,
+    // docs/sfrush_ps1.md#keys), worked out when the page's course changes; icon n shows the course's n-th key.
+    int icon_keys_k = -1;
+    uint16_t icon_keys = 0;
+    // The bit of the course's n-th key, or -1 past its last.
+    int nth_key(int n) {
+        for (int b = 0; b < 16; b++) {
+            if ((icon_keys >> b) & 1) {
+                if (n-- == 0) return b;
+            }
+        }
+        return -1;
+    }
     uint32_t icon_names = 0;        // RDRAM: "KEYICON", "DEWICON" (16 bytes each), for the widgets' texture names.
 
+    // The screen's 40 widgets come from the list 0x803C89C0 (0x28 bytes each: +0 texture name, +4 x << 16 | y, ...,
+    // +0x20 callback, +0x24 argument), made by func_800604FC(0, 0, list, 40) at 0x803B0B9C. The screen is given a copy
+    // with a 41st: HAWAII's fifth Dew can (docs/unlocks_plan.md#fifth-dew-can-on-hawaii-v), slot 15's DEWICON entry
+    // with argument 16 one icon further right (x 288, past the 4:3 row's end).
+    constexpr uint32_t widget_list = 0x803C89C0;
+    constexpr uint32_t widget_size = 0x28;
+    constexpr int widget_count = 40;
+    constexpr int last_icon_widget = 38;    // Slot 15's entry.
+    constexpr int fifth_can_slot = 16;
+    uint32_t widget_copy = 0;
+
+    // The stock games' courses that are only custom tracks here, listed on the records screen after the courses of
+    // their game (`after`: the added course they follow) while their mod is installed: Rush 2049 arcade's own track
+    // and the PlayStation SF Rush's. key_course: their collectibles course (src/collectibles.cpp), or -1.
+    struct Pinned {
+        const char* mod;
+        const char* folder;
+        int after;
+        int key_course;
+    };
+    const Pinned pinned_courses[] = {
+        { rush2::arcade2049::track_mod_id, "alcatraz", track_count, -1 },
+        { rush2::sfrush_ps1::mod_id, "chinatown", track_count + r1_count, rush2::collectibles::sfrush_ps1_course },
+    };
+
+    const Pinned* pinned_of(const std::string& folder) {
+        for (const Pinned& p : pinned_courses) {
+            if (folder == p.folder) return &p;
+        }
+        return nullptr;
+    }
+
     int menu_id_of(int k) {
+        if (k == mod_track) {
+            const Pinned* p = pinned_of(screen_folder);
+            return p != nullptr ? rush2::track2049::mod_track_id(p->mod, p->folder) : -1;
+        }
         if (is_stunt(k)) return rush2::track2049::stunt_menu_id + (k - stunt_track);
         if (k == obstacle_track) return rush2::track2049::obstacle_menu_id;
         if (is_cs(k)) return rush2::calspeed::first_menu_id + (k - cs_track);
@@ -961,33 +1030,47 @@ namespace {
         return screen_k != 0 && (index == screen_index_of(screen_k, 0) || index == screen_index_of(screen_k, 1));
     }
 
+    // An added course to list: k, and for the custom track course (mod_track) the pinned course's folder.
+    struct Shown {
+        int k;
+        std::string folder;
+    };
+
     // The added courses to list, in track select order (the stunt arenas are listed on the stats page only).
-    std::vector<int> screen_courses(uint8_t* rdram) {
-        std::vector<int> ks;
+    std::vector<Shown> screen_courses(uint8_t* rdram) {
+        std::vector<Shown> ks;
+        auto add_pinned = [&](int after) {
+            for (const Pinned& p : pinned_courses) {
+                int t = p.after == after ? rush2::track2049::mod_track_id(p.mod, p.folder) : -1;
+                if (t >= 0 && screen_open(rdram, t)) ks.push_back({ mod_track, p.folder });
+            }
+        };
         for (int k = 1; k <= obstacle_track - 1; k++) {
             bool on = k <= track_count ? rush2::track2049::available() : rush2::track1::available();
-            if (on && screen_open(rdram, menu_id_of(k))) ks.push_back(k);
+            if (on && screen_open(rdram, menu_id_of(k))) ks.push_back({ k, "" });
+            add_pinned(k);
         }
         for (int k = stunt_track; k < stunt_track + stunt_count; k++) {
-            if (rush2::track2049::available() && screen_open(rdram, menu_id_of(k))) ks.push_back(k);
+            if (rush2::track2049::available() && screen_open(rdram, menu_id_of(k))) ks.push_back({ k, "" });
         }
         if (rush2::track2049::available() && screen_open(rdram, menu_id_of(obstacle_track))) {
-            ks.push_back(obstacle_track);
+            ks.push_back({ obstacle_track, "" });
         }
         for (int k = cs_track; k < cs_track + cs_count; k++) {
-            if (rush2::calspeed::available() && screen_open(rdram, menu_id_of(k))) ks.push_back(k);
+            if (rush2::calspeed::available() && screen_open(rdram, menu_id_of(k))) ks.push_back({ k, "" });
         }
         return ks;
     }
 
     struct ScreenEntry {
         int index, k;
+        std::string folder;
     };
 
     // What left and right step through on a page: Rush 2's entries as func_803B0A90 picks them (PIPE and MIDWAY
     // when open, per screen_open, STUNT1 and the circuit on the stats page only), the added courses forward after Rush 2's forward
     // tracks and backward after its backward ones (the obstacle course has no backward).
-    std::vector<ScreenEntry> screen_entries(uint8_t* rdram, const std::vector<int>& ks) {
+    std::vector<ScreenEntry> screen_entries(uint8_t* rdram, const std::vector<Shown>& ks) {
         int page = MEM_W(0, (int32_t)screen_page);
         auto shown = [&](int index) {
             int m = index % 12;
@@ -1003,13 +1086,14 @@ namespace {
                 if (shown(index)) e.push_back({ index, 0 });
             }
             // The stunt arenas, like STUNT1, are forward and on the stats page only.
-            for (int k : ks) {
+            for (const Shown& s : ks) {
+                int k = s.k;
                 if (is_stunt(k) ? page == 2 && !backward : !backward || (k != obstacle_track && !is_cs(k))) {
-                    e.push_back({ screen_index_of(k, backward), k });
+                    e.push_back({ screen_index_of(k, backward), k, s.folder });
                 }
             }
         }
-        if (page == 2) e.push_back({ 24, 0 });
+        if (page == 2) e.push_back({ 24, 0, "" });
         return e;
     }
 
@@ -1064,7 +1148,10 @@ namespace {
     // Course k's keys or coins found by the screen's profile, or on TOTALS by every profile on the paks and the
     // players without one (as func_803B1B78 ORs Rush 2's key masks).
     uint16_t screen_found(uint8_t* rdram, int k) {
-        if (k < 1 || k == obstacle_track || k == mod_track || is_cs(k)) return 0;
+        const Pinned* pinned = k == mod_track ? pinned_of(screen_folder) : nullptr;
+        if (k < 1 || k == obstacle_track || (k == mod_track && (pinned == nullptr || pinned->key_course < 0)) || is_cs(k)) {
+            return 0;
+        }
         std::set<std::string> names;
         bool totals = (int16_t)MEM_H(0, (int32_t)screen_profile) < 0;
         if (!totals) {
@@ -1081,7 +1168,8 @@ namespace {
         uint16_t bits = 0;
         for (const rush2::collectibles::Progress& pr : rush2::collectibles::progress()) {
             if (!names.contains(pr.name)) continue;
-            bits |= is_stunt(k) ? pr.stunt2049[size_t(k - stunt_track)]
+            bits |= pinned != nullptr ? rush2::collectibles::course_mask(pr, pinned->key_course)
+                  : is_stunt(k) ? pr.stunt2049[size_t(k - stunt_track)]
                   : k <= track_count ? pr.rush2049[size_t(k - 1)] : pr.sfrush[size_t(k - track_count - 1)];
         }
         return bits;
@@ -1130,6 +1218,7 @@ extern "C" void records_screen_spawn_random_particles_803B0650(uint8_t* rdram, r
 // track's logo, so their own go back. Stunt stats not yet saved (a session quit before its end) are saved here.
 extern "C" void rush2_records_screen_open(uint8_t* rdram, recomp_context* ctx) {
     screen_k = 0;
+    screen_folder.clear();
     shown_logo[0] = shown_logo[1] = -1;
     screen_logo(rdram, ctx, 0);
     std::lock_guard lock{ records_mutex };
@@ -1139,6 +1228,7 @@ extern "C" void rush2_records_screen_open(uint8_t* rdram, recomp_context* ctx) {
 // func_803B0A90 at 0x803B0AF0, the screen closing: the hosts' logos go back for whatever loads them next.
 extern "C" void rush2_records_screen_close(uint8_t* rdram, recomp_context* ctx) {
     screen_k = 0;
+    screen_folder.clear();
     if (shown_logo[0] != -1 || shown_logo[1] != -1 || coin_icons) screen_logo(rdram, ctx, 0);
     shown_logo[0] = shown_logo[1] = -1;
 }
@@ -1151,25 +1241,40 @@ extern "C" void rush2_records_screen_step(uint8_t* rdram, recomp_context* ctx) {
     if ((buttons & 0x300) == 0) {
         return;
     }
-    std::vector<int> ks = screen_courses(rdram);
+    std::vector<Shown> ks = screen_courses(rdram);
     if (ks.empty() && !rush2::unlocks::enabled()) {
         screen_k = 0;
+        screen_folder.clear();
         return;
     }
     std::vector<ScreenEntry> e = screen_entries(rdram, ks);
     int index = MEM_W(0, (int32_t)screen_index);
     int at = -1;
     for (size_t i = 0; i < e.size(); i++) {
-        if (e[i].index == index && e[i].k == screen_k) at = int(i);
+        if (e[i].index == index && e[i].k == screen_k && e[i].folder == screen_folder) at = int(i);
     }
     if (at < 0) {
         screen_k = 0;
+        screen_folder.clear();
         return;
     }
     int n = int(e.size());
     at = (at + ((buttons & 0x200) ? -1 : 1) + n) % n;
     MEM_W(0, (int32_t)screen_index) = e[at].index;
     screen_k = e[at].k;
+    if (e[at].folder != screen_folder) {
+        // A pinned course: its best_times for the made-up rows' seed.
+        screen_folder = e[at].folder;
+        screen_best_times.clear();
+        screen_base = 0;
+        for (const rush2::track_mod::Entry& t : rush2::track_mod::tracks()) {
+            const Pinned* p = pinned_of(screen_folder);
+            if (p != nullptr && t.mod_id == p->mod && t.folder == p->folder) {
+                screen_best_times = t.settings.best_times;
+                screen_base = rush2::track_mod::base_course(t.settings);
+            }
+        }
+    }
     ctx->r2 = buttons & ~0x300u;
     recomp_context call = *ctx;
     call.r4 = 0x49;
@@ -1188,12 +1293,23 @@ extern "C" void rush2_records_screen_render_enter(uint8_t* rdram, recomp_context
         screen_logo(rdram, ctx, 0);
     }
     icon_bits = screen_k != 0 ? screen_found(rdram, screen_k) : 0;
+    const Pinned* shown_pin = screen_k == mod_track ? pinned_of(screen_folder) : nullptr;
+    int keys_k = shown_pin != nullptr ? -2 - int(shown_pin - pinned_courses) : screen_k;
+    if (keys_k != icon_keys_k) {
+        icon_keys_k = keys_k;
+        icon_keys = shown_pin != nullptr ? (shown_pin->key_course >= 0 ? rush2::collectibles::key_bits(shown_pin->key_course, true) : 0)
+                    : screen_k > track_count && screen_k < obstacle_track
+                        ? rush2::collectibles::key_bits(screen_k - track_count - 1, true) : 0;
+    }
     std::lock_guard lock{ records_mutex };
     render_k = 0;
     if (!screen_on_course(rdram) || swapped != 0) {
         return;
     }
     ensure_blocks(rdram);
+    if (screen_k == mod_track) {
+        sync_mod(rdram, screen_folder);     // a pinned course's records into the custom track course
+    }
     if (!is_stunt(screen_k)) {
         swap_in(rdram, screen_k);
     }
@@ -1209,6 +1325,36 @@ extern "C" void hud_widget_setup_icon_80080DBC(uint8_t* rdram, recomp_context* c
 // instead of HAWAII's: hidden off the stats page, else lit by its bit. Returns 1 when it did (the function is skipped).
 extern "C" int rush2_records_screen_icon(uint8_t* rdram, recomp_context* ctx) {
     uint32_t w = (uint32_t)ctx->r4;
+    if (MEM_W(0x2C, (int32_t)w) == fifth_can_slot) {
+        // HAWAII's fifth Dew can (widget_list): shown on HAWAII's stats page, lit when the viewed profile (or anyone,
+        // on TOTALS) found it.
+        int index = MEM_W(0, (int32_t)screen_index);
+        bool shown = MEM_W(0, (int32_t)screen_page) == 2 && index != 24 && index % 12 == host_slot &&
+                     !screen_on_course(rdram);
+        recomp_context call = *ctx;
+        call.r4 = (gpr)(int32_t)w;
+        call.r5 = shown ? 0 : 1;
+        hud_widget_init_type_80060DA8(rdram, &call);
+        if (shown) {
+            bool found;
+            if ((int16_t)MEM_H(0, (int32_t)screen_profile) < 0) {
+                found = rush2::collectibles::rush2_extra_can_found("", true);
+            }
+            else {
+                uint32_t record = pak_records + uint32_t((int16_t)MEM_H(0, (int32_t)screen_pak)) * 0x2200 +
+                                  uint32_t((int16_t)MEM_H(0, (int32_t)screen_record)) * 0x6C0;
+                found = rush2::collectibles::rush2_extra_can_found(read_name(rdram, record + 2), false);
+            }
+            call = *ctx;
+            call.r4 = (gpr)(int32_t)w;
+            call.r5 = found ? 1 : 0;
+            call.r6 = 0x10;
+            call.r7 = 0x20;
+            hud_widget_setup_icon_80080DBC(rdram, &call);
+        }
+        ctx->r2 = 1;
+        return 1;
+    }
     int n = MEM_W(0x2C, (int32_t)w) & 0xF;
     if (icon_names == 0) {
         icon_names = (uint32_t)((uint8_t*)recomp::alloc(rdram, 32) - rdram) + 0x80000000;
@@ -1230,9 +1376,9 @@ extern "C" int rush2_records_screen_icon(uint8_t* rdram, recomp_context* ctx) {
         return 0;
     }
     int k = screen_k;
-    bool shown = MEM_W(0, (int32_t)screen_page) == 2 &&
-                 (coin_course(k) ? coin_icons
-                                 : k > track_count && k < obstacle_track && n < rush2::collectibles::sfrush_keys[size_t(k - track_count - 1)]);
+    // An SF Rush course: icon n is its n-th key (up to 12: Market's 8 and the PS1's 4).
+    int bit = coin_course(k) ? n : (k > track_count && k < obstacle_track) || k == mod_track ? nth_key(n) : -1;
+    bool shown = MEM_W(0, (int32_t)screen_page) == 2 && (coin_course(k) ? coin_icons : bit >= 0);
     recomp_context call = *ctx;
     call.r4 = (gpr)(int32_t)w;
     call.r5 = shown ? 0 : 1;
@@ -1240,13 +1386,33 @@ extern "C" int rush2_records_screen_icon(uint8_t* rdram, recomp_context* ctx) {
     if (shown) {
         call = *ctx;
         call.r4 = (gpr)(int32_t)w;
-        call.r5 = (icon_bits >> n) & 1;
+        call.r5 = (icon_bits >> bit) & 1;
         call.r6 = 0x10;
         call.r7 = 0x20;
         hud_widget_setup_icon_80080DBC(rdram, &call);
     }
     ctx->r2 = 1;
     return 1;
+}
+
+// func_803B0A90 at 0x803B0B94, the records screen opening ($a2 = its widget list, 0x803C89C0; the count in $a3 is 41,
+// patched at 0x803B0BA0): the list's copy with HAWAII's fifth Dew can icon (widget_list).
+extern "C" void rush2_records_screen_widgets(uint8_t* rdram, recomp_context* ctx) {
+    constexpr uint32_t bytes = widget_size * (widget_count + 1);
+    if (widget_copy == 0) {
+        widget_copy = (uint32_t)((uint8_t*)recomp::alloc(rdram, bytes) - rdram) + 0x80000000;
+    }
+    for (uint32_t i = 0; i < widget_size * widget_count; i += 4) {
+        MEM_W(0, (int32_t)(widget_copy + i)) = MEM_W(0, (int32_t)(widget_list + i));
+    }
+    uint32_t added = widget_copy + widget_size * widget_count;
+    for (uint32_t i = 0; i < widget_size; i += 4) {
+        MEM_W(0, (int32_t)(added + i)) = MEM_W(0, (int32_t)(widget_list + widget_size * last_icon_widget + i));
+    }
+    uint32_t xy = (uint32_t)MEM_W(4, (int32_t)added);
+    MEM_W(4, (int32_t)added) = (int32_t)(xy + (0x10u << 16));
+    MEM_W(0x24, (int32_t)added) = fifth_can_slot;
+    ctx->r6 = (gpr)(int32_t)widget_copy;
 }
 
 // The jr $ra of func_803C430C (0x803C5460).
@@ -1270,7 +1436,7 @@ extern "C" void rush2_records_screen_times(uint8_t* rdram, recomp_context* ctx) 
     }
     int backward = MEM_W(0, (int32_t)screen_index) >= 12 ? 1 : 0;
     ctx->r7 = (gpr)(int32_t)redirect_times_to(rdram, (uint32_t)ctx->r7, render_k);
-    ctx->f6.fl += seed_2049(render_k, backward) - host_seed(rdram, backward);
+    ctx->f6.fl += seed_2049(render_k, backward, true) - host_seed(rdram, backward);
 }
 
 // func_803C430C at 0x803C49CC (the stats page): 0x68($sp) = the stats to show, ALL's merged entry (0x803D0298 +

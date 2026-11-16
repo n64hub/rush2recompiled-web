@@ -10,6 +10,7 @@ rt64 src/hle/rt64_application.cpp
 rt64 src/hle/rt64_rsp.cpp
 rt64 src/hle/rt64_present_queue.cpp
 rt64 src/hle/rt64_workload_queue.cpp
+rt64 src/render/rt64_framebuffer_renderer.cpp
 rt64 src/render/rt64_raster_shader.cpp
 rt64 src/render/rt64_raster_shader.h
 rt64 src/render/rt64_raster_shader_cache.cpp
@@ -18,6 +19,7 @@ rt64 src/render/rt64_shader_library.cpp
 rt64 src/render/rt64_texture_cache.cpp
 rt64 src/shaders/RasterPS.hlsl
 rt64 src/shaders/TextureSampler.hlsli
+rt64 src/shared/rt64_raster_params.h
 N64ModernRuntime librecomp/src/config.cpp
 N64ModernRuntime ultramodern/src/events.cpp
 RecompFrontend recompui/src/util/file.cpp

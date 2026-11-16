@@ -5,12 +5,6 @@
 // 0x800FAE58 before and after) are the track's models: sections, props, signs. The sky model and the cars are made
 // elsewhere.
 //
-// Two-sided walls: each of those nodes' model lists is called between gEXSetTwoSidedWalls(1) and (0) (RT64 draws
-// their near-vertical culled triangles a second time wound the other way, lib/patches/rt64.patch, RSP::drawIndexedTri),
-// and every other model's between gEXSetTwoSidedWalls(2) and (0): its faces count as something seen from behind, so no
-// copy goes on a plane where anything else already shows from that side (a sign's modeled back, a two-sided board,
-// an arrow layered over a board).
-//
 // Extended ground: the raced track's underlay (src/scenery_fill_build.cpp) is built on a worker thread from the
 // track's geometry and placement assets and the shared object containers as the game loaded them (the same inputs as
 // the car light probes, src/car_probes.cpp), kept on disk (track_cache blobs keyed on those bytes and the build), and
@@ -49,7 +43,10 @@
 #include "rush2_hooks.h"
 #include "scene_nodes.h"
 #include "scenery_fill.h"
+#include "track1.h"
+#include "track2049.h"
 #include "track_cache.h"
+#include "track_mod_runtime.h"
 
 extern "C" uint32_t rush2_interp_side_dl(uint8_t* rdram, const GfxCommand* cmds, uint32_t count);
 extern "C" bool rush2_interp_view_matrices(uint32_t view, uint32_t* root, uint32_t* projection, uint32_t* lookat);
@@ -244,8 +241,51 @@ namespace {
         return true;
     }
 
-    // Builds (or loads) the underlay of the track in geometry asset `asset` and writes it into `arena`.
-    void build_track(int asset, uint64_t gen, int arena_index) {
+    // The raced track version's diorama table key (rush2::scenery_fill::find_fit), or "" for none: an SF Rush track,
+    // a custom track by its folder (the SF Rush arcade and PlayStation versions), else a stock Rush 2 one by its slot.
+    std::string guide_key(uint8_t* rdram, int asset) {
+        static const char* const slots[] = { "VEGAS", "NYONE", "HAWAII", "NYTWO", "ALCATRAZ", "LA", "SEATTLE", "HALFPIPE",
+                                             "CRASH", "PIPE", "ATARI", "STUNT1" };
+        if (int k = rush2::track1::race_track(); k >= 1) return "sfrush:" + std::to_string(k);
+        if (std::string folder = rush2::track_mod::race_folder(); !folder.empty()) return folder;
+        int slot = asset - 0x33;
+        if (rush2::track2049::converted_race(rdram) || slot < 0 || slot >= 12) return "";
+        return std::string("rush2:") + slots[slot];
+    }
+
+    // The track's diorama laid over it, or false: the diorama containers (Rush 2's asset 3, SF Rush's asset 10
+    // converted) read once and kept.
+    bool make_guide(const std::string& key, rush2::scenery_fill::Guide& guide) {
+        const rush2::scenery_fill::Fit* fit = rush2::scenery_fill::find_fit(key);
+        if (!fit) return false;
+        static std::mutex containers_mutex;
+        static std::unique_ptr<rush2::catalog::Container> containers[2];
+        std::lock_guard lock{ containers_mutex };
+        int d = rush2::scenery_fill::sfrush_diorama(*fit) ? 1 : 0;
+        if (!containers[d]) {
+            std::vector<uint8_t> data;
+            std::string error;
+            bool ok = false;
+            if (d == 0) {
+                std::vector<rush2::assets::Span> spans;
+                ok = rush2::assets::read_current(3, data, spans);
+            }
+            else if (auto rom = rush2::track1::get_rom()) {
+                ok = rush2::track1::convert_container(*rom, 10, data, error);
+            }
+            auto c = std::make_unique<rush2::catalog::Container>();
+            if (!ok || !rush2::catalog::read_container(data, *c, error, true)) {
+                printf("[Fill] Can't read the dioramas (%s)\n", error.c_str());
+                return false;
+            }
+            containers[d] = std::move(c);
+        }
+        return rush2::scenery_fill::make_guide(*containers[d], *fit, guide);
+    }
+
+    // Builds (or loads) the underlay of the track in geometry asset `asset` and writes it into `arena`. key: its
+    // diorama's (guide_key).
+    void build_track(int asset, std::string key, uint64_t gen, int arena_index) {
         std::vector<uint8_t> geometry, placement, shared[2];
         std::vector<rush2::assets::Span> spans;
         if (!rush2::assets::read_current(asset, geometry, spans) ||
@@ -258,6 +298,12 @@ namespace {
         uint64_t source = rush2::track_cache::hash(geometry.data(), geometry.size(), 0xCBF29CE484222325ull ^ (0x46494C4Cull << 32) ^ rush2::scenery_fill::build_version);
         source = rush2::track_cache::hash(placement.data(), placement.size(), source);
         for (const auto& s : shared) source = rush2::track_cache::hash(s.data(), s.size(), source);
+        rush2::scenery_fill::Guide guide;
+        bool guided = !key.empty() && make_guide(key, guide);
+        if (guided) {
+            uint64_t h = guide.hash();
+            source = rush2::track_cache::hash(reinterpret_cast<const uint8_t*>(&h), sizeof(h), source);
+        }
         char name[48];
         snprintf(name, sizeof(name), "scenery_fill_%016llx", (unsigned long long)source);
 
@@ -274,7 +320,7 @@ namespace {
             }
             for (int s = 0; s < 2; s++) rush2::catalog::read_container(shared[s], containers[s + 1], error, true);
             std::vector<const rush2::catalog::Container*> refs = { &containers[0], &containers[1], &containers[2] };
-            mesh = rush2::scenery_fill::build(refs, rush2::catalog::read_placement(placement));
+            mesh = rush2::scenery_fill::build(refs, rush2::catalog::read_placement(placement), guided ? &guide : nullptr);
             rush2::track_cache::save_blob(name, source, mesh.serialize());
         }
         if (generation.load() != gen) return;
@@ -283,8 +329,9 @@ namespace {
             std::lock_guard arena_lock{ arena_mutex[arena_index] };
             if (!encode(rdram_base, mesh, arenas[arena_index], *placed, gen)) return;
         }
-        printf("[Fill] Track asset 0x%02X: %zu chunks %s in %.2fs\n", asset, placed->chunks.size(), cached ? "loaded" : "built",
-               std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+        printf("[Fill] Track asset 0x%02X: %zu chunks %s in %.2fs, diorama %s\n", asset, placed->chunks.size(),
+               cached ? "loaded" : "built", std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+               guided ? guide.key.c_str() : "none");
         fflush(stdout);
         std::lock_guard lock{ mutex };
         if (generation.load() == gen) ready = std::move(placed);
@@ -419,7 +466,7 @@ void rush2::scenery_fill::view_begin(uint8_t* rdram, uint32_t view) {
     uint64_t gen = ++generation;
     int arena_index = next_arena;
     next_arena ^= 1;
-    std::thread(build_track, asset, gen, arena_index).detach();
+    std::thread(build_track, asset, guide_key(rdram, asset), gen, arena_index).detach();
 }
 
 void rush2::scenery_fill::model_draw(uint8_t* rdram, recomp_context* ctx) {
@@ -427,40 +474,28 @@ void rush2::scenery_fill::model_draw(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t node = (uint32_t)ctx->r23;
     if (node < rush2::scene_nodes::table || node >= rush2::scene_nodes::table_end) return;
     const int index = int((node - rush2::scene_nodes::table) / rush2::scene_nodes::node_size);
-    GfxCommand cmds[6];
-    uint32_t count = 0;
-    if (index < placement_first || index >= placement_end) {
-        // Any other model (cars, props placed by code) only counts as something seen from behind on a wall's plane,
-        // so no copy goes over it.
-        gEXSetTwoSidedWalls(&cmds[count++], 2);
-        cmds[count].values.word0 = G_DL_CALL;
-        cmds[count++].values.word1 = (uint32_t)ctx->r30;
-        gEXSetTwoSidedWalls(&cmds[count++], 0);
-        ctx->r30 = (uint64_t)(int64_t)(int32_t)rush2_interp_side_dl(rdram, cmds, count);
-        return;
-    }
+    if (index < placement_first || index >= placement_end) return;   // not a track model
 
     uint32_t view = 0, gen = 0;
     rush2_interp_get_generation(&view, &gen);
-    if (view < max_views && !drawn[view]) {
-        drawn[view] = true;
-        std::shared_ptr<const Placed> placed;
-        {
-            std::lock_guard lock{ mutex };
-            placed = ready;
-        }
-        uint32_t list = placed ? underlay_list(rdram, view, *placed) : 0;
-        if (list != 0) {
-            gEXSetRDRAMExtended(&cmds[count++], 1);
-            cmds[count].values.word0 = G_DL_CALL;
-            cmds[count++].values.word1 = list;
-            gEXSetRDRAMExtended(&cmds[count++], 0);
-        }
+    if (view >= max_views || drawn[view]) return;
+    drawn[view] = true;
+    std::shared_ptr<const Placed> placed;
+    {
+        std::lock_guard lock{ mutex };
+        placed = ready;
     }
-    gEXSetTwoSidedWalls(&cmds[count++], 1);
+    uint32_t list = placed ? underlay_list(rdram, view, *placed) : 0;
+    if (list == 0) return;
+    // The underlay, then the track model.
+    GfxCommand cmds[4];
+    uint32_t count = 0;
+    gEXSetRDRAMExtended(&cmds[count++], 1);
+    cmds[count].values.word0 = G_DL_CALL;
+    cmds[count++].values.word1 = list;
+    gEXSetRDRAMExtended(&cmds[count++], 0);
     cmds[count].values.word0 = G_DL_CALL;
     cmds[count++].values.word1 = (uint32_t)ctx->r30;
-    gEXSetTwoSidedWalls(&cmds[count++], 0);
     ctx->r30 = (uint64_t)(int64_t)(int32_t)rush2_interp_side_dl(rdram, cmds, count);
 }
 

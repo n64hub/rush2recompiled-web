@@ -4,7 +4,8 @@
 // - Settings: RUSH2_DATA_DIR replaces the data folder (src/main.cpp registers it as the config path before anything
 //   reads one), so the run starts from default settings and a fresh save, and nothing the player has set (cheats,
 //   options, opponents, unlocks, records) changes the race or is written to. runs.py fills it with the ROMs and the
-//   one mod the track is in.
+//   one mod the track is in. The converted track cache is the exception: it stays in the player's app folder
+//   (src/track_cache.cpp cache_dir()), shared by every run, since its entries are keyed on their source and the build.
 // - Input: real controllers and the keyboard are ignored; only the --input-script presses reach the game, on player 1.
 // - Output: the window is hidden and no audio is queued (src/main.cpp).
 // - Speed: the menus run in real time; from the first physics tick of the race, ultramodern's turbo
@@ -22,6 +23,8 @@
 //   instead of wrecking on the grid. The computer cars keep every rule of the base game, stuck resets and catch-up
 //   included.
 // - RUSH2_SIM_TURBO=0 runs the same race in real time, to tell what turbo changes apart from the rest.
+// - RUSH2_SIM_COLLIDE=1 doesn't park player 1: it collides with the computer cars and gets stuck resets as in a
+//   normal race (tests that need car-against-car hits, e.g. the damage hooks of src/cheats.cpp).
 // - End: once src/race_record.cpp has written the recording the process exits.
 
 #include <cstdio>
@@ -65,7 +68,11 @@ void rush2::sim::race_tick(uint8_t* rdram) {
 }
 
 bool rush2::sim::parked(uint8_t* rdram, uint32_t car) {
-    return active() && MEM_BU(0, (int32_t)(car + 0x7E8)) == 2;
+    static const bool collide = [] {   // RUSH2_SIM_COLLIDE=1: player 1 is an ordinary car (tests that ram the drones)
+        const char* v = std::getenv("RUSH2_SIM_COLLIDE");
+        return v != nullptr && *v != 0 && *v != '0';
+    }();
+    return active() && !collide && MEM_BU(0, (int32_t)(car + 0x7E8)) == 2;
 }
 
 void rush2::sim::finish() {

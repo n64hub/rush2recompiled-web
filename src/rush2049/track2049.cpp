@@ -115,6 +115,13 @@ namespace {
     std::atomic_bool applied_smooth = false;    // A custom track racing with smooth collision is applied.
     std::atomic_bool applied_p2p = false;       // A point-to-point custom track is applied.
     std::atomic<float> applied_smooth_fold = 20.0f; // Its fold angle (degrees).
+    std::atomic_bool applied_smooth_height = false; // Its averaged road height ([track] smooth_height).
+    std::atomic_uint32_t applied_car_light = 0;     // Its [look] car_light as 0xRRGGBBFF, 0 for none.
+    std::atomic<float> applied_air_gravity = 1.0f;  // Its [handling] air_gravity, 1 for none.
+    std::atomic<float> applied_snowfall = 0.0f;     // Its [look] snowfall, 0 for none.
+    std::atomic_bool applied_stunts = false;        // Its [track] stunts.
+    std::mutex traction_mutex;
+    std::vector<std::array<float, 2>> applied_traction; // Its [handling] traction steps (mph, factor), under traction_mutex.
     rush2::track2049::ConvertedTrack track;
     bool track_has_sky = false;        // The converted geometry has a SKYO1 model.
     std::set<std::string> shared_models;   // Rush 2's shared model names, read once.
@@ -273,7 +280,8 @@ namespace {
                                                  std::vector<std::string>(names.begin(), names.end()));
             }
             rush2::track2049::set_texanim_data({});
-            rush2::track2049::set_prop_data(track.prop_records, track.geometry);   // PROP_KNOCK_* / PROP_TIP_*
+            // Its PROP_ objects are Rush 2's own breakables (record_models, applied with the redirects), not 2049 props.
+            rush2::track2049::set_prop_data({}, track.geometry);
             // A battle arena's PICKUP_ markers (drawn with Rush 2049's models, src/rush2049/battle.cpp) and every custom
             // track's solid triangles, which the weapons' shots stop on.
             rush2::battle::set_data(track.pickup_records, {}, track.geometry, track.solid_triangles);
@@ -410,13 +418,22 @@ namespace {
         if (is_cs_k(loaded_track)) {
             rush2::track1::set_redirects(rdram, cs_track.record_models, cs_track.piece_models);
         }
-        else if (int course = is_mod_k(loaded_track) ? rush2::collectibles::raced_arcade_course() : -1;
-                 course >= 0 && course < rush2::collectibles::sfrush_courses) {
-            // An arcade version of an SF Rush course: its keys (src/arcade2049/arcade_collectibles.cpp) draw SF Rush's
-            // key and are taken by SF Rush's hit test, as on the course itself.
-            std::map<std::string, std::string> keys;
-            for (int n = 1; n <= rush2::collectibles::sfrush_keys[size_t(course)]; n++) keys["KEY" + std::to_string(n)] = "KEYL1";
-            rush2::track1::set_redirects(rdram, keys, {}, true);
+        else if (is_mod_k(loaded_track)) {
+            // A custom track's props (PROP_*): Rush 2 breakable records drawing their own models (track.record_models).
+            // An arcade or PS1 version of an SF Rush course, or the PS1's Chinatown, also has its keys
+            // (src/arcade2049/arcade_collectibles.cpp; KEYP1-4 the PS1's own), which draw SF Rush's key; there SF Rush's
+            // hit test takes them and the props, as on the course itself.
+            std::map<std::string, std::string> records = track.record_models;
+            int course = rush2::collectibles::raced_arcade_course();
+            bool sfrush = rush2::collectibles::key_course(course);
+            if (sfrush) {
+                if (course < rush2::collectibles::sfrush_courses) {
+                    for (int n = 1; n <= rush2::collectibles::sfrush_keys[size_t(course)]; n++) records["KEY" + std::to_string(n)] = "KEYL1";
+                }
+                for (int n = 1; n <= rush2::collectibles::ps1_keys; n++) records["KEYP" + std::to_string(n)] = "KEYL1";
+            }
+            if (!records.empty()) rush2::track1::set_redirects(rdram, records, {}, sfrush);
+            else rush2::track1::clear_redirects();
         }
         else {
             rush2::track1::clear_redirects();   // another track replaced a Cal Speed one in the slot
@@ -429,6 +446,19 @@ namespace {
         applied_smooth = is_mod_k(loaded_track) && mod_settings.smooth_collision;
         applied_p2p = is_mod_k(loaded_track) && mod_settings.point_to_point && !rush2::track_mod::is_arena(mod_settings);
         applied_smooth_fold = mod_settings.smooth_fold;
+        applied_smooth_height = mod_settings.smooth_height;
+        const bool mod = is_mod_k(loaded_track);
+        applied_car_light = mod && mod_settings.car_light
+            ? (uint32_t((*mod_settings.car_light)[0]) << 24) | (uint32_t((*mod_settings.car_light)[1]) << 16) |
+                  (uint32_t((*mod_settings.car_light)[2]) << 8) | 0xFFu
+            : 0u;
+        applied_air_gravity = mod ? mod_settings.air_gravity : 1.0f;
+        applied_snowfall = mod ? mod_settings.snowfall : 0.0f;
+        applied_stunts = mod && mod_settings.stunts;
+        {
+            std::lock_guard lock{ traction_mutex };
+            applied_traction = mod ? mod_settings.traction : std::vector<std::array<float, 2>>{};
+        }
     }
 
     void restore(uint8_t* rdram) {
@@ -458,6 +488,14 @@ namespace {
         applied = false;
         applied_slot = -1;
         applied_road_hold = false;
+        applied_car_light = 0;
+        applied_air_gravity = 1.0f;
+        applied_snowfall = 0.0f;
+        applied_stunts = false;
+        {
+            std::lock_guard lock{ traction_mutex };
+            applied_traction.clear();
+        }
         applied_random_song = false;
         applied_mod = -1;
         applied_smooth = false;
@@ -540,10 +578,24 @@ bool rush2::track2049::converted_race(uint8_t* rdram) {
     return s >= 0 && MEM_BU(0, (int32_t)track_id) == s;
 }
 
-bool rush2::track2049::mod_smooth_collision(uint8_t* rdram, float* fold) {
+// A night track's fog fades to black: Rush 2049's race tracks 4 and 6 (Presidio) and its stunt and battle arenas set
+// (0, 0, 0) (main's table 0x80114658, 3 bytes per track: the day tracks are gray-blue, luminance 0.55-0.61), the
+// PlayStation SF Rush's night versions #080808. Under 0.1 luminance counts.
+bool rush2::track2049::night_race(uint8_t* rdram) {
+    // An N64 SF Rush course's NIGHT version (src/rush1/track1.cpp set_race_look) is one too.
+    if (rush2::track1::applied_look(rdram) == rush2::diorama_look::Look::night) return true;
+    if (!converted_race(rdram)) return false;
+    int s = MEM_BU(0, (int32_t)track_id);
+    float r = MEM_BU(0, (int32_t)(fog_colours + s * 3)), g = MEM_BU(0, (int32_t)(fog_colours + s * 3 + 1)),
+          b = MEM_BU(0, (int32_t)(fog_colours + s * 3 + 2));
+    return (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f < 0.1f;
+}
+
+bool rush2::track2049::mod_smooth_collision(uint8_t* rdram, float* fold, bool* height) {
     int s = applied_slot;
     if (!applied_smooth || s < 0 || MEM_BU(0, (int32_t)track_id) != s) return false;
     if (fold) *fold = applied_smooth_fold;
+    if (height) *height = applied_smooth_height;
     return true;
 }
 
@@ -560,6 +612,48 @@ int rush2::track2049::raced_mod(uint8_t* rdram) {
 bool rush2::track2049::mod_point_to_point(uint8_t* rdram) {
     int s = applied_slot;
     return applied_p2p && s >= 0 && MEM_BU(0, (int32_t)track_id) == s;
+}
+
+uint32_t rush2::track2049::mod_car_light(uint8_t* rdram) {
+    // An N64 SF Rush course's version raced on the course itself takes its track.toml's car_light too.
+    if (uint32_t light = rush2::track1::car_light(rdram); light != 0) return light;
+    int s = applied_slot;
+    return s >= 0 && MEM_BU(0, (int32_t)track_id) == s ? applied_car_light.load() : 0u;
+}
+
+float rush2::track2049::mod_traction(uint8_t* rdram, float mph) {
+    int s = applied_slot;
+    if (s < 0 || MEM_BU(0, (int32_t)track_id) != s) return 1.0f;
+    std::lock_guard lock{ traction_mutex };
+    float factor = 1.0f;
+    for (const auto& step : applied_traction) {
+        if (mph >= step[0]) factor = step[1];
+    }
+    return factor;
+}
+
+float rush2::track2049::mod_snowfall(uint8_t* rdram) {
+    // An N64 SF Rush course's version raced on the course itself (a SNOW version) takes its track.toml's snowfall.
+    if (float f = rush2::track1::snowfall(rdram); f > 0.0f) return f;
+    int s = applied_slot;
+    return s >= 0 && MEM_BU(0, (int32_t)track_id) == s ? applied_snowfall.load() : 0.0f;
+}
+
+float rush2::track2049::mod_air_gravity(uint8_t* rdram) {
+    int s = applied_slot;
+    return s >= 0 && MEM_BU(0, (int32_t)track_id) == s ? applied_air_gravity.load() : 1.0f;
+}
+
+bool rush2::track2049::mod_stunts(uint8_t* rdram) {
+    int s = applied_slot;
+    return applied_stunts && s >= 0 && MEM_BU(0, (int32_t)track_id) == s;
+}
+
+// The stunt panel's two tests of the Stunts on All Tracks cheat byte (0x8010C200, loaded into $a1, nonzero = shown):
+// hud_stunt_box_visible_80060E34 at 0x80060E7C and hud_widget_text_cb_player_stats_800B7654 at 0x800B76B0, right
+// after the load. A custom track with [track] stunts reads as the cheat set; the byte itself is left alone.
+extern "C" void rush2_track_mod_stunts(uint8_t* rdram, recomp_context* ctx) {
+    if (rush2::track2049::mod_stunts(rdram)) ctx->r5 = 1;
 }
 
 bool rush2::track2049::mod_road_hold(uint8_t* rdram) {
@@ -869,7 +963,8 @@ static bool mod_cloud_dome(uint8_t* rdram) {
 // func_800A45A8 at 0x800A4644: $v0 = track id; 0 builds Las Vegas's sky model, 11 the stunt arena's, others the
 // cloud dome (the host slot's id, HAWAII, takes that branch).
 extern "C" void rush2_track49_sky(uint8_t* rdram, recomp_context* ctx) {
-    if (hosting(rdram) && !mod_cloud_dome(rdram)) {
+    // An N64 SF Rush course's NIGHT version has its own sky model (src/rush1/track1_convert.cpp add_night_sky).
+    if ((hosting(rdram) && !mod_cloud_dome(rdram)) || rush2::track1::sky_model(rdram)) {
         ctx->r2 = 0;
     }
 }

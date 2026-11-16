@@ -114,16 +114,55 @@ namespace rush2::sfrush_ps1 {
 
     // The mod's files by their path in the mod. The log gets what each conversion did.
     using ModFiles = std::map<std::string, std::vector<uint8_t>>;
-    bool build_mod(const Disc& disc, const std::filesystem::path& assets_dir, ModFiles& out, std::string& log);
-    bool build_track(const Disc& disc, const std::filesystem::path& assets_dir, ModFiles& out, std::string& log);
+    // The N64 SF Rush's forward AI lane files for its tracks 0-2 (Golden Gate, Embarcadero, Market: ROM assets 58-60,
+    // src/rush1/rush1_rom.cpp read_asset), when the user has the N64 ROM. The PS1's versions of those courses then
+    // take the N64's lines (ps1_track.cpp, docs/sfrush_ps1.md#ai-lanes); an empty one keeps the PS1's own.
+    using N64Lanes = std::array<std::vector<uint8_t>, 3>;
+    // The N64 SF Rush's Embarcadero as placed (track1::convert_track, then catalog::read_container and
+    // for_each_placed_triangle: the game's world, feet), when the user has the N64 ROM. The PS1's Embarcadero takes its
+    // waterfront freeway overpass from it (ps1_track.cpp, docs/sfrush_ps1.md#embarcadero-overpass); empty keeps the
+    // PS1's own, patched.
+    struct N64Scene {
+        struct Image {
+            uint32_t width = 0, height = 0;
+            std::vector<uint8_t> rgba;
+            int wrap_s = 10497, wrap_t = 10497;     // glTF sampler wrap modes (repeat, mirrored 33648, clamp 33071)
+        };
+        struct Tri {
+            float p[3][3];
+            float uv[3][2];                         // in units of the image's size
+            uint8_t color[3][4];
+            int image = -1;
+        };
+        std::vector<Image> images;
+        std::vector<Tri> tris;
+    };
+    bool build_mod(const Disc& disc, const std::filesystem::path& assets_dir, ModFiles& out, std::string& log,
+                   const N64Lanes& n64 = {}, const N64Scene& n64_embarcadero = N64Scene{});
+    bool build_track(const Disc& disc, const std::filesystem::path& assets_dir, ModFiles& out, std::string& log,
+                     const N64Lanes& n64 = {}, const N64Scene& n64_embarcadero = N64Scene{});
     bool build_cars(const Disc& disc, const std::filesystem::path& assets_dir, ModFiles& out, std::string& log);
+    // The N64 NIGHT versions' buildings in the PS1's night art (n64_night_art.bin, docs/sfrush_ps1.md#n64-night-art),
+    // from assets_dir's n64_night_map.json; empty when it can't be read. build_track writes it when the N64 ROM is in.
+    std::vector<uint8_t> n64_night_art(const Disc& disc, const std::filesystem::path& assets_dir, std::string& log);
+    // The N64 SNOW versions' (n64_snow_art.bin, docs/sfrush_ps1.md#n64-snow-versions): the night's maps and
+    // n64_snow_map.json's through the snow set.
+    std::vector<uint8_t> n64_snow_art(const Disc& disc, const std::filesystem::path& assets_dir, std::string& log);
+    // Either from the set `set` ("N" or "S").
+    std::vector<uint8_t> n64_art(const Disc& disc, const std::filesystem::path& assets_dir, const char* set, std::string& log);
     // The track select diorama (src/sfrush_ps1/ps1_diorama.cpp) as a glb: the hand-made layout `spec` (JSON) round
-    // the route (the AI path's middle, a closed loop, glTF meters as track.glb has it).
+    // the route (the AI path's middle, a closed loop, glTF meters as track.glb has it). look: the SNOW / NIGHT
+    // version's (rush2::diorama_look::Look as int: 0 day, 1 snow, 2 night).
     bool build_diorama(const std::vector<std::array<double, 3>>& route, const std::filesystem::path& spec,
-                       std::vector<uint8_t>& glb, std::string& log);
+                       std::vector<uint8_t>& glb, std::string& log, int look = 0);
 
     // The game (src/sfrush_ps1/ps1_install.cpp).
+    // The Games tab's options (before recompui::config::finalize(), in its config with the other games').
+    void init_config();
     void add_games_section(rush2::ui::OptionsPage* page, std::function<void()>& refresh);
+    // The N64 Night Versions option: the mod's NIGHT versions of the N64 courses the PS1 doesn't have
+    // (docs/sfrush_ps1.md#n64-night-versions) are listed. Any thread.
+    bool n64_night_versions();
     // The launch's build pass (src/prewarm.cpp): an installed mod built by another build or from another disc is built
     // again now, on the calling thread.
     void refresh_now();

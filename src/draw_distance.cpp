@@ -24,12 +24,21 @@
 // by src/interpolation.cpp), and every section is drawn but the distant stand-ins.
 //
 // Distant stand-ins: regions and sections are the same top-level placement records (region i is the camera in
-// section i's box, and the region count u8[0x800CA1A8 + track] is the section count), and the city tracks have
-// sections that their own region's mask hides: crude low-detail copies of far scenery that the visibility table
-// shows only from far away, in place of the real sections it hides there (Lower Manhattan 70-92, Las Vegas 16, 34,
-// 57, 68 and 73; every track but the stunt and battle courses has some). Drawing them up close put a flat teal slab
-// over the sky and a skewed building without collision next to the twin towers. So a section that its own region
-// hides keeps the game's choice (drawn only where the region's mask shows it) and every other section is drawn.
+// section i's box, and the region count u8[0x800CA1A8 + track] is the section count), and most tracks have sections
+// that their own region's mask hides: low-detail scenery the visibility table shows only from far away (Lower
+// Manhattan 70, 71, 76-78, 80, 81, 83, 91 and 92; Las Vegas 16, 34, 57, 68 and 73; `tools/rush2_sections.py list`
+// marks them). Drawing them up close put a flat teal slab over the sky and a skewed building without collision next
+// to the twin towers. So a section that its own region hides keeps the game's choice (drawn only where the region's
+// mask shows it) and every other section is drawn.
+//
+// Copies (issue #61): most stand-ins are backdrops nothing else draws, but three in Lower Manhattan are copies of
+// real sections the game hides wherever it shows them, offset to look right from afar: NYONEFAKE_TT (two plain
+// towers about 550 ft west of the real ones in NYONETRADE2, shown from City Hall) and NYONEBB_LOD1/NYONEBB_LOD2 (the
+// Brooklyn Bridge's towers and cables about 200 ft west of the real bridge, shown from the finish, docks and Wall
+// Street). With every real section drawn, the copy and the original both showed. A copy is never drawn: the real
+// section it stands in for is. They were found and checked by rendering every pair of sections no region draws
+// together (tools/rush2_sections.py; docs/rush2049_research/geometry.md#52-pvs-which-sections-are-drawn), matched by
+// the placement record's name.
 
 #include <algorithm>
 #include <atomic>
@@ -43,6 +52,9 @@
 
 namespace {
     constexpr uint32_t all_visible_mask = 0x800CA1B8;
+    constexpr uint32_t placement_base = 0x8010C15C; // Pointer to the placement records (0x64 bytes); first top-level.
+    // Sections that are copies of other sections (see the header): never drawn with the draw distance extended.
+    constexpr const char* copies[] = { "NYONEFAKE_TT", "NYONEBB_LOD1", "NYONEBB_LOD2" };
     constexpr uint32_t pvs_counts = 0x800CA1A8;  // u8 per track slot: region (= section) count.
     constexpr uint32_t track_id = 0x8010C3F0;
     constexpr uint32_t camera_array = 0x800E79D0; // Per-view cameras, 0x40 bytes each; position at +0x24.
@@ -71,13 +83,35 @@ namespace {
         MEM_W(0, (int32_t)addr) = (int32_t)bits;
     }
 
+    // Courses drawn without fog: a converted course (Rush 2049, arcade, custom) with a sky model at FOG 1 has its fog
+    // taken off (rush2::sky_fog::fog_removed, as Rush 2049's lowest fog is none), so nothing fades out what the far
+    // plane, the cull distance and the fixed-point matrices cut off. The SF Rush arcade's Embarcadero has its Marin
+    // hills as flat shore panels (SHORE2F, SHORE3_2, SHORE3_3) 1,500-2,100 m out: the far plane (1,500 ft x the Draw
+    // Distance) sliced them along a line that moved as the camera turned, and at the Original draw distance they were
+    // gone (reported 2026-11-13). The arcade draws its whole course, so there the reach is open_far_ft whatever the
+    // Draw Distance setting: far plane, object cull distance, float matrices and every section. LOD distances keep the
+    // setting (src/lod.cpp reads rush2::draw_distance()).
+    constexpr uint32_t views = 0x802401F0;  // Player views, 0x54 each (moved from 0x80111888); far (ft) at +0x38.
+    constexpr uint32_t view_size = 0x54;
+    constexpr float open_far_ft = 40000.0f;
+
+    float reach_scale(uint8_t* rdram, uint32_t view) {
+        float k = scale.load(std::memory_order_relaxed);
+        uint32_t v = views + (view & 3) * view_size;
+        if (!rush2::sky_fog::fog_removed(rdram, v)) {
+            return k;
+        }
+        float far_ft = read_f32(rdram, v + 0x38);
+        return far_ft > 0.0f ? std::max(k, open_far_ft / far_ft) : k;
+    }
+
     // Shared by both matrix builders. rot(r, c) reads the rotation, pos = the node's position, relative = whether to
     // subtract the camera's. Writes a float matrix (same layout as the fixed one: rows, translation times 16 in row 3)
     // to out when the offset is past the fixed-point range but the draw distance is extended.
     template <typename Rot>
     bool write_float_matrix(uint8_t* rdram, recomp_context* ctx, uint32_t view, uint32_t pos, bool relative,
                             uint32_t out, Rot rot) {
-        if (scale.load(std::memory_order_relaxed) == 1.0f) {
+        if (reach_scale(rdram, view) == 1.0f) {
             return false;
         }
 
@@ -141,15 +175,17 @@ extern "C" void rush2_draw_distance_projection(uint8_t* rdram, recomp_context* c
     rush2::sky_fog::view_setup(rdram, (uint32_t)ctx->r16, read_f32(rdram, (uint32_t)ctx->r29 + 0x10),
                                (double)ctx->f8.fl * ctx->f24.fl);
     float k = scale.load(std::memory_order_relaxed);
-    if (k != 1.0f) {
-        ctx->f8.fl *= k;
-    }
-    // FOG 1 on a converted course with a sky model: no fog (fog alpha 0 at every depth; src/sky_fog.cpp).
+    // FOG 1 on a converted course with a sky model: no fog (fog alpha 0 at every depth; src/sky_fog.cpp), and the far
+    // plane takes in the whole course (reach_scale).
     if (rush2::sky_fog::fog_removed(rdram, (uint32_t)ctx->r16)) {
+        ctx->f8.fl *= reach_scale(rdram, ((uint32_t)ctx->r16 - views) / view_size);
         pending_fog_mul = 0.0f;
         pending_fog_offset = 0.0f;
         pending_fog = true;
         return;
+    }
+    if (k != 1.0f) {
+        ctx->f8.fl *= k;
     }
     if (k == 1.0f) {
         return;
@@ -184,7 +220,7 @@ extern "C" void rush2_draw_distance_projection(uint8_t* rdram, recomp_context* c
 
 // func_8007B518 at 0x8007BA50: $f8 = the placed object cull distance (0x80110040).
 extern "C" void rush2_draw_distance_cull(uint8_t* rdram, recomp_context* ctx) {
-    ctx->f8.fl *= scale.load(std::memory_order_relaxed);
+    ctx->f8.fl *= reach_scale(rdram, 0);
 }
 
 // func_8007B00C entry: $a0 = view, $a1 = transform (3x3 rotation by rows, position at +0x24), $a2 = matrix out,
@@ -213,7 +249,7 @@ static bool mask_bit(uint8_t* rdram, uint32_t mask, int i) {
 // mask, table = the track's region mask table.
 void rush2::draw_distance_pvs(uint8_t* rdram, uint32_t sp, uint32_t table) {
     static uint32_t widened = 0; // 16 bytes in recomp memory.
-    if (scale.load(std::memory_order_relaxed) == 1.0f) {
+    if (reach_scale(rdram, 0) == 1.0f) {
         return;
     }
     if (table == 0) {
@@ -229,10 +265,27 @@ void rush2::draw_distance_pvs(uint8_t* rdram, uint32_t sp, uint32_t table) {
     for (int b = 0; b < 16; b++) {
         MEM_B(0, (int32_t)(widened + b)) = (int8_t)0xFF;
     }
+    // Section i is the i-th record of the top-level chain (next index at +0x44, -1 ends it).
+    uint32_t base = (uint32_t)MEM_W(0, (int32_t)placement_base);
+    uint32_t record = base;
     for (int i = 0; i < count; i++) {
-        if (!mask_bit(rdram, table + i * 16, i) && !mask_bit(rdram, chosen, i)) {
+        bool hide = !mask_bit(rdram, table + i * 16, i) && !mask_bit(rdram, chosen, i);
+        if (!hide && record != 0) {
+            char name[17] = {};
+            for (int c = 0; c < 16; c++) {
+                name[c] = (char)MEM_BU(c, (int32_t)record);
+            }
+            for (const char* copy : copies) {
+                hide = hide || strcmp(name, copy) == 0;
+            }
+        }
+        if (hide) {
             int byte = i < 64 ? 7 - i / 8 : 15 - (i - 64) / 8;
             MEM_B(0, (int32_t)(widened + byte)) = (int8_t)(MEM_BU(0, (int32_t)(widened + byte)) & ~(1 << (i % 8)));
+        }
+        if (record != 0) {
+            int16_t next = (int16_t)MEM_HU(0x44, (int32_t)record);
+            record = next < 0 ? 0 : base + (uint32_t)next * 0x64;
         }
     }
     MEM_W(0, (int32_t)(sp + 0x5C)) = widened;

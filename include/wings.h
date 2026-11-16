@@ -46,13 +46,16 @@ namespace rush2::wings {
     // the one in use, else the other opened once and kept; null if it isn't stored or enabled (source_enabled).
     // Opening it reads it from disk: the launch's build pass (rush2::track2049::prepare) opens it before the game asks.
     std::shared_ptr<const rush2::rom2049::Source> track_source(bool disc);
-    // The height of a Rush 2 car type's body (0-21; world units, from the car models), 3.5 for any other type.
+    // The height of a Rush 2 car type's roof (0-21; world units, from the car models), 3.5 for any other type.
     float body_height(int type);
     // True when the Wings option is on and the Rush 2049 ROM is available.
     bool enabled();
 
     // Rebuilds the wing model and sound from the current ROM (src/rush2049/wings_render.cpp).
     void on_rom_changed();
+    // Where the wing model (its display lists) is kept in RDRAM: [model_start, model_end).
+    constexpr uint32_t model_start = 0x80E00000;
+    constexpr uint32_t model_end = 0x80E10000;
 
     // Ghost races (src/ghost.cpp), physics thread. What the player driving race car `car` (0-7) holds for its wings
     // (the button, the stick and the player's wing style); false for a car without a player. A ghost car has no

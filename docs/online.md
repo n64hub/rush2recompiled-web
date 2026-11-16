@@ -325,7 +325,7 @@ Two other ways the cars could differ were closed too:
 
 ## Mod cars
 
-A mod's car (types 57-72, src/car_mods.cpp) is in the slot each machine's own mods put it in, and its type number is in
+A mod's car (types 57-120, src/car_mods.cpp) is in the slot each machine's own mods put it in, and its type number is in
 the race's state (physics car +0x7EA, `race_setup_cars_8009E6DC`), so a raced mod car must be in the same slot on every
 machine. Each machine reports its mod cars (`RosterEntry::mod_cars`, `rush2::car_mods::online_car_checks`: a hash of
 the mod id, the car id and its files, per slot), and a player who picks one sends its spec with the car
@@ -429,8 +429,9 @@ race uses (`fill_player_rows`, which calls the getters with that record's profil
 moved there by tools/rush2049/cartypes.py (`NEW_PLAYER_ROWS`). A Rush 2049 car's options (ENGINE level and the like)
 are in a side slot of its profile (src/rush2049/car2049.cpp): each player's car select sends theirs
 (`rush2::car2049::side_block`), and the other machines' players race with them in guest side slots
-(`car_types::guest_side_slots`, `set_guest_side_block`, 0x2A0 bytes each; protocol version 5 added California Speed's
-types 36-56, version 6 the mod cars' 57-72, which race online as Mod cars below says).
+(`car_types::guest_side_slots`, `set_guest_side_block`, 0x510 bytes each; protocol version 5 added California Speed's
+types 36-56, version 6 the mod cars' 57-72 and version 12 their 64 slots, 57-120, which race online as Mod cars
+below says).
 
 The HUD and the frame's drawing are records 0 to n-1's. Around them (`race_start_timer_800AE670` 0x800AF1D4 to
 0x800AF1F4) the records' cars rotate by `local_player`, so record i holds this machine's player i's car, and those
@@ -738,6 +739,7 @@ without them.
 | `RUSH2_TEST_TRACK=ID` | The track select opens on that track (with `menus:host`, a custom track at 38 and up). |
 | `RUSH2_TEST_VPAD=S:INPUT[:HOLD],...` | A virtual SDL controller pressing INPUT S seconds after launch, through the real controller path: port claim, bindings, Background Input (src/input.cpp). |
 | `RUSH2_RAM_WATCH=ADDR:SIZE,...`, `RUSH2_RAM_DUMP=DIR` | Log changes of RAM values each frame / dump RDRAM on each change (`src/ram_watch.cpp`). |
+| `RUSH2_RAM_POKE=ADDR:SIZE:VALUE,...` | Write hex values every frame while racing (game state 3), e.g. `8010C3E8:4:1` to race as a circuit race (`src/ram_watch.cpp`, docs/npc_cars.md#circuit-skill). |
 
 Several instances on one machine: `tools/online_test.py OUT --times T,... --instance "name|ENV=...|input script"`
 starts them from the one build, a few seconds apart, the host first, screenshots each window at the given times

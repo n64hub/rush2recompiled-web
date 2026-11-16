@@ -144,7 +144,8 @@ negative value pushes the car forward harder the faster it goes, and it runs awa
 Flat polygons meet at creases, and a car feels every crease as a bump. The stock Rush 2 and Rush 2049 tracks smooth
 their main roads with the game's spline road: a chain of segments, each a smooth curved stretch of road, and a polygon
 on it takes its height from its segment instead of from its own flat face. This is meant for tools that convert
-other games' tracks (tools/arcade2049 uses it), not for modelling by hand.
+other games' tracks (tools/arcade2049 uses it, and the PlayStation SF Rush converter fits one to Golden Gate:
+docs/sfrush_ps1.md#collision), not for modelling by hand.
 
 - An empty named `ROAD_SPLINES` with a custom property `segments`: a list of segments, each a list of 33 numbers, the
   game's segment record as it reads it, in game units (feet; game x is minus glTF x): origin (3), the world to segment
@@ -190,10 +191,18 @@ edge. None of this touches Rush 2's own tracks.
 - `[track] smooth_fold = 20`: the fold angle in degrees (0 to 90). An edge whose faces meet at more than this angle
   stays sharp. Lower it to keep more edges sharp, raise it to round more.
 - `[track] smooth_collision = false`: the raw flat faces, as the game would drive them, cracks and ledges included.
+- `[track] smooth_height = true` (default false): the wheels' road height is the floor's height averaged over a
+  32 ft disc round the wheel (`averaged_surface` in src/smooth_collision.cpp), so the road's slope changes gradually
+  over about 64 ft instead of in one step at each edge. The tilt blending alone leaves that step, and on coarse road
+  (faces 50-130 ft across meeting at 1-7 degrees) every crease kicks the suspension at speed, even on straights.
+  The floor is found by position, so near-miss vertices, T-junctions and triangle fans average alike; a curb, ledge,
+  road on another level (more than 6 ft off) or fold past the fold angle isn't averaged in.
+  The PlayStation SF Rush tracks set it. (California Speed's tracks round each crease with fillets instead: those
+  assume quads meeting four at a corner, and on triangle fans they stepped the height.)
 
 The Rush 2049 arcade tracks the Games tab builds set `smooth_collision = false`: their road is built for flat faces.
 
-(`rush2::track2049::mod_smooth_collision` hands the raced track's `smooth_collision` and `smooth_fold` to
+(`rush2::track2049::mod_smooth_collision` hands the raced track's `smooth_collision`, `smooth_fold` and `smooth_height` to
 src/smooth_collision.cpp, set as the race applies the track, so the wheel probes never read the settings.)
 
 Checking it: RUSH2_SMOOTH_LOG=1 prints how many corners were smoothed and how many kept sharp when a race on the
@@ -262,8 +271,12 @@ wide`) and says which it is when it is standing up or too narrow.
   is spread across `AIPATH_main`'s ribbon as above. `AIPATH_main` is still needed: it is the race's progress line and
   sets the speeds, and the lanes are matched to it point for point, so keep each lane beside it, within about
   2.5 times its ribbon's half width (at least 18 m) and 9 m (30 ft) of its height. Where a lane wanders further (or
-  leaves a gap), that stretch uses the spread lane instead and the report says where. Backward races drive the same
-  lanes the other way. Arenas ignore these curves (their lanes are their route).
+  leaves a gap), that stretch uses the spread lane instead and the report says where. Where `AIPATH_main` bends
+  sharply or runs at an angle to a lane, the lines across the road through neighboring points can meet the lane out of
+  order, which would make the lane step back and forward again (a hairpin the computer cars wreck at): the converter
+  keeps the matches that move forward along the lane and puts the others, and any point with no match within 10 points
+  of good ones, on the lane between them (the report lists how many). Backward races drive the same lanes the other
+  way. Arenas ignore these curves (their lanes are their route).
 - **Direction:** the race runs the way the markers' green arrows point. The curve can be drawn either way round; if most
   arrows disagree with it, the game reverses it, and a single marker pointing against the rest is reported and used
   turned round.
@@ -285,11 +298,15 @@ wide`) and says which it is when it is standing up or too narrow.
   `AIPATH_main` a float attribute named `_SPEED`, in mph. Convert the curve to a mesh first (Object > Convert > Mesh,
   after setting its Extrude), add the attribute in Object Data Properties > Attributes (Domain: Vertex, Type: Float),
   set its values, and tick **Data > Mesh > Attributes** when you export. Where the path has `_SPEED`, those speeds are
-  used as they are (1 to 255 mph, no extra braking added), and `AISPEED_` caps still apply; the report says
+  used as they are (1 to 255 mph, no extra braking added), and `AISPEED_` caps still apply, as does `[handling]
+  traction`: an authored speed is held to what the track's grip allows round the corner ahead, braked for at that
+  grip (lanes' `_SPEED` too); the report says
   `(all from _SPEED)` or `(some from _SPEED)`. A second attribute, `_AI_MODE`, sets how the cars steer along that
   stretch, as the stock lanes do: 2 (the default) holds the line closely, 5 steers more loosely. Painted
   `AIPATH_lane` curves can carry their own `_SPEED` and `_AI_MODE`; lanes without them use `AIPATH_main`'s. Backward
-  races work out their own speeds.
+  races work out their own speeds from the bends, held at each point to the slowest `_SPEED` you gave that point
+  (on `AIPATH_main` or a lane), and brake for those from the other side: a corner or crest is taken no faster
+  backward than forward.
 - **Paths drawn at road height everywhere:** the game keeps the path at the curve's height over a gap only where the
   road below drops away sharply at the gap's ends. If your curve follows the road everywhere except over long jumps,
   where it follows the cars' arc, give `AIPATH_main` a custom property `keep_height` set to True (Object Properties >
@@ -310,6 +327,8 @@ gravity     = "rush2"                 # "rush2" (the default) or "rush2049": Rus
 road_hold   = false                   # true: California Speed's road hold keeps cars on crests: see Road hold
 point_to_point = false                # true: raced once from START to FINISH: see Point to point
 run_in      = false                   # true: starts on a run-in into the loop: see Run-in circuits
+stunts      = false                   # true: its races score stunts and show the stunt panel, as the Stunts on
+                                      # All Tracks cheat does (the cheat itself isn't touched)
 
 [race]
 # Timer (with checkpoints on). Leave these out and the game works it out from the AI path, as stock Rush 2 does.
@@ -323,6 +342,12 @@ fog_color    = "#a0b8d0"   # also the color seen past the draw distance
 sky          = "none"      # a stock sky: see Sky
 cloud_scroll = 0.0         # sky texture scroll speed (the clouds sky)
 sky_parallax = 0.0         # how much the sky shifts as the camera moves (the clouds sky)
+# car_light  = "#454046"   # a night track: every car drawn darkened by this color: see Night
+# snowfall   = 1           # falling snow: see Snowfall
+
+# [handling]
+# traction = [[32, 0.5], [64, 0.25]]   # a slippery track (snow, ice): see Handling
+# air_gravity = 2                      # shorter jumps: see Handling
 
 [movers.lift]              # a moving object's settings (and start, open, close...): see Moving objects
 mode  = "ride"
@@ -375,6 +400,118 @@ music = "theme.ogg"                         # a file in the track's folder: Ogg 
   arcade, custom) before shuffling. A version without music plays the course's song.
 - Level your songs like the games' (about -16 LUFS integrated): the game plays them as they are.
 
+### Night
+
+A night track darkens its world in its own textures and `fog_color`. A `[look]` setting does the same for the cars,
+whatever game they come from:
+
+```toml
+[look]
+car_light = "#454046"   # every car is drawn multiplied by this color
+```
+
+- `car_light` darkens (or tints) the cars the way a Rush 2049 night track's painted lighting does, in both Car
+  Lighting settings (Graphics tab): with Light Probes the cars still darken under bridges and in tunnels, then take
+  this color on top. Rush 2's own tunnel shading stays too.
+- The SF Rush PlayStation mod's NIGHT versions use it, with the PlayStation's night textures, fog and sky.
+- A track whose `fog_color` is near black (luminance under 0.1, as `"#0c1424"`) is a night track for Graphics > Car
+  Lights: every car's headlamps and tail lamps light it (docs/graphics_effects.md#car-lights). A lighter fog keeps
+  them off.
+
+### Snowfall
+
+Snow can fall in the race, round every player's camera:
+
+```toml
+[look]
+snowfall = 1   # 0 none (the default), 1 the SF Rush PlayStation mod's SNOW versions, up to 3
+```
+
+- How much falls follows the race's FOG option: none at FOG 1 (no fog), a light fall drifting down at 2 (1,100
+  flakes round each camera, 3.5 ft/s), a steady one at 3 (3,000, 9 ft/s) and a blizzard driven sideways at 4 (6,000,
+  20 ft/s down, 11 across). The flakes are 1-2 inches across, stretched along their fall the faster they go.
+  `snowfall` multiplies the count (up to 3 times, at most 9,000).
+- The flakes fall and drift by the game clock, so they hold still while the game is paused, and are fogged like the
+  track, so the far ones fade into the fog. Every player's view has its own.
+- Graphics > Falling Snow turns it on and off for every track (Off by default; the Enhanced setup turns it on). None
+  of the original games has falling snow (the PlayStation SF Rush's snow versions don't); src/snowfall.cpp has how
+  it is drawn.
+- A diorama's snowflakes: give them a material whose name starts with `SNOWFLAKES` and the same setting shows or hides
+  them on the track select (they're drawn last, between two tagged G_NOOPs the track select branches past while it is
+  off: include/snowfall.h). They don't count against the diorama's triangle budget. The SF Rush PlayStation mod's
+  Chinatown SNOW uses it.
+
+### Handling
+
+`[handling] traction` makes a track slippery, as the PlayStation SF Rush's snow: steps of speed (mph) at which every
+car's push along the ground (engine, brakes, tires and drag together, and a slope's pull: every force but the
+vertical part) is multiplied by a factor. The last step a car's speed has reached counts.
+
+```toml
+[handling]
+traction = [[32, 0.5], [64, 0.25]]   # from 32 mph half, from 64 mph a quarter
+```
+
+Top speed stays the same (the engine and the drag weaken together), but speeding up, braking and turning take two or
+four times as long, so cars drift wide through corners. The computer opponents drive it too: their target speeds
+along the AI path take it into account, so they slow for the corners instead of sliding into the walls. Only the
+corners that need more sideways grip than factor x the most the dry AI table uses (177 ft/s^2) are slowed, to what
+that grip holds; gentle bends, straights and the AI's braking (28 ft/s^2, inside that grip) stay as they are dry. Steps go in rising speed, each factor above 0 and up to 4.
+Without `[race]` times of its own, the race clock comes from the race time model with the same steps (the average
+car's acceleration, cornering and braking times the factor), so a slippery track grants the time it costs. The SF
+Rush PlayStation mod's SNOW versions of Golden Gate, Embarcadero, Market and Chinatown use `[[32.1, 0.5]]`: the
+PlayStation's first halving (its second, a quarter from 64 mph, played too slowly) and no times of their own.
+
+`[handling] air_gravity` makes jumps shorter: gravity is multiplied by it while all four wheels are off the road
+(eased in as the lowest wheel rises from a quarter of a foot to a foot and a quarter, so a wheel lifting in a corner
+changes nothing). On the road the cars drive as on any other track. From 1 (the default, Rush 2's) to 10.
+
+```toml
+[handling]
+air_gravity = 2   # the SF Rush PlayStation mod's Golden Gate STUNT: its kickers' jumps half as long
+```
+
+### AI speeds
+
+The computer cars' target speeds along `AIPATH_main` come from the tightest corner in the next 500 ft, through a
+table fitted to Rush 2's and Rush 2049's stock lanes. A track whose original game had faster or slower computer cars
+can give their speeds instead:
+
+```toml
+[ai]
+speed_quantiles = [69, 127, 134, 134, 139, 140, 141, 144, 147, 149, 151, 151, 153, 154, 155, 157, 158, 158, 159, 161, 174]
+```
+
+The speeds (mph) are quantiles of the original lanes, evenly spaced, slowest first (above: the N64 SF Rush's Golden
+Gate, 0, 5, ..., 100%). The path's points are ranked by the radius ahead and each takes the speed at its rank, the
+tightest the slowest, so the path's speeds spread exactly as the original's. `_SPEED` on the path, `AISPEED_`
+markers and `[handling] traction` still apply on top. `tools/rush1/lane_speed_table.py` prints them for the N64 SF
+Rush's tracks; the SF Rush PlayStation mod gives its versions of Golden Gate, Embarcadero and Market their N64
+courses' speeds and Chinatown all seven N64 tracks' (the stock table had the computer cars 10-30 mph slow in Golden
+Gate's corners).
+
+Two more `[ai]` keys tune a slippery version of a course (its snow) against its dry one:
+
+```toml
+[ai]
+traction_margin = 0.75   # share of [handling] traction's grip the corner speeds aim for, 0.1 to 1 (default 1)
+speed_scale = 0.91       # the computed target speeds times this, 0.3 to 1.5 (default 1; not _SPEED)
+```
+
+- `traction_margin`: with `[handling] traction`, a corner's speed is what that share of the traction's grip allows
+  (authored `_SPEED` is held to it too). At 1 the computer cars aim for all of it and slide wide off the road in snow;
+  they hold about 0.4 of it at full lock.
+- `speed_scale`: scales the computed speeds, so a version's computer cars run a set share of another's pace. The
+  share a traction costs a car comes from the race time model: `tools/race_time_test.bat PATH.bin` on the dry version's
+  converted path prints its lap dry and with the traction.
+
+Check the computer cars' pace and wrecks with `tools/drone_pace.py --race TRACK ...`: it races each track headless at
+many times real time (a 3-lap race in about 25 s, docs below in [Race replays](#race-replays)) and prints their
+average speed and wrecks; `--mod-dir` races a converter output folder in place of the installed mod, and `--hits`
+lists where the cars hit something (jolts over 8 g, grouped within 40 ft). `tools/lane_surfaces.py --rush2 OUT --walls
+3` on a converted track (`collision.bin` + `path.bin`) lists where each lane runs within 3 ft of a wall at the car's
+height or crosses one, and `--plot X Z RADIUS PNG` maps the spot.
+
 ## Sky
 
 Without a sky the sky is plain `fog_color`. Use one of the games' own skies, or model your own.
@@ -409,11 +546,22 @@ To model the sky yourself:
    which darkens its sides; paint it white to keep a texture's own colors.
 4. **Add stars, a sun or clouds** as separate faces just inside the dome, in a material with Alpha Clip (cutouts).
    The sky is drawn without depth, in the order its materials first appear in the file, so keep the dome's material
-   first and the details' after it, or the dome paints over them.
+   first and the details' after it, or the dome paints over them. (A sky that uses a material again after another
+   one is drawn in its exact triangle order instead; the converted SF Rush arcade tracks use that to draw their
+   distant hills back to front.)
 5. **Name the object `SKY`.** Several objects named `SKY`, `SKY.001`, ... are joined into one sky.
 
 The sky is drawn behind everything and isn't fogged, as Rush 2049's skies are. The report gives its triangle count
 (`SKY: ... triangles`).
+
+### Sea
+
+A track by the sea can say where the water is with a mesh named **`SEA`** (`SEA.001` ... join it): flat faces at the
+water's height, with the water's material, reaching as far out as you like (the report warns past 32,000 ft). The game
+never draws it. With Settings > Graphics > Fill Scenery Gaps on, the extended ground past your track's edges lays its
+water there instead of carrying the land on (docs/graphics_effects.md#fill-scenery-gaps): open water where your
+ground has none, and under ground more than 30 ft above it (a bridge, a pier). Leave it out and the extended ground
+carries your land on in every direction. The report gives its triangle count (`SEA: ... triangles`).
 
 ## Moving objects
 
@@ -538,21 +686,22 @@ row of trees costs little.
 
 ### Props
 
-Meshes named `PROP_<kind>_<name>` react when a car hits them, the way Rush 2049's do:
+Meshes named `PROP_<kind>_<name>` are knocked over when a car hits them. They are Rush 2's own breakables, drawn with
+your mesh: they move and sound as Rush 2's do.
 
-| Name | When a car hits it | As Rush 2049's |
+| Name | Rush 2's | Sound |
 |---|---|---|
-| `PROP_KNOCK_*` | Flies off spinning and is gone after 5 seconds | cones |
-| `PROP_TIP_*` | Turns to face the car, tips over and stays down | road signs |
+| `PROP_KNOCK_*` | cone | a cone's |
+| `PROP_TIP_*` | metal sign | a sign's |
+| `PROP_TREE_*` | tree | a tree's |
+| `PROP_METER_*` | parking meter (always faces the camera, as Rush 2's flat meters do) | a meter's |
 
-Put each prop's origin at its foot: a sign tips over about it. Its location, rotation and scale are kept. Give a prop
-a custom property `billboard` set to True (Object Properties > Custom Properties) to make it a billboard too: it faces
-the camera and keeps facing it as it flies off, which suits flat cones. Every prop is back in place at the start of
-each race. There are no collectibles (coins, keys) on custom tracks (the game's own arcade versions of the stock
-courses carry their course's: docs/arcade2049.md#coins-and-keys-on-the-arcade-versions).
-
-Props react only when the Rush 2049 ROM is set in the Games tab, because their movement and sounds come from
-Rush 2049. Without it they stand still and cars drive through them.
+Put each prop's origin at its foot: Rush 2 knocks it over about that point, and a car hits it there. Its location,
+rotation and scale are kept. Give a prop a custom property `billboard` set to True (Object Properties > Custom
+Properties) to make it a billboard too: it faces the camera, which suits flat cones. Every prop is back in place at the
+start of each race. Rush 2 holds 130 breakables on a track; props past that aren't placed (the report says so). There
+are no collectibles (coins, keys) on custom tracks (the game's own arcade versions of the stock courses carry their
+course's: docs/arcade2049.md#coins-and-keys-on-the-arcade-versions).
 
 ### See-through materials
 
@@ -824,7 +973,7 @@ Every name, custom property and setting a track can use, on one page. Each links
 | `TRIGGER_<name>` | A box that sets off moving objects ([Trigger boxes](#trigger-boxes)) |
 | `MOVE_<name>` | A moving object; its children move with it ([Moving objects](#moving-objects)) |
 | `BILLBOARD_<name>` | Turns to face the camera ([Billboards](#billboards)) |
-| `PROP_KNOCK_*`, `PROP_TIP_*` | Knocked flying or tipped over by cars ([Props](#props)) |
+| `PROP_KNOCK_*`, `PROP_TIP_*`, `PROP_TREE_*`, `PROP_METER_*` | Knocked over by cars as Rush 2's cones, signs, trees and meters ([Props](#props)) |
 | `SKY` | Your own sky dome ([Your own sky](#your-own-sky)) |
 | `FINISH_BANNER`, `FINISH_BANNER_LAST` | The finish banner, CHKPNT turning to FINISH on the last lap ([Finish banner](#finish-banner)) |
 | `START_1` to `START_4`, `PICKUP_<kind>` | Arenas only ([Stunt and battle arenas](#stunt-and-battle-arenas)) |
@@ -850,9 +999,11 @@ Attributes (tick Data > Mesh > Attributes when you export).
 
 | Section | Settings | See |
 |---|---|---|
-| `[track]` | `name` (required), `author`, `version`, `description`, `type`, `gravity`, `road_hold`, `point_to_point`, `run_in`, `smooth_collision`, `smooth_fold` | [track.toml](#tracktoml), [Smooth collision](#smooth-collision) |
+| `[track]` | `name` (required), `author`, `version`, `description`, `type`, `gravity`, `road_hold`, `point_to_point`, `run_in`, `stunts`, `smooth_collision`, `smooth_fold`, `smooth_height` | [track.toml](#tracktoml), [Smooth collision](#smooth-collision) |
 | `[race]` | `start_time`, `finish_time`, `checkpoint_time`, `best_times` | [track.toml](#tracktoml) |
-| `[look]` | `fog_color`, `sky`, `cloud_scroll`, `sky_parallax` | [Sky](#sky) |
+| `[look]` | `fog_color`, `sky`, `cloud_scroll`, `sky_parallax`, `car_light`, `snowfall` | [Sky](#sky), [Night](#night), [Snowfall](#snowfall) |
+| `[handling]` | `traction`, `air_gravity` | [Handling](#handling) |
+| `[ai]` | `speed_quantiles`, `traction_margin`, `speed_scale` | [AI speeds](#ai-speeds) |
 | `[movers.<name>]` | `mode`, `races`, `start`, `open`, `close`, `open_delay`, `close_delay`, `open_at_start` | [Moving objects](#moving-objects) |
 | `[surfaces.<name>]` | `like`, `drag` | [Custom surfaces](#custom-surfaces) |
 | `[audio]` | `music` | [track.toml](#tracktoml) |
@@ -869,7 +1020,7 @@ Attributes (tick Data > Mesh > Attributes when you export).
 | Checkpoints | 9 | The game has 10 gates including the finish line. |
 | Custom surfaces | 12 | The collision format's surface slots. |
 | Custom tracks | 195 across all enabled mods (in mod order; the rest are left out, the log says how many) | The game keeps the track select id in one byte: ids 0-254, and the stock and other games' tracks take 60 of them. |
-| Track select art | about 3.3 MB for all custom tracks' logos and dioramas | The art is loaded into the game's memory with the track select. A logo takes 4.5 KB and a route preview about 10 KB, so 195 tracks fit; authored dioramas can be much larger. Past the room, the later tracks (in mod order) show their logo with no diorama, and the log says how many. |
+| Track select art | none for the dioramas; logos take 4.5 KB each (under 1 MB for 195 tracks) | Dioramas and route previews are loaded only while their track is near the one shown, outside the game's own memory, so every track shows its diorama however many there are or however big they are. Keep a diorama around the stock size anyway (2,400 triangles, small textures): a big one costs memory and loading time. |
 
 Vertex counts per object, the number of objects or materials, and name lengths don't matter: the converter splits,
 merges and renames as needed.
@@ -894,6 +1045,13 @@ merges and renames as needed.
 
 ## For developers
 
+- **Tracks on an N64 SF Rush course** (the app's own, not for authors): a folder with only a track.toml whose
+  `[track] base = "sfrush:<course>"` is listed as a track raced on that course (`src/rush1/track1.cpp`, its own files,
+  breakables and all) in the look its `[look]` gives: `recolor = "night"` (the course converted in the PlayStation SF
+  Rush's night colors with lit windows and a night sky), `fog_color`, `car_light`. It keeps its own track select entry
+  (normally a `variant_of` the course), records, ghosts and online identity (a hash of its track.toml). The SF Rush
+  PlayStation mod's N64 NIGHT versions are these (docs/sfrush_ps1.md#n64-night-versions). Listed only while SF Rush's
+  tracks are offered (and, for that mod, its Games tab option is on).
 - **Code:** `src/track_mod/`: `track_mod_convert.cpp` (the converter), `track_mod_menu.cpp` (logo and route preview),
   `track_mod.cpp` (finding the tracks, the disk cache, full-size textures). `include/track_mod.h` and
   `include/track_mod_runtime.h` hold the interfaces.
@@ -904,9 +1062,10 @@ merges and renames as needed.
   turns its lb into lbu, listed by `tools/byte_reads.py 8010C3F0`), so ids past 127 work in its menu code. The carousel's entries keep their place relative to the shown track
   in a byte too (entry +0x14, up to 254 with more than 128 tracks on one select): its loads at 0x803AB718, 0x803ABB30
   and 0x803ABB38 are lbu as well, and `rush2_track49_carousel_place` wraps the place the setup stores before reading it
-  (it relied on a signed read going negative). The route
-  previews' spare animation buffers aren't kept in the track select's art (asset 3): the previews on screen borrow them
-  from a pool at 0x80320000 (`lend_buffers`), so 195 previews fit the game heap (`mod_art_room`). Circuits choose custom
+  (it relied on a signed read going negative). The custom tracks' dioramas aren't in the track select's art (asset 3,
+  loaded into the game heap below 16 MB): it holds a stub model per custom track and their logos, and each diorama or
+  route preview is copied above 16 MB while its track is within 6 places of the shown one on the carousel or is the
+  circuit screen's race (docs/rush2049_research/menus.md#76-streamed-custom-dioramas-port). Circuits choose custom
   tracks by folder (`src/circuit.cpp`: the config keeps the folders turned off, each circuit the folders it started
   with, and the races it generated, custom tracks by folder, so they stay put while the enabled mods change:
   docs/rush2049_research/menus.md#circuit-races-kept-with-the-circuit). Without an authored diorama, the circuit
@@ -1036,11 +1195,16 @@ merges and renames as needed.
   culling box. A billboard's record carries node flag 0x8000: `scene_walk` (0x8007B518, branch at 0x8007B860) then
   draws it with `view_billboard_basis_8007BF2C`'s yaw-only matrix at its pose's position only (no rotation or scale),
   showing the model's -z side, so the converter turns a billboard's mesh half a turn about y (Blender's front then
-  faces the camera) and keeps its scale in the vertices. Props are listed as `PropRecord`s of type
-  `rush2::track2049::prop_knock` (-2) or `prop_tip` (-3), handed to `set_prop_data` like a 2049 track's;
-  `src/rush2049/track2049_props.cpp` resolves them at race setup to the rows of 2049's CONE1 and STOPHIT types
-  (`movers::classify`), so the mod's own model reacts as those do. Custom tracks have no collectibles.
-  `track_mod_cases.py`'s `objects` case checks the records, flags, shared models and prop types.
+  faces the camera) and keeps its scale in the vertices. A prop is a Rush 2 breakable instead (`prop_classes` in
+  `src/track_mod/track_mod_convert.cpp`): a child record of its nearest section, as a stock track's keys are, named
+  `<class>P<n>` (CONE1, CURVEHIT, TREEHIT, METER: the placement classifier func_800815DC takes the class from the name's
+  prefix), at its world position (the placement walker makes it relative to its section). The class's model lookup
+  is redirected to the prop's own model (`ConvertedTrack::record_models`, applied with `rush2::track1::set_redirects`
+  by src/rush2049/track2049.cpp, as an SF Rush track's breakables are), whose name record carries the behaviour id of
+  the model the class normally draws (2 for CONE1O1, 5 for the others: docs/rush2049_research/placement.md#13-behaviour-ids),
+  so Rush 2's own breakable code hits, moves and sounds it. Before 2026-11-13 props ran Rush 2049's prop code and
+  needed the 2049 ROM. Custom tracks have no collectibles. `track_mod_cases.py`'s `objects` case checks the records,
+  flags, shared models and prop classes.
 - **Sections:** visible triangles go into 1,024 ft grid cells by their center (s16 vertices at 1/16 ft reach 2,000 ft
   from the record). A triangle wider than a cell, or reaching past its cell's 2,000 ft, joins the first such section
   whose origin reaches all its corners, else starts one at its center. Before, each got a section of its own: the
@@ -1085,8 +1249,10 @@ merges and renames as needed.
 - **Authored AI values:** `src/gltf_scene.cpp` keeps a primitive's SCALAR attributes whose names start with `_`
   (`Primitive::attrs`). `read_ribbon` takes a rung's `_SPEED` as the mean of its two vertices and `_AI_MODE` from the
   first; spine resampling interpolates the speed and takes the nearest mode. `target_speeds` uses authored speeds in
-  place of the computed ones (no braking pass; `AISPEED_` caps kept); painted lanes store their crossing's values
-  (`LaneAI`), and `write_path` writes each lane point's speed byte and steering byte (func_80071FBC's mode, 2 if
+  place of the computed ones (no braking pass; `AISPEED_` caps kept; with `[handling] traction`, held to
+  `traction_cap`: `with_traction`'s limit for the radius ahead, braked for at the traction's grip); painted lanes
+  store their crossing's values (`LaneAI`), and `write_path` writes each lane point's speed byte (an authored one held
+  to `traction_cap` too) and steering byte (func_80071FBC's mode, 2 if
   none). `keep_height` (AIPATH_main's custom property) marks every gap run as air, without the step test.
 - **Sky:** `SKY` meshes become one model named `SKYO1` (not in the placement), whose list switches to 1-cycle,
   TEXEL0 x SHADE, render modes 0x0F0A4000 / 0x0F0A3000 / 0x00504240 (opaque / alpha-tested / translucent, no fog) and

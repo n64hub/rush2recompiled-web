@@ -2144,12 +2144,12 @@ ref = "docs/menus.md#no-controllers-marquee"
 
 [[var]]
 vram = 0x800BD42C
-name = "circuit_gen_word_a"
-type = "u32"
-desc = "Word read by circuit_generate. (low confidence)"
+name = "circuit_drone_skill_rows"
+type = "s32[8][14]"
+desc = "The computer cars' skill rows (values 0-6, row 7 all 0): circuit_generate copies one row to each car's 14 standings skill entries (0x800D3B28 + car x 0x58 + 0x3C: courses 0-6 forward, then backward) and shuffles them; rubber_band scales a drone's pace in a circuit by skill / 3 + 0.75."
 area = "race"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/npc_cars.md#circuit-skill"
 
 [[var]]
 vram = 0x800BD430
@@ -2807,6 +2807,15 @@ desc = "Second byte table written by car_type_tables_select_setup. (low confiden
 area = "car"
 status = "inferred"
 ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+
+[[var]]
+vram = 0x800C1000
+name = "horn_sound_ids"
+type = "u8[9]"
+desc = "Each HORN row value's sound id (0-8), which menu_play_sound plays: the car select's HORN row (0x803B9DD8) and a race's horn (car_sound_update_all 0x80067558)."
+area = "audio"
+status = "inferred"
+ref = "docs/sfrush_ps1.md#fancy-ufo"
 
 [[var]]
 vram = 0x800C1014
@@ -4105,6 +4114,24 @@ status = "verified"
 ref = "docs/rush2049_research/battle.md#71-battle-rules-the-battle-selects-points-and-time-limit-rows"
 
 [[var]]
+vram = 0x800C49D4
+name = "horn_names"
+type = "char *[3][9]"
+desc = "The HORN row's value names per language (36 bytes a language), read by carselect_text_cb_car_title case 6 (0x803BC49C)."
+area = "menu"
+status = "inferred"
+ref = "docs/sfrush_ps1.md#fancy-ufo"
+
+[[var]]
+vram = 0x800C49F8
+name = "engine_names"
+type = "char *[3][10]"
+desc = "The ENGINE row's value names per language (40 bytes a language), read by carselect_text_cb_car_title case 7 (0x803BC4F0)."
+area = "menu"
+status = "inferred"
+ref = "docs/sfrush_ps1.md#fancy-ufo"
+
+[[var]]
 vram = 0x800C4A90
 name = "trackselect_onoff_words"
 type = "const char*[][2]"
@@ -4371,6 +4398,33 @@ name = "race_effect_texture_names"
 type = "char *[37]"
 desc = "Names of the race effect textures race_scene_load_assets (func_8008A1FC) looks up into race_effect_texture_handles: SPARK01..06, SHADBLUR, ARROW, SKID04, FBALL00..30, DECAL (0x21), SHEEN10 (0x22), SHEEN7 (0x23), SHEEN2 (0x24)."
 area = "render"
+status = "inferred"
+ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+
+[[var]]
+vram = 0x800C6230
+name = "car_stripe_tile_offsets"
+type = "s8[22][6]"
+desc = "Per car type and panel, a byte car_texture_prefix_lookup_800843EC hands car_stamp_stripes_on_panel_80083F50 as its a3 when placing a stripe tile (likely the tile's offset on the panel; not decoded)."
+area = "car"
+status = "inferred"
+ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+
+[[var]]
+vram = 0x800C62B4
+name = "car_stripe_tile_scales"
+type = "f32[22][6]"
+desc = "Per car type and panel, a float car_texture_prefix_lookup_800843EC hands car_stamp_stripes_on_panel_80083F50 (stack arg, clamped to 1-4 there) when placing a stripe tile (likely the tile's scale on the panel; not decoded)."
+area = "car"
+status = "inferred"
+ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+
+[[var]]
+vram = 0x800C6518
+name = "car_stripe_tile_prefixes"
+type = "const char *[8]"
+desc = "Stripe tile name prefixes by STRIPE value (asset 0x1C tiles <prefix><size>_<panel>): 0 DEW_, 1 1ST_ SINGLE, 2 1F_ SINGLE FAT, 3 1FD_ SNGL FADE, 4 2ST_ DOUBLE, 5 2F_ DOUBLE FAT, 6 3ST_ TRIPLE A, 7 3A_ TRIPLE B; read by car_texture_prefix_lookup_800843EC."
+area = "car"
 status = "inferred"
 ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 
@@ -4666,10 +4720,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800D0171
 name = "cheats_active_flag"
 type = "u8"
-desc = "Upside-Down cheat (menu item 5): view_fog_setup rolls the camera upside down and input_steering_from_stick negates steering to match (XOR with mirror mode 0x800D0190)."
+desc = "Upside-Down cheat (item 5): view_fog_setup rolls the camera upside down and input_steering_from_stick negates steering (XOR with mirror mode 0x800D0190). Verified in game."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x800D0178
@@ -5419,6 +5473,15 @@ status = "verified"
 ref = "docs/game_fixes.md#pause-menu-extras"
 
 [[var]]
+vram = 0x800D3B28
+name = "circuit_standings"
+type = "u8[8][0x58]"
+desc = "Circuit standings, 0x58 bytes a car: +1 overall place, +2 points (u16), +4 + race place in each race, +0x20 + race points in it, +0x3C 14 s16 skill entries (course + 7 x backward, courses 0-6; from 0x800BD42C). rubber_band reads the skill of the raced course in a circuit; the hook at 0x800A2358 keeps courses 7-10 raced backward within the car's 14 (src/circuit.cpp)."
+area = "race"
+status = "verified"
+ref = "docs/npc_cars.md#circuit-skill"
+
+[[var]]
 vram = 0x800D3B29
 name = "save_settings_byte"
 type = "u8"
@@ -5431,7 +5494,7 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800D3B2A
 name = "circuit_gen_halfword"
 type = "s16"
-desc = "Halfword set by circuit generate, saved/loaded with settings to pak."
+desc = "Car 0's circuit points (standings 0x800D3B28 + 2), set by circuit generate, saved/loaded with settings to pak."
 area = "save"
 status = "inferred"
 ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
@@ -5989,19 +6052,19 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800D401C
 name = "cheats_car_flag_a"
 type = "u8"
-desc = "Byte set by cheats menu/car list/boot defaults, read by car type select and cheats menu."
+desc = "Burning Wreck cheat, player 1 (item 4; 1 with smoke, 2 without): race setup sets the wreck flag 0x10 in car +0x7F4, so the car is the wreck shell and gets the wreck's drag (can't drive). Swapped with 0x800D401D by car_type_tables_select_setup."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x800D401D
 name = "cheats_car_flag_b"
 type = "u8"
-desc = "Byte set by cheats menu/car list/boot defaults, read by car type select and car select list."
+desc = "Burning Wreck cheat, player 2 (see 0x800D401C)."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x800D4020
@@ -7258,10 +7321,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800D9D38
 name = "track_object_spawn_key"
 type = "u8"
-desc = "Byte reset at track load and used as key by track_object_spawn_key."
+desc = "s8 count of the keys func_800BC3F8 has created this race: a key's bit (+0x68) is this count. Reset at track load."
 area = "track"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/unlocks_plan.md#fifth-dew-can-on-hawaii-v"
 
 [[var]]
 vram = 0x800D9D40
@@ -7375,10 +7438,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800D9DB8
 name = "breakable_spawn_key"
 type = "u8"
-desc = "Byte reset at track load and used by track_object_spawn_key and breakable_alloc (low confidence)."
+desc = "s8 count of the Dew cans func_800BC3F8 has created this race: a can's bit (+0x68) is 12 + this count, so HAWAII's fifth can gets bit 16, past Rush 2's u16 key mask. Reset at track load."
 area = "track"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/unlocks_plan.md#fifth-dew-can-on-hawaii-v"
 
 [[var]]
 vram = 0x800D9DC5
@@ -7447,10 +7510,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x800D9E88
 name = "cheat_option_a"
 type = "u8"
-desc = "Cheat menu toggle byte, read by countdown HUD and race start timer."
+desc = "No Race Timer cheat (item 22; 1 = timer off): race_start_timer never times the race out; hud_widget_cb_time_left hides the time."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x800D9E89
@@ -8063,6 +8126,15 @@ desc = "The player count the race was set up with: race_setup_800A5ADC stores 0x
 area = "menu"
 status = "verified"
 ref = "docs/online.md#race-end"
+
+[[var]]
+vram = 0x800E7BBC
+name = "slot_engines"
+type = "s16[2]"
+desc = "Each local player slot's ENGINE value, which func_8009E664 hands race_start_engine_sounds (race start and after a pause); a value of 10 or more is zeroed there before engine 0 starts."
+area = "audio"
+status = "inferred"
+ref = "docs/sfrush_ps1.md#fancy-ufo"
 
 [[var]]
 vram = 0x800E7BC0
@@ -9335,12 +9407,12 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 
 [[var]]
 vram = 0x800FAEA4
-name = "scene_walk_fog_state"
-type = "u16"
-desc = "Halfword set by view_fog_setup, read by scene_walk."
+name = "late_node_pass"
+type = "s16"
+desc = "Nonzero while view_fog_setup's late node pass walks the scene (from L_8007D980): scene_walk then draws only nodes with flag 0x40000; while 0 it skips them and records the first in 0x800FAEAC."
 area = "render"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/rush2049_research/dreamcast.md#translucent-strips-drawn-last-v"
 
 [[var]]
 vram = 0x800FAEA8
@@ -9353,12 +9425,12 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 
 [[var]]
 vram = 0x800FAEAC
-name = "scene_walk_state"
-type = "u16"
-desc = "Halfword shared by scene_walk and view_fog_setup."
+name = "late_node_first"
+type = "s16"
+desc = "Late node pass: index of the first scene node with flag 0x40000 that scene_walk skipped (-1 none); view_fog_setup walks that node's level again from it at L_8007D980 drawing only the 0x40000 nodes."
 area = "render"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/rush2049_research/dreamcast.md#translucent-strips-drawn-last-v"
 
 [[var]]
 vram = 0x800FAEB0
@@ -9670,7 +9742,7 @@ ref = "docs/players4.md#sky-in-split-screen"
 vram = 0x8010BC98
 name = "race_deaths"
 type = "s8"
-desc = "DEATHS option for the race (track select struct 0x800D5760 + 0x11, copied by func_80094698 at 0x80094974; 0 off). Read by car_wreck_trigger, race_car_finish_or_respawn_handle (out of deaths ranks the car behind the finishers), record stats, the skull HUD widget and the options text. In a circuit, from the circuit block +1 bit 1 instead."
+desc = "DEATHS option for the race (track select struct 0x800D5760 + 0x11, copied by func_80094698 at 0x80094974; 0 off). Read by car_wreck_trigger, race_car_finish_or_respawn_handle (out of deaths ranks the car behind the finishers), record stats, the skull HUD widget and the options text. In a circuit, from the circuit block +1 bit 1 instead. Every test of it is zero / non-zero, so 2 is the port's DEATHS EXPLOSIVE (one life and a speed bomb, src/explosive.cpp, docs/sfrush_ps1.md#explosive-mode; in a circuit from the circuit's record)."
 area = "race"
 status = "verified"
 ref = "docs/game_fixes.md#finish-place-and-deaths"
@@ -10201,7 +10273,7 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C040
 name = "race_countdown_sign"
 type = "u32[2]"
-desc = "Per view: the countdown sign polygon (CNTDWNn texture) made and placed by race_countdown_update; 0 when none."
+desc = "Per view: the countdown sign polygon (CNTDWNn texture) made and placed by race_countdown_update; 0 when none. Moved to 0x80240340 (4 entries) by src/players4.cpp, so read it there. The polygon is created with flag 0x8000 (skipped by view_fog_setup's polygon loop) and the flag is cleared once it is placed. The Rocket ZX flames draw just before it (src/rush2049/car2049.cpp)."
 area = "race"
 status = "inferred"
 ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
@@ -10516,10 +10588,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C15C
 name = "track_placement_state"
 type = "u32"
-desc = "Word reset at heap/scene reset and track load, used by placement find/walk and PVS (low confidence)."
+desc = "Pointer to the track's placement records (0x64 bytes each): the first top-level record, and the base record indices are taken from. pvs_choose_camera_region walks the top-level next chain (+0x44) from it; section i is the i-th record, name at +0x00."
 area = "track"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/rush2049_research/geometry.md#52-pvs-which-sections-are-drawn"
 
 [[var]]
 vram = 0x8010C160
@@ -10552,28 +10624,28 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C166
 name = "cheat_option_d"
 type = "u8"
-desc = "Cheat menu toggle byte, read by breakable behavior and scene asset load."
+desc = "Cone Mines cheat (item 2): cones get breakable_behavior_g_hit (drawn as spiked mines, wreck the car that hits them); race_scene_load_assets loads the mine model."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C167
 name = "cheat_option_e"
 type = "u8"
-desc = "Car Mines cheat (menu item 3): hitting a cone turns the car into a mine that blows up the next car it bumps. Read by breakable behavior, car select preview and scene asset load."
+desc = "Car Mines cheat (item 3): cones are mines; a car hitting one gets car state +0x34A = 1 (drawn as a mine), and the next car it touches is wrecked (car_car_collision_response_8006E2A8)."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C168
 name = "cheat_option_f"
 type = "u8"
-desc = "Disable Auto-Abort cheat (menu item 6): drones are no longer reset when lost or stuck. Read by wrong-way update."
+desc = "Disable Auto-Abort cheat (item 6): race_stuck_wrongway_update stops putting stuck cars back on the course, human and computer alike."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C169
@@ -10597,10 +10669,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C170
 name = "cheat_option_g"
 type = "u8"
-desc = "Invisible Cars cheat (menu item 11): every car is hidden. Read by car model/car select preview updates."
+desc = "Invisible Car cheat (item 11): every car is hidden, computer cars too (car_model_update_parts, car_hood_update)."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C171
@@ -10624,36 +10696,36 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C178
 name = "cheat_option_h"
 type = "u8"
-desc = "Cheat menu toggle byte, read by pvs_apply."
+desc = "Invisible Track cheat (item 12): pvs_apply draws no track sections; cars and sky stay."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C179
 name = "cheat_option_i"
 type = "u8"
-desc = "Cheat menu toggle byte, read by car_type_get_mass (likely mass related)."
+desc = "Mass cheat (item 15; 0-2): car_type_get_mass adds value x 1000 lb to every car, so all cars accelerate slower."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C17A
 name = "cheat_option_j"
 type = "u8"
-desc = "Do the Dew cheat (menu item 17): track_object_spawn_key gives keys the Dew model 0x756 instead of the placement's."
+desc = "Do the Dew cheat (item 17): track_object_spawn_key gives keys the Dew model 0x756 (verified in game)."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C17B
 name = "settings_checkpoint_option"
 type = "u8"
-desc = "Setting byte copied to race globals, read by checkpoint_passed and options text (low confidence)."
+desc = "CHECKPOINTS for the race (track select struct 0x800D5760 + 0x19, copied by func_80094698 at 0x800949AC; 1 in a circuit): nonzero races against the clock, checkpoint_passed adding each checkpoint's time. Read by checkpoint_passed (0x8008F5E0), the race start timer (0x800AEAB8) and the options text, all zero / non-zero, so 2 is the port's CHECKPOINTS CLOCKS (Time Sprint: the clocks give the time, src/time_sprint.cpp, docs/sfrush_ps1.md#time-sprint)."
 area = "race"
-status = "inferred"
+status = "verified"
 ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 
 [[var]]
@@ -10678,16 +10750,16 @@ ref = "docs/rush2049_research/cars.md#paint-colors-v"
 vram = 0x8010C200
 name = "cheat_option_l"
 type = "u8"
-desc = "Cheat menu toggle byte, read by HUD menu widgets init and player stats HUD."
+desc = "Stunts on All Tracks cheat (item 19): nonzero shows the stunt panel in every race; read by hud_stunt_box_visible_80060E34 and hud_widget_text_cb_player_stats_800B7654 (a custom track's [track] stunts reads it as set, docs/sfrush_ps1.md#stunt-track)."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C204
 name = "race_time_float"
 type = "f32"
-desc = "Float race time/clock reset at race start/end and updated by checkpoints, read by 13 HUD/race functions (low confidence)."
+desc = "Float race time/clock reset at race start/end and updated by checkpoints, read by 13 HUD/race functions (low confidence). The time allowed: checkpoint_passed adds each checkpoint's bonus to it (0x8008F690), and Time Sprint's clocks add 20 s each (src/time_sprint.cpp, docs/sfrush_ps1.md#time-sprint)."
 area = "race"
 status = "inferred"
 ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
@@ -10714,16 +10786,16 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C210
 name = "cheat_option_m"
 type = "u8"
-desc = "Cheat menu toggle byte, read by respawn_place_car."
+desc = "Resurrect in Place cheat (item 20): respawn_place_car puts a wrecked human car back 10 ft above where it wrecked, at most once per 2 s (time per car at 0x800C44AC) unless Levitation is on."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C211
 name = "race_difficulty"
 type = "u8"
-desc = "DIFFICULTY for the race (0-5, from the track select struct 0x800D5760 + 0xA by func_80094698). Drives rubber_band_800A1A98: f20 = (1 - difficulty / 5) x the per-track factor 0x800C1A3C, and no place spread at 5. Also read by checkpoint, total time, start timer and ranking. In a circuit, from the circuit block +1 bits 3-5 instead (2 unless More Circuit Settings changed it)."
+desc = "DIFFICULTY for the race (0-5, from the track select struct 0x800D5760 + 0xA by func_80094698). Drives rubber_band_800A1A98: f20 = (1 - difficulty / 5) x the per-track factor 0x800C1A3C, and no place spread at 5. Also read by checkpoint, total time, start timer and ranking. In a circuit, from the circuit block +1 bits 3-5 instead (2 unless More Circuit Settings changed it). The race clock's three reads (0x800AEAC8, 0x8008F640, 0x800AB1B8) take the Checkpoint Time Difficulty setting's value instead when it isn't Same as Race (src/checkpoint_time.cpp, docs/rush2049_research/checkpoints.md section 2.1)."
 area = "race"
 status = "verified"
 ref = "docs/npc_cars.md#drone-catch-up"
@@ -10732,10 +10804,10 @@ ref = "docs/npc_cars.md#drone-catch-up"
 vram = 0x8010C254
 name = "cheat_option_n"
 type = "u8"
-desc = "Levitation cheat (menu item 21): with Resurrect in Place (0x8010C210) on, respawn_place_car puts the car back where it wrecked without the height check, so it can hang in mid-air."
+desc = "Levitation cheat (item 21): read only by respawn_place_car after Resurrect in Place (0x8010C210); removes the 2 s wait between in-place respawns, so pressing ABORT in the air keeps lifting the car. The Cheats tab offers it as Resurrect in Place's third choice."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C258
@@ -10822,10 +10894,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C3D4
 name = "cheat_option_o"
 type = "u8"
-desc = "Tire Scaling cheat (menu item 25): carselect_build_list adds the TIRE SIZE F and TIRE SIZE R options."
+desc = "Tire Scaling cheat (item 25): carselect_build_list adds the TIRE SIZE F and TIRE SIZE R rows (verified in game)."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C3D5
@@ -11281,10 +11353,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010C440
 name = "cheat_option_q"
 type = "u8"
-desc = "Byte set by cheat menu, defaults and race setup; read by pak write-all (low confidence)."
+desc = "Fog Color cheat (item 26): 12-19 = black, red, green, blue, yellow, white, orange, pink; below 12 race_setup sets it to the track id. Indexes the fog colors at 0x800C1D7C (3 bytes each)."
 area = "menu"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010C441
@@ -11785,10 +11857,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8010D3A6
 name = "cheat_drag_flag"
 type = "u8"
-desc = "Super Tires cheat (menu item 14, on = 2): grass and other off-road ground no longer slow the car. Read by the wheel drag force code."
+desc = "Super Tires cheat (item 14, on = 2): car_wheel_forces_drag gives rear wheels on dirt or grass 0.1 of their drag and drops off-road tires' pavement drag; every car. Off-road slows cars much less."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8010D3A8
@@ -12298,10 +12370,10 @@ ref = "docs/calspeed_research.md#5-paths"
 vram = 0x80111950
 name = "cheat_car_flag"
 type = "u8"
-desc = "Cheat menu byte read by car integration, reset-for-race, wheel matrices and wreck steering (low confidence)."
+desc = "Super Speed cheat (item 7): every car's orientation matrix is set to scale 1.00025 (car_reset_state_for_race, renormalized by func_80069330) instead of 1. In game the player's car accelerates harder and goes faster (126 vs 113 mph at 8 s); drones barely change (they drive to lane speeds)."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x80111954
@@ -12523,10 +12595,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x8011249A
 name = "cheat_car_collide_flag"
 type = "u8"
-desc = "Cheat menu byte read by car-to-car collision (low confidence)."
+desc = "No Car Collisions cheat (item 0; 1 = collisions off): car_collide_with_cars_8006F3C0 is skipped for every car (except game mode 2)."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x80112584
@@ -13079,12 +13151,12 @@ ref = "docs/online.md#the-race"
 
 [[var]]
 vram = 0x80117490
-name = "model_draw_float"
+name = "node_camera_distance"
 type = "f32"
-desc = "Float kept by model draw between calls (low confidence)."
+desc = "Camera distance of the scene node model_draw_8007AA48 is drawing (stored on every path before the G_DL; used to cull and pick the LOD, src/lod.cpp). The Dreamcast translucent tails are sorted by it."
 area = "render"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/rush2049_research/dreamcast.md#translucent-strips-drawn-last-v"
 
 [[var]]
 vram = 0x80117498
@@ -13117,10 +13189,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x801174E0
 name = "cheat_mirror_flag"
 type = "u8"
-desc = "Inside-Out Car cheat (menu item 8): mirror_state_update re-winds the triangles of model slots 0x1D-0x32 (every car), so cars draw inside out."
+desc = "Inside-Out Car cheat (item 8): mirror_state_update re-winds the car model's triangles; in game only the player's car is drawn inside out."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x801174E4
@@ -13458,11 +13530,11 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 [[var]]
 vram = 0x8011921C
 name = "scene_node_matrix_ptr"
-type = "void*"
-desc = "Pointer set by race scene load, read by scene_node_new_with_matrix_ex (low confidence)."
+type = "f32 (*)[12]"
+desc = "The car select's preview part matrices: scene_node_new_with_matrix_ex gives preview id i's part matrix k at this + (i * 8 + k) * 0x30. race_scene_load_assets_8008A1FC sets it on the car select (game state 2) to one scene pool matrix (0x800EBE40 pool); 242 preview ids overran the pool into the scene node and polygon counts (issue 67), so the hook at 0x8008A2D4 (rush2_preview_matrix_base) points it at car_types::preview_matrices (0x80199650) instead."
 area = "render"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/rush2049_research/cars.md#8-implementation-v"
 
 [[var]]
 vram = 0x80119420
@@ -13477,10 +13549,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x80119628
 name = "cheat_collision_response_flag"
 type = "u8"
-desc = "Suicide Mode cheat (menu item 16; 1 = on, 2 = humans): cars explode when they touch. Read by car-to-car collision response."
+desc = "Suicide Mode cheat (item 16; 1 = on, 2 = humans): car_car_collision_response wrecks both cars on contact (2: only when one is a human car); Invincible still spares a human."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x8011962A
@@ -14242,10 +14314,10 @@ ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
 vram = 0x80125C64
 name = "car_pedal_cheat_flag"
 type = "u8"
-desc = "Per-player option byte set from cheats menu/boot defaults and read by car_set_pedals."
+desc = "No Brakes cheat (item 13; 1 = no brakes): car_set_pedals skips the brake for human cars; drones set their own pedals."
 area = "unlocks"
-status = "inferred"
-ref = "docs/functions/rush2_globals.md#rush-2-global-variables"
+status = "verified"
+ref = "docs/cheats.md#in-game-behavior"
 
 [[var]]
 vram = 0x80125C66

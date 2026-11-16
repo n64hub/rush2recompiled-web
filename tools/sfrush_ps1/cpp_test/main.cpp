@@ -5,7 +5,14 @@
 //   build.bat [OUT_DIR] [DISC]   (OUT_DIR default tmp/ps1/cpp; DISC any image ps1_disc.cpp reads, default
 //                                 SFRUSH_PS1_DISC)
 //
+// RUSH1_LANES_DIR: a folder with the N64 SF Rush's lane files lanes58.bin, lanes59.bin and lanes60.bin (ROM assets
+// 58-60, decompressed: tools/rush1/r1.py Rush1().asset(58 + t)), as the game passes them with the N64 ROM in; without it
+// the PS1's own lanes are used.
+//
 // Writes OUT_DIR/sfrush_ps1/ and prints the converter's log and time.
+//
+// SFRUSH_PS1_NIGHT_ART=FILE: writes only n64_night_art.bin (with SFRUSH_PS1_ART_SET=S n64_snow_art.bin) (the N64 NIGHT versions' buildings in the PS1's night art,
+// docs/sfrush_ps1.md#n64-night-art) to FILE and stops, for tools/rush1/cpp_test's track1_test --night-art.
 
 #include <chrono>
 #include <cstdio>
@@ -30,10 +37,55 @@ int main(int argc, char** argv) {
         fprintf(stderr, "%s is not the PS1 SF Rush disc %s\n", rush2::upscale::path_utf8(disc_path).c_str(), error.c_str());
         return 1;
     }
+    if (const char* art_path = std::getenv("SFRUSH_PS1_NIGHT_ART"); art_path && *art_path) {
+        std::string log;
+        const char* set = std::getenv("SFRUSH_PS1_ART_SET");   // "S": the snow versions' n64_snow_art.bin
+        std::vector<uint8_t> art = set && std::string(set) == "S"
+            ? ps1::n64_snow_art(disc, std::filesystem::path("assets") / "sfrush_ps1", log)
+            : ps1::n64_night_art(disc, std::filesystem::path("assets") / "sfrush_ps1", log);
+        printf("%s", log.c_str());
+        std::ofstream f(std::filesystem::u8path(art_path), std::ios::binary);
+        f.write(reinterpret_cast<const char*>(art.data()), std::streamsize(art.size()));
+        return art.empty() || !f ? 1 : 0;
+    }
     auto t0 = std::chrono::steady_clock::now();
     ps1::ModFiles files;
     std::string log;
-    bool ok = ps1::build_mod(disc, std::filesystem::path("assets") / "sfrush_ps1", files, log);
+    ps1::N64Lanes n64;
+    if (const char* dir = std::getenv("RUSH1_LANES_DIR"); dir && *dir) {
+        for (int t = 0; t < 3; t++) {
+            n64[size_t(t)] = rush2::upscale::read_file(std::filesystem::u8path(dir) / ("lanes" + std::to_string(58 + t) + ".bin"));
+        }
+    }
+    // The N64 Embarcadero as the game's install hands it over (tools/sfrush_ps1/n64_scene.py writes it from a model dump).
+    ps1::N64Scene scene;
+    if (const char* path = std::getenv("SFRUSH_PS1_N64_SCENE"); path && *path) {
+        std::vector<uint8_t> d = rush2::upscale::read_file(std::filesystem::u8path(path));
+        size_t o = 0;
+        auto u32 = [&]() { uint32_t v = 0; if (o + 4 <= d.size()) std::memcpy(&v, &d[o], 4); o += 4; return v; };
+        uint32_t images = u32();
+        for (uint32_t i = 0; i < images && o < d.size(); i++) {
+            ps1::N64Scene::Image im;
+            im.width = u32(); im.height = u32(); im.wrap_s = int(u32()); im.wrap_t = int(u32());
+            size_t n = size_t(im.width) * im.height * 4;
+            if (o + n > d.size()) break;
+            im.rgba.assign(d.begin() + o, d.begin() + o + n);
+            o += n;
+            scene.images.push_back(std::move(im));
+        }
+        uint32_t tris = u32();
+        for (uint32_t i = 0; i < tris && o + 3 * 24 + 4 <= d.size(); i++) {
+            ps1::N64Scene::Tri t{};
+            for (int v = 0; v < 3; v++) {
+                std::memcpy(t.p[v], &d[o], 12); std::memcpy(t.uv[v], &d[o + 12], 8); std::memcpy(t.color[v], &d[o + 20], 4);
+                o += 24;
+            }
+            std::memcpy(&t.image, &d[o], 4); o += 4;
+            scene.tris.push_back(t);
+        }
+        printf("N64 scene: %zu images, %zu triangles\n", scene.images.size(), scene.tris.size());
+    }
+    bool ok = ps1::build_mod(disc, std::filesystem::path("assets") / "sfrush_ps1", files, log, n64, scene);
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     printf("== %s: %s in %.1f s, %zu files\n%s", ps1::mod_id, ok ? "built" : "FAILED", s, files.size(), log.c_str());
     if (!ok) return 1;

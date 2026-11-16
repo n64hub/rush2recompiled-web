@@ -5,7 +5,7 @@
 // tools/rush2049/cartypes.py) points every instruction that addresses them at copies for every type at 0x80200000
 // (include/car_types.h) and re-strides the row arithmetic from 22 to 73. This file builds the copies at boot: Rush 2's
 // entries, the "no car" marker type 22, then the 2049 cars' (types 23-35); California Speed's (36-56) are filled by
-// src/calspeed/calspeed_cars.cpp and the mod cars' (57-72) by set_mod_car (src/car_mods.cpp).
+// src/calspeed/calspeed_cars.cpp and the mod cars' (57-120) by set_mod_car (src/car_mods.cpp).
 
 #include <cstdio>
 #include <algorithm>
@@ -19,6 +19,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <mutex>
 #include <optional>
@@ -37,15 +38,19 @@
 #include "rush2.h"
 #include "calspeed.h"
 #include "car2049.h"
+#include "car_lights.h"
+#include "car_stripes.h"
 #include "car_mods.h"
 #include "paint_colors.h"
 #include "car_probes.h"
 #include "engine2049.h"
+#include "fancy_ufo.h"
 #include "font2049.h"
 #include "npc_cars.h"
 #include "online.h"
 #include "online_sync.h"
 #include "rush2049_dc.h"
+#include "dc_translucent.h"
 #include "unlocks.h"
 #include "track2049_convert.h"
 #include "track_cache.h"
@@ -286,6 +291,36 @@ namespace {
             uint32_t at, list;
         };
         std::vector<BrakeBlock> brake_blocks;
+        // A livery's flipbook frame lists (rush2::car2049::siren_switch, file offsets), whose vertices follow the body's
+        // dents as the brake lights' do (collect_brake_vertices).
+        std::vector<uint32_t> siren_lists;
+        // Rush 2's STRIPE values (include/car_stripes.h, docs/car_mods.md#stripes-on-one-body-cars), on an N64 2049
+        // car and a car mod painted through a paint mask: add_damage_textures ends each body list with one block per
+        // STRIPE value, the body's painted triangles in that value's bands drawn again over the body (decal, cut at
+        // the band edges by the alpha test) through stripe palettes kept in the car (stripe_tluts, one per
+        // rush2::car_stripes::level_values).
+        // rush2_car49_paint fills the palettes and opens the block of the car's STRIPE (stripe_paint).
+        bool stripes = false;     // set before add_damage_textures: make the blocks
+        bool third_ramp = false;  // its textures use its third paint ramp (TERTIARY COLOR has something to color)
+        bool stripes_above_widest = false; // ModCar::stripes_above_widest (set before add_damage_textures)
+        bool mod_palette = false; // Rush 2's car palette (MAIN 1-31, ACCENT 33-63), else a 2049 car's ramps (32-95)
+        uint32_t stripe_tluts = 0; // file offset of the palettes (level_count x 256 RGBA5551)
+        struct StripeBlock {
+            int value;
+            uint32_t gate;        // file offset of its first command: G_NOOP when shown, else a branch to `end`
+            uint32_t end;
+            std::vector<uint32_t> body_tluts; // its G_SETTIMGs that load the car's own palette
+        };
+        std::vector<StripeBlock> stripe_blocks;
+        // The edge layers' vertices (copies of body vertices with an edge's alpha), each moved as its body vertex
+        // (corners: indices into vertices, with weights) so it dents with the body (dent_body).
+        struct StripeVertex {
+            uint32_t at;
+            uint32_t body[3];
+            float w[3];
+            int16_t rest[3];      // its position undented
+        };
+        std::vector<StripeVertex> stripe_vertices;
         // The brake light lists' vertices (file offsets), each dented as the body vertex nearest it (index into
         // vertices), with its own pristine position: the lights are a model of their own, so without this they stayed
         // where the undamaged body was (issue #52).
@@ -311,6 +346,11 @@ namespace {
     constexpr uint32_t guest_side_slots = types_::guest_side_slots;
     constexpr int max_guests = types_::max_guests;
     std::map<uint32_t, int> guest_slot_of;            // guest profile address -> guest slot index
+    // TERTIARY COLOR (rush2::car2049::tertiary_color): by record, by player 1-4 without one (session), by guest.
+    const std::string tertiary_section = "tertiary";
+    std::mutex tertiary_mutex;
+    bool tertiary_loaded = false;
+    std::map<uint32_t, std::map<int, int>> tertiary_saved, tertiary_session, tertiary_guests;
 
     std::atomic_bool cars_option = true;
 
@@ -817,6 +857,30 @@ namespace {
 
     void body_hood(Paint& p);
 
+    // How many texels of the car's CI8 textures (every image its texture-load lists, the file's [7]..[8] range,
+    // load; not the palette, which they load as a CI block too) are in its third paint ramp, entries 96-126 (2049's COLOR 3,
+    // the TERTIARY COLOR). Seven of the 13 N64 cars use it (FORMULA 1, ROCKET ZX, MAGNUM, GX-2, MINI XS, VENOM,
+    // EURO LX: 88 to 3316 texels); the rest have at most 6 (the SUPER GT's, its darkest shade).
+    int third_ramp_texels(const std::vector<uint8_t>& car, uint32_t palette) {
+        uint32_t start = be32(car, 28), end = std::min<uint32_t>(be32(car, 32), uint32_t(car.size()));
+        std::set<uint32_t> seen;
+        uint32_t image = 0;
+        bool ci = false;
+        int n = 0;
+        for (uint32_t pc = start; pc + 8 <= end; pc += 8) {
+            uint32_t w0 = be32(car, pc), w1 = be32(car, pc + 4);
+            if ((w0 >> 24) == 0xFD) { // G_SETTIMG: CI is format 2
+                image = w1 & 0xFFFFFF;
+                ci = ((w0 >> 21) & 7) == 2;
+            }
+            if ((w0 >> 24) == 0xF3 && ci && image != palette && seen.insert(image).second) { // G_LOADBLOCK: lrs + 1 texels
+                uint32_t count = ((w1 >> 12) & 0xFFF) + 1;
+                for (uint32_t i = 0; i < count && image + i < car.size(); i++) n += car[image + i] >= 96 && car[image + i] <= 126;
+            }
+        }
+        return n;
+    }
+
     // The body's (FRAME1, both LODs) vertices, for denting.
     void collect_body_vertices(const std::vector<uint8_t>& car, const std::string& prefix, Paint& p) {
         std::set<uint32_t> seen_vertices = model_vertices(car, prefix + "FRAME1");
@@ -1161,76 +1225,467 @@ namespace {
             return (z > 0 ? 0 : 2) + (x > 0 ? 0 : 1);
         };
 
-        uint32_t lods = std::min(be32(car, record), 4u);
-        for (uint32_t lod = 0; lod < lods; lod++) {
-            uint32_t list = be32(car, record + 4 + lod * 12 + 8);
-            std::vector<uint8_t> out;
-            std::vector<std::pair<uint32_t, int>> sites; // offset in `out` of an inlined G_SETTIMG, panel
-            std::vector<std::pair<uint32_t, const Load*>> site_loads;
-            std::array<int16_t, 3> buffer[64] = {};
-            const Load* current = nullptr;
-            int loaded_panel = -1;
+        // Stripes (Paint::stripes): the palettes, and each body vertex's index in p.vertices (for the pieces' dents).
+        std::map<uint32_t, uint32_t> vertex_index;
+        const size_t size_before = car.size();
+        if (p.stripes) {
+            align();
+            p.stripe_tluts = uint32_t(car.size());
+            car.insert(car.end(), size_t(rush2::car_stripes::level_count) * 512, 0);
+            for (size_t i = 0; i < p.vertices.size(); i++) vertex_index[p.vertices[i]] = uint32_t(i);
+        }
+
+        // Stripes (Paint::stripes, docs/car_mods.md#stripes-on-one-body-cars). The body is drawn as it is. Each STRIPE
+        // value has a block at the end of the list that draws the body's painted triangles in its bands again, over
+        // the body (decal, from the body's own vertices or exact copies, so at the very same depth), with the body's
+        // texture coordinates through the palette of the band's level (alpha the palette's: the stripe palettes keep
+        // the paint only, so glass, lights and trim show the body). A triangle a band edge crosses is drawn whole once
+        // per edge, left to right, each layer through the palette of the region right of its edge and cut off left of
+        // it by the alpha test: its vertices' shade alpha rises with x through 128 at the edge, linear in x, so the
+        // cut is a straight line at the edge across the triangle. The last layer drawn at a point is its region's.
+        struct OverTri {      // a painted triangle the blocks draw again
+            uint32_t at[3];   // its vertices (file offsets), in the list's winding
+            uint32_t body[3]; // their indices in p.vertices
+            float x[3];
+            uint64_t combine;
+            const Load* load;
+            int panel;
+        };
+        struct PendingBlock {
+            int value;
+            uint32_t gate, end;
+            std::vector<uint32_t> body_tluts; // its G_SETTIMGs that load the car's own palette
+        };
+        const float half = p.extent[0];
+        // A STRIPE value's regions across the car: edges[i] are the x (in 64ths of the half width, signed) where the
+        // level changes, levels[i] the level left of edges[i] (levels.back() right of the last; 0 the body).
+        struct Regions {
+            std::vector<int> edges;
+            std::vector<int> levels;
+        };
+        auto level_at = [](const std::vector<rush2::car_stripes::Band>& bands, float frac) {
+            float a = std::fabs(frac);
+            for (const rush2::car_stripes::Band& b : bands) {
+                if (a > b.lo && a < b.hi) return rush2::car_stripes::level_slot(b.level) >= 0 ? b.level : 0;
+            }
+            return 0;
+        };
+        auto regions = [&](int value) {
+            Regions r;
+            const std::vector<rush2::car_stripes::Band> bands = rush2::car_stripes::bands(value);
+            std::set<int> candidates;
+            for (const rush2::car_stripes::Band& b : bands) {
+                for (float e : { b.lo, b.hi }) {
+                    int n = int(std::lround(e * 64.0f));
+                    candidates.insert(n);
+                    candidates.insert(-n);
+                }
+            }
+            for (int n : candidates) {
+                int left = level_at(bands, (n - 0.5f) / 64.0f), right = level_at(bands, (n + 0.5f) / 64.0f);
+                if (left == right) continue;
+                r.edges.push_back(n);
+                r.levels.push_back(left);
+            }
+            r.levels.push_back(r.edges.empty() ? level_at(bands, 0.0f) : level_at(bands, (r.edges.back() + 0.5f) / 64.0f));
+            return r;
+        };
+        // Paint::stripes_above_widest: the middle of the body's bounds and the height of its widest point (the
+        // highest of the vertices farthest out from the middle, across).
+        float body_center[3] = { 0.0f, 0.0f, 0.0f }, widest_y = -1e30f;
+        if (p.stripes_above_widest && !p.rest.empty()) {
+            for (int c = 0; c < 3; c++) {
+                int lo = p.rest[0][c], hi = lo;
+                for (const auto& r : p.rest) {
+                    lo = std::min<int>(lo, r[c]);
+                    hi = std::max<int>(hi, r[c]);
+                }
+                body_center[c] = (lo + hi) * 0.5f;
+            }
+            float widest = 0.0f;
+            for (const auto& r : p.rest) widest = std::max(widest, std::hypot(r[0] - body_center[0], r[2] - body_center[2]));
+            for (const auto& r : p.rest) {
+                if (std::hypot(r[0] - body_center[0], r[2] - body_center[2]) >= widest - 0.5f) {
+                    widest_y = std::max(widest_y, float(r[1]));
+                }
+            }
+        }
+        Regions value_regions[rush2::car_stripes::values];
+        for (int v = 1; v < rush2::car_stripes::values; v++) value_regions[v] = regions(v);
+        auto edge_x = [half](int n) { return float(n) / 64.0f * half; };
+        // A triangle's color combiner with alpha TEXEL0 in both cycles (the second passes the first's on when the list
+        // draws in two; the cycle type from G_SETOTHERMODE_H when the list sets it, else from whether the cycles
+        // differ). Its color is the triangle's own combiner's, so each layer is lit and tinted as its triangle is.
+        auto piece_combine = [](int cycles, const uint32_t cc[2], uint32_t out_cc[2]) {
+            bool two = cycles >= 0 ? cycles == 1
+                : ((cc[1] >> 21) & 7) != ((cc[0] >> 12) & 7) || ((cc[1] >> 18) & 7) != ((cc[0] >> 9) & 7) ||
+                  ((cc[1] >> 3) & 7) != ((cc[1] >> 12) & 7) || (cc[1] & 7) != ((cc[1] >> 9) & 7);
+            out_cc[0] = (cc[0] & ~0x7E00u) | (7u << 12) | (7u << 9);
+            out_cc[1] = (cc[1] & ~((7u << 21) | (7u << 18) | (7u << 12) | (7u << 9) | (7u << 3) | 7u)) |
+                        (7u << 21) | (7u << 18) | (7u << 12) | (1u << 9) | (7u << 3) | (two ? 0u : 1u);
+        };
+        // An edge layer's: alpha (TEXEL0 - 0) x SHADE in the first cycle, which the alpha test reads, and the texel's
+        // alone in the second (its TEXEL1 is the first's texel), which the blender reads: opaque paint.
+        auto edge_combine = [&piece_combine](int cycles, const uint32_t cc[2], uint32_t out_cc[2]) {
+            piece_combine(cycles, cc, out_cc);
+            out_cc[0] = (out_cc[0] & ~0x7E00u) | (1u << 12) | (4u << 9);
+            out_cc[1] = (out_cc[1] & ~((7u << 21) | (7u << 18) | (7u << 12) | (7u << 9) | (7u << 3) | 7u)) |
+                        (7u << 21) | (7u << 18) | (7u << 12) | (7u << 9) | (7u << 3) | 2u;
+        };
+        // An edge's alpha slope: the steepest that keeps every vertex of the triangles it crosses in 1-255 (one for
+        // all of them, so a vertex has the same alpha in every triangle it is a corner of and the cut runs on
+        // unbroken from triangle to triangle).
+        std::map<int, float> edge_reach;
+        // Vertex copies with an edge's alpha (Paint::StripeVertex: each dents as the body vertex it copies), three
+        // per triangle and edge, made once for every block and LOD that draws them.
+        std::map<std::pair<const void*, int>, uint32_t> edge_copies;
+        std::vector<std::unique_ptr<OverTri>> over_store;
+        auto edge_vertices = [&](const OverTri& t, int n) {
+            auto key = std::make_pair(static_cast<const void*>(&t), n);
+            auto it = edge_copies.find(key);
+            if (it != edge_copies.end()) return it->second;
+            const float e = edge_x(n), k = 127.0f / std::max(edge_reach[n], 1.0f);
+            align();
+            uint32_t at = uint32_t(car.size());
+            for (int i = 0; i < 3; i++) {
+                uint32_t copy = uint32_t(car.size());
+                uint8_t bytes[15];
+                std::memcpy(bytes, &car[t.at[i]], 15);
+                car.insert(car.end(), bytes, bytes + 15);
+                car.push_back(uint8_t(std::clamp(int(std::lround(128.0f + k * (t.x[i] - e))), 0, 255)));
+                Paint::StripeVertex sv{ copy, { t.body[i], t.body[i], t.body[i] }, { 1.0f, 0.0f, 0.0f }, {} };
+                std::array<int16_t, 3> rest = vertex_at(car, t.at[i]);
+                for (int c = 0; c < 3; c++) sv.rest[c] = rest[c];
+                p.stripe_vertices.push_back(sv);
+            }
+            edge_copies.emplace(key, at);
+            return at;
+        };
+        // The blocks, at the end of a list: positions in `out`; the gate's branch target is patched once the list's
+        // place is known.
+        auto emit_stripe_blocks = [&](std::vector<uint8_t>& out, std::vector<std::pair<uint32_t, int>>& sites,
+                                      std::vector<std::pair<uint32_t, const Load*>>& site_loads,
+                                      const std::vector<const OverTri*>& tris, uint32_t mode, const uint32_t combine[2],
+                                      int cycles, uint32_t alpha_compare, std::vector<PendingBlock>& pending) {
             auto emit = [&out](uint32_t w0, uint32_t w1) {
                 for (int i = 0; i < 4; i++) out.push_back(uint8_t(w0 >> (24 - 8 * i)));
                 for (int i = 0; i < 4; i++) out.push_back(uint8_t(w1 >> (24 - 8 * i)));
             };
-            // Indices are vertex * 2 (F3DEX2).
-            auto panel = [&](uint32_t a, uint32_t b, uint32_t c) {
-                const std::array<int16_t, 3>* v[3] = { &buffer[(a / 2) & 63], &buffer[(b / 2) & 63], &buffer[(c / 2) & 63] };
-                return panel_of(v);
+            // G_RM_ZB_XLU_DECAL in the second cycle (the body's fog cycle kept for whole layers; the edge layers' shade
+            // alpha is theirs, so their first cycle passes the color on and fog is off for them).
+            const bool fog = (mode >> 30) == 3;
+            const uint32_t mode_decal = (mode >> 30) == 3 ? (mode & 0xCCCC0000u) | 0x00104E50u : 0x00504E50u;
+            const uint32_t mode_edge = 0x0C080000u | 0x00104E50u;
+            // The edge layers need two cycles (the alpha test reads the first's alpha): the 2049 cars and mods draw
+            // in two (fog). A list in one has its edge triangles drawn whole as the region their middle is in.
+            const bool two_cycles = cycles == 1 || (cycles < 0 && fog);
+            auto load_tlut = [&](uint32_t at) {
+                uint32_t settimg = uint32_t(out.size());
+                emit(0xFD100000u, at);           // G_SETTIMG RGBA16
+                emit(0xE8000000u, 0);            // G_RDPTILESYNC
+                emit(0xF5000100u, 0x07000000u);  // G_SETTILE tile 7, TMEM 0x100
+                emit(0xE6000000u, 0);            // G_RDPLOADSYNC
+                emit(0xF0000000u, 0x073FC000u);  // G_LOADTLUT 256
+                emit(0xE7000000u, 0);            // G_RDPPIPESYNC
+                return settimg;
             };
-            auto load_for = [&](int panel) {
-                if (panel == loaded_panel) return;
-                uint32_t at = uint32_t(out.size());
-                out.insert(out.end(), current->commands.begin(), current->commands.end());
-                site_loads.push_back({ at + current->settimg, current });
-                sites.push_back({ at + current->settimg, panel });
-                loaded_panel = panel;
+            struct Layer {
+                const OverTri* t;
+                int slot;      // stripe palette, -1 the car's own
+                int edge;      // the edge it is cut at (64ths), or kNoEdge: drawn whole
             };
-            for (uint32_t pc = list; pc + 8 <= car.size(); pc += 8) {
-                uint32_t w0 = be32(car, pc), w1 = be32(car, pc + 4);
-                uint8_t op = uint8_t(w0 >> 24);
-                if (op == 0x01) { // G_VTX
-                    uint32_t n = (w0 >> 12) & 0xFF, end = (w0 >> 1) & 0x7F, at = w1 & 0xFFFFFF;
-                    for (uint32_t i = 0; i < n && end >= n && at + i * 16 + 6 <= car.size(); i++) {
-                        buffer[(end - n + i) & 63] = vertex_at(car, at + i * 16);
-                    }
-                }
-                if (op == 0xDE && (w1 & 0xFFFFFF) >= txld_start && (w1 & 0xFFFFFF) < txld_end) {
-                    const Load& l = load_at(w1 & 0xFFFFFF);
-                    if (l.damaged != 0) {
-                        current = &l; // inlined before the triangles it textures
-                        loaded_panel = -1;
+            constexpr int kNoEdge = 1 << 20;
+            for (int value = 1; value < rush2::car_stripes::values; value++) {
+                const Regions& r = value_regions[value];
+                // Each triangle's layers, by pass: 0 the whole ones, then one pass per edge crossed, left to right.
+                std::vector<std::vector<Layer>> passes(1);
+                for (const OverTri* t : tris) {
+                    float mn = std::min({ t->x[0], t->x[1], t->x[2] }), mx = std::max({ t->x[0], t->x[1], t->x[2] });
+                    size_t first = 0;
+                    while (first < r.edges.size() && edge_x(r.edges[first]) <= mn) first++;
+                    size_t last = first;
+                    while (last < r.edges.size() && edge_x(r.edges[last]) < mx) last++;
+                    if (first == last || !two_cycles) {
+                        // No edge crosses it (or no edge layers): whole, in the region of its middle.
+                        float mid = (mn + mx) * 0.5f;
+                        size_t i = 0;
+                        while (i < r.edges.size() && edge_x(r.edges[i]) <= mid) i++;
+                        int slot = rush2::car_stripes::level_slot(r.levels[i]);
+                        if (r.levels[i] > 0 && slot >= 0) passes[0].push_back({ t, slot, kNoEdge });
                         continue;
                     }
-                    current = nullptr;
+                    bool painted = false; // a stripe layer drawn on it so far
+                    if (r.levels[first] > 0) {
+                        passes[0].push_back({ t, rush2::car_stripes::level_slot(r.levels[first]), kNoEdge });
+                        painted = true;
+                    }
+                    for (size_t j = first; j < last; j++) {
+                        int level = r.levels[j + 1];
+                        if (level == 0 && !painted) continue;
+                        if (passes.size() < j - first + 2) passes.resize(j - first + 2);
+                        passes[j - first + 1].push_back({ t, level > 0 ? rush2::car_stripes::level_slot(level) : -1,
+                                                          r.edges[j] });
+                        painted |= level > 0;
+                    }
                 }
-                if ((op == 0x05 || op == 0x06) && current != nullptr) {
-                    int first = panel((w0 >> 16) & 0xFF, (w0 >> 8) & 0xFF, w0 & 0xFF);
-                    load_for(first);
-                    if (op == 0x06) {
-                        int second = panel((w1 >> 16) & 0xFF, (w1 >> 8) & 0xFF, w1 & 0xFF);
-                        if (second != first) { // split into two G_TRI1s
-                            emit(0x05000000 | (w0 & 0xFFFFFF), 0);
-                            load_for(second);
-                            emit(0x05000000 | (w1 & 0xFFFFFF), 0);
-                            continue;
+                PendingBlock b{ value, uint32_t(out.size()), 0, {} };
+                emit(0xDE010000u, 0);            // the gate: patched
+                emit(0xE7000000u, 0);
+                emit(0xE200001Cu, mode_decal);
+                for (size_t pass = 0; pass < passes.size(); pass++) {
+                    if (pass == 1) {
+                        emit(0xE7000000u, 0);
+                        emit(0xE200001Cu, mode_edge);
+                        emit(0xE2001E01u, 1);            // G_SETOTHERMODE_L alpha compare: threshold
+                        emit(0xF9000000u, 0x00000080u);  // G_SETBLENDCOLOR: alpha 128
+                        if (fog) emit(0xD9FEFFFFu, 0);   // G_GEOMETRYMODE: G_FOG off (shade alpha the edge's)
+                    }
+                    // By palette, combiner, texture load and panel.
+                    std::map<std::tuple<int, uint64_t, const Load*, int>, std::vector<const Layer*>> groups;
+                    for (const Layer& l : passes[pass]) groups[{ l.slot, l.t->combine, l.t->load, l.t->panel }].push_back(&l);
+                    int tlut = -2;
+                    uint64_t combined = ~0ull;
+                    for (const auto& [key, list] : groups) {
+                        if (std::get<0>(key) != tlut) {
+                            tlut = std::get<0>(key);
+                            if (tlut < 0) b.body_tluts.push_back(load_tlut(0));
+                            else load_tlut(p.stripe_tluts + uint32_t(tlut) * 512);
+                        }
+                        if (std::get<1>(key) != combined) {
+                            combined = std::get<1>(key);
+                            uint32_t cc[2] = { uint32_t(combined >> 32), uint32_t(combined) }, pc[2];
+                            if (pass == 0) piece_combine(cycles, cc, pc);
+                            else edge_combine(cycles, cc, pc);
+                            emit(pc[0], pc[1]);
+                        }
+                        const Load* l = std::get<2>(key);
+                        uint32_t at = uint32_t(out.size());
+                        out.insert(out.end(), l->commands.begin(), l->commands.end());
+                        site_loads.push_back({ at + l->settimg, l });
+                        sites.push_back({ at + l->settimg, std::get<3>(key) });
+                        for (const Layer* layer : list) {
+                            if (layer->edge == kNoEdge) {
+                                for (uint32_t i = 0; i < 3; i++) emit(0x01001000u | ((i + 1) << 1), layer->t->at[i]);
+                            }
+                            else {
+                                emit(0x01003006u, edge_vertices(*layer->t, layer->edge));
+                            }
+                            emit(0x05000204u, 0);        // G_TRI1 0, 1, 2
                         }
                     }
                 }
-                emit(w0, w1);
-                if (op == 0xDF) break;
+                emit(0xE7000000u, 0);
+                if (passes.size() > 1) {
+                    emit(0xE2001E01u, alpha_compare);
+                    if (fog) emit(0xD9FFFFFFu, 0x00010000u);
+                }
+                emit(0xE200001Cu, mode);
+                emit(combine[0], combine[1]);
+                b.body_tluts.push_back(load_tlut(0));
+                b.end = uint32_t(out.size());
+                pending.push_back(b);
             }
-            if (sites.empty()) continue;
-            align();
-            uint32_t base = uint32_t(car.size());
-            car.insert(car.end(), out.begin(), out.end());
-            put32(car, record + 4 + lod * 12 + 8, base);
-            for (size_t i = 0; i < sites.size(); i++) {
-                const Load* l = site_loads[i].second;
-                p.damage_loads.push_back({ base + sites[i].first, l->texels, l->damaged, sites[i].second, l->lit,
-                                           l->lit_damaged });
+        };
+
+        uint32_t lods = std::min(be32(car, record), 4u);
+        std::vector<const OverTri*> lod_tris[4];
+        // The painted triangles of every LOD, first (the edges' alpha slopes are the steepest every crossing triangle
+        // allows), then the lists.
+        for (int pass = 0; pass < 2; pass++) {
+            for (uint32_t lod = 0; lod < lods; lod++) {
+                uint32_t list = be32(car, record + 4 + lod * 12 + 8);
+                std::vector<uint8_t> out;
+                std::vector<std::pair<uint32_t, int>> sites; // offset in `out` of an inlined G_SETTIMG, panel
+                std::vector<std::pair<uint32_t, const Load*>> site_loads;
+                auto emit = [&out](uint32_t w0, uint32_t w1) {
+                    for (int i = 0; i < 4; i++) out.push_back(uint8_t(w0 >> (24 - 8 * i)));
+                    for (int i = 0; i < 4; i++) out.push_back(uint8_t(w1 >> (24 - 8 * i)));
+                };
+                std::array<int16_t, 3> buffer[64] = {};
+                uint32_t buffer_at[64] = {};                 // each slot's vertex (file offset)
+                const Load* current = nullptr;
+                int loaded_panel = -1;
+                // The list's render mode, combiner, lighting and texturing as they stand (the stripe blocks set their own
+                // and put the end's back), and the painted triangles the blocks draw again.
+                uint32_t render_mode = 0, combine[2] = { 0, 0 }, alpha_compare = 0;
+                bool have_mode = false, have_combine = false;
+                int cycles = -1;                             // G_SETOTHERMODE_H cycle type, -1 unknown
+                bool texturing = true;                       // G_TEXTURE on (lists that never set it are textured)
+                std::vector<const OverTri*> over_tris = lod_tris[lod];
+                std::vector<PendingBlock> pending_blocks;
+                // The list's brake light switches (rush2::car2049::brake_switch), moved after the stripe blocks: a
+                // brake light is drawn blended without writing depth, so a stripe block drawn after it repainted the
+                // body over the lit lamp (issue 80: a striped PS1 Jeep's right lamp). A switch inside a color scheme's
+                // block stays (a car with schemes has every scheme's switch, each shown only with its scheme).
+                std::vector<std::pair<uint32_t, uint32_t>> brake_switches;
+                bool move_brakes = pass == 1;
+                for (uint32_t pc = list; move_brakes && pc + 8 <= car.size(); pc += 8) {
+                    if ((be32(car, pc) >> 24) == 0xDF) break;
+                    if (be32(car, pc) == 0 && (be32(car, pc + 4) & 0xFFFF0000u) == (rush2::car2049::scheme_marker(0, false) & 0xFFFF0000u)) {
+                        move_brakes = false;
+                    }
+                }
+                // Indices are vertex * 2 (F3DEX2).
+                auto panel = [&](uint32_t a, uint32_t b, uint32_t c) {
+                    const std::array<int16_t, 3>* v[3] = { &buffer[(a / 2) & 63], &buffer[(b / 2) & 63], &buffer[(c / 2) & 63] };
+                    return panel_of(v);
+                };
+                auto load_for = [&](int panel) {
+                    if (panel == loaded_panel) return;
+                    uint32_t at = uint32_t(out.size());
+                    out.insert(out.end(), current->commands.begin(), current->commands.end());
+                    site_loads.push_back({ at + current->settimg, current });
+                    sites.push_back({ at + current->settimg, panel });
+                    loaded_panel = panel;
+                };
+                // Keeps triangle (a, b, c) (indices x 2) for the stripe blocks when the stripes can repaint it: its
+                // texture is a painted one, texturing on, a combiner whose first cycle's color reads TEXEL0 (the Super
+                // GT's windows are untextured triangles drawn while its body texture is still loaded), not facing down
+                // (under the car), its corners body vertices (so its layers dent with it).
+                auto keep_painted = [&](uint32_t a, uint32_t b, uint32_t c) {
+                    if (pass != 0 || !p.stripes || vertex_index.empty() || current == nullptr || !texturing || !have_combine) return;
+                    uint32_t ca = (combine[0] >> 20) & 0xF, cc = (combine[0] >> 15) & 0x1F;
+                    uint32_t cb = (combine[1] >> 28) & 0xF, cd = (combine[1] >> 15) & 7;
+                    if (!(ca == 1 || cb == 1 || cc == 1 || cc == 8 || cd == 1)) return;
+                    auto t = std::make_unique<OverTri>();
+                    float pos[3][3];
+                    const uint32_t idx[3] = { a, b, c };
+                    for (int i = 0; i < 3; i++) {
+                        t->at[i] = buffer_at[(idx[i] / 2) & 63];
+                        auto it = vertex_index.find(t->at[i]);
+                        if (it == vertex_index.end() || t->at[i] + 16 > car.size()) return;
+                        t->body[i] = it->second;
+                        std::array<int16_t, 3> v = vertex_at(car, t->at[i]);
+                        for (int k = 0; k < 3; k++) pos[i][k] = float(v[k]);
+                        t->x[i] = pos[i][0];
+                    }
+                    if (!p.stripes_above_widest) {
+                        if (rush2::car_stripes::outward_normal_y(pos[0], pos[1], pos[2]) < -0.6f) return;
+                    }
+                    else {
+                        // A car with ModCar::stripes_above_widest (the PS1 UFO): nothing below its widest point, nor
+                        // facing down from the middle of its body (its origin is at the ground, under the saucer).
+                        if ((pos[0][1] + pos[1][1] + pos[2][1]) / 3.0f < widest_y ||
+                            rush2::car_stripes::outward_normal_y(pos[0], pos[1], pos[2], body_center) < -0.6f) return;
+                    }
+                    t->combine = (uint64_t(combine[0]) << 32) | combine[1];
+                    t->load = current;
+                    const std::array<int16_t, 3>* v[3] = { &buffer[(a / 2) & 63], &buffer[(b / 2) & 63], &buffer[(c / 2) & 63] };
+                    t->panel = panel_of(v);
+                    float mn = std::min({ t->x[0], t->x[1], t->x[2] }), mx = std::max({ t->x[0], t->x[1], t->x[2] });
+                    for (int v2 = 1; v2 < rush2::car_stripes::values; v2++) {
+                        for (int n : value_regions[v2].edges) {
+                            float e = edge_x(n);
+                            if (mn < e && mx > e) edge_reach[n] = std::max(edge_reach[n], std::max(e - mn, mx - e));
+                        }
+                    }
+                    over_tris.push_back(t.get());
+                    over_store.push_back(std::move(t));
+                };
+                for (uint32_t pc = list; pc + 8 <= car.size(); pc += 8) {
+                    uint32_t w0 = be32(car, pc), w1 = be32(car, pc + 4);
+                    uint8_t op = uint8_t(w0 >> 24);
+                    if (op == 0x01) { // G_VTX
+                        uint32_t n = (w0 >> 12) & 0xFF, end = (w0 >> 1) & 0x7F, at = w1 & 0xFFFFFF;
+                        for (uint32_t i = 0; i < n && end >= n && at + i * 16 + 6 <= car.size(); i++) {
+                            buffer[(end - n + i) & 63] = vertex_at(car, at + i * 16);
+                            buffer_at[(end - n + i) & 63] = at + i * 16;
+                        }
+                    }
+                    if (op == 0xE2 && ((w0 >> 8) & 0xFF) == 0 && (w0 & 0xFF) == 0x1C) { // G_SETOTHERMODE_L, render mode
+                        render_mode = w1;
+                        have_mode = true;
+                    }
+                    if (op == 0xE2 && (w0 & 0xFFFF) == 0x1E01) alpha_compare = w1; // G_SETOTHERMODE_L, alpha compare
+                    if (op == 0xFC) {
+                        combine[0] = w0;
+                        combine[1] = w1;
+                        have_combine = true;
+                    }
+                    if (op == 0xD7) texturing = (w0 & 2) != 0;                    // G_TEXTURE: on
+                    if (op == 0xE3) { // G_SETOTHERMODE_H: the cycle type is bits 20-21
+                        int len = int(w0 & 0xFF) + 1, sft = 32 - int((w0 >> 8) & 0xFF) - len;
+                        if (sft <= 20 && sft + len >= 22) cycles = int((w1 >> 20) & 3);
+                    }
+                    if (move_brakes && w0 == 0 && w1 == rush2::car2049::brake_marker(1) && pc + 16 <= car.size() &&
+                        (be32(car, pc + 8) >> 24) == 0 && be32(car, pc + 12) == rush2::car2049::brake_marker(2)) {
+                        brake_switches.push_back({ w0, w1 });
+                        brake_switches.push_back({ be32(car, pc + 8), be32(car, pc + 12) });
+                        pc += 8;
+                        continue;
+                    }
+                    if (op == 0xDF && pass == 1 && !over_tris.empty() && have_mode && have_combine) {
+                        emit_stripe_blocks(out, sites, site_loads, over_tris, render_mode, combine, cycles, alpha_compare,
+                                           pending_blocks);
+                    }
+                    if (op == 0xDF && pass == 1) {
+                        for (const auto& [b0, b1] : brake_switches) emit(b0, b1);
+                    }
+                    if (op == 0xDE && (w1 & 0xFFFFFF) >= txld_start && (w1 & 0xFFFFFF) < txld_end) {
+                        const Load& l = load_at(w1 & 0xFFFFFF);
+                        if (l.damaged != 0) {
+                            current = &l; // inlined before the triangles it textures
+                            loaded_panel = -1;
+                            continue;
+                        }
+                        current = nullptr;
+                    }
+                    if (op == 0x05 || op == 0x06) {
+                        keep_painted((w0 >> 16) & 0xFF, (w0 >> 8) & 0xFF, w0 & 0xFF);
+                        if (op == 0x06) keep_painted((w1 >> 16) & 0xFF, (w1 >> 8) & 0xFF, w1 & 0xFF);
+                    }
+                    if ((op == 0x05 || op == 0x06) && current != nullptr) {
+                        int first = panel((w0 >> 16) & 0xFF, (w0 >> 8) & 0xFF, w0 & 0xFF);
+                        load_for(first);
+                        if (op == 0x06) {
+                            int second = panel((w1 >> 16) & 0xFF, (w1 >> 8) & 0xFF, w1 & 0xFF);
+                            if (second != first) { // split into two G_TRI1s
+                                emit(0x05000000 | (w0 & 0xFFFFFF), 0);
+                                load_for(second);
+                                emit(0x05000000 | (w1 & 0xFFFFFF), 0);
+                                continue;
+                            }
+                        }
+                    }
+                    emit(w0, w1);
+                    if (op == 0xDF) break;
+                }
+                if (pass == 0) {
+                    // The first pass only finds the painted triangles; keep them for the second.
+                    lod_tris[lod] = std::move(over_tris);
+                    continue;
+                }
+                if (sites.empty() && pending_blocks.empty()) continue;
+                align();
+                uint32_t base = uint32_t(car.size());
+                car.insert(car.end(), out.begin(), out.end());
+                put32(car, record + 4 + lod * 12 + 8, base);
+                for (size_t i = 0; i < sites.size(); i++) {
+                    const Load* l = site_loads[i].second;
+                    p.damage_loads.push_back({ base + sites[i].first, l->texels, l->damaged, sites[i].second, l->lit,
+                                               l->lit_damaged });
+                }
+                // The stripe blocks start closed: their gates branch past them (the relocator rebases the target).
+                for (const PendingBlock& b : pending_blocks) {
+                    put32(car, base + b.gate + 4, base + b.end);
+                    std::vector<uint32_t> tluts;
+                    for (uint32_t t : b.body_tluts) tluts.push_back(base + t);
+                    p.stripe_blocks.push_back({ b.value, base + b.gate, base + b.end, std::move(tluts) });
+                }
             }
+        }
+        // RUSH2_STRIPE_LOG=1: what the damage textures and stripe blocks added to the car.
+        // RUSH2_STRIPE_DUMP=<dir>: the rewritten container as <dir>/<model>.bin, to check offline.
+        if (const char* dir = getenv("RUSH2_STRIPE_DUMP")) {
+            if (FILE* f = fopen((std::string(dir) + "/" + model + ".bin").c_str(), "wb")) {
+                fwrite(car.data(), 1, car.size(), f);
+                fclose(f);
+            }
+        }
+        static const bool log = getenv("RUSH2_STRIPE_LOG") != nullptr;
+        if (log) {
+            fprintf(stderr, "[stripes] %s: %zu -> %zu bytes, %zu stripe vertices, %zu blocks\n", model.c_str(), size_before,
+                    car.size(), p.stripe_vertices.size(), p.stripe_blocks.size());
         }
     }
 
@@ -1493,6 +1948,8 @@ static void load_cars(uint8_t* rdram) {
                 light_jobs(p);
             }
             collect_body_vertices(car, "CAR" + std::to_string(k + 1), p);
+            p.stripes = !rom->is_dreamcast(); // a disc's paint jobs have no ramps to stripe
+            p.third_ramp = third_ramp_texels(car, p.palette) >= 16;
             add_damage_textures(car, "CAR" + std::to_string(k + 1) + "FRAME1", k, p);
             collect_flames(car, "CAR" + std::to_string(k + 1) + "FRAME1", p);
             collect_hood(car, "CAR" + std::to_string(k + 1), p);
@@ -1522,7 +1979,8 @@ static void load_cars(uint8_t* rdram) {
 }
 
 static void set_body(uint8_t* rdram, int type, std::vector<uint8_t> car, const std::string& prefix,
-                     const std::map<uint32_t, std::vector<uint8_t>>& scuffed, const std::vector<uint8_t>& palette);
+                     const std::map<uint32_t, std::vector<uint8_t>>& scuffed, const std::vector<uint8_t>& palette,
+                     bool stripes = false, bool stripes_above_widest = false);
 
 void rush2::car2049::set_body_car(uint8_t* rdram, int type, std::vector<uint8_t> car, const std::string& prefix,
                                   const std::map<uint32_t, std::vector<uint8_t>>& scuffed) {
@@ -1551,6 +2009,16 @@ namespace {
         std::string prefix;
     };
     ModSlot mod_slots[rush2::car_types::count_mod];
+    // Per player record (side_slot_of), the mod each mod car block was made for (mod_block_key; "" = the slot was
+    // empty, "?" = unknown, a save from before version 11). A block made for another mod, or before its mod loaded,
+    // is made again when the mod fills its slot (reconcile_mod_blocks): blocks made before the PlayStation SF Rush cars
+    // filled their slots kept the empty slot's Pickup TIRE SIZE (1.25), and the car select drew their wheels oversized.
+    std::map<uint32_t, std::array<std::string, rush2::car_types::count_mod>> mod_block_owner;
+    std::string mod_block_key(const ModSlot& m) { return m.loaded ? m.spec.name : std::string(); }
+    bool side_slots_loaded = false;   // load_side_slots ran (side_mutex held)
+    bool reconcile_mod_blocks(uint8_t* rdram, int n);
+    void save_side_slots(uint8_t* rdram);
+    bool mod_slot_lent(int n);        // lent to an online race: its blocks stay made for this machine's own mod
     std::atomic_bool mod_loaded[rush2::car_types::count_mod] = {};
     std::atomic_int mod_game[rush2::car_types::count_mod] = {};        // set_mod_car_game (ModGame)
     std::atomic_bool mod_no_wheels[rush2::car_types::count_mod] = {};  // ModCar::wheels_hidden
@@ -1698,16 +2166,21 @@ void rush2::car2049::set_mod_car(uint8_t* rdram, int n, std::vector<uint8_t> car
     for (size_t i = 0; i < 16; i++) {
         MEM_B(0, (int32_t)(logo_names + (type - first_type) * 16 + i)) = i < logo.size() ? logo[i] : 0;
     }
-    set_body(rdram, type, std::move(car), prefix, scuffed, {});
+    // Painted through a paint mask without color schemes: Rush 2's stripes go on its MAIN and ACCENT paint.
+    set_body(rdram, type, std::move(car), prefix, scuffed, {}, spec.paint_main && spec.schemes <= 1,
+             spec.stripes_above_widest);
     {
         std::lock_guard lock{ side_mutex };
         mod_slots[n].spec = spec;
         mod_slots[n].prefix = prefix;
         mod_slots[n].loaded = true;
+        if (side_slots_loaded && reconcile_mod_blocks(rdram, n)) save_side_slots(rdram);
     }
     mod_schemes[n] = spec.schemes;
     mod_no_wheels[n] = spec.wheels_hidden;
     mod_shadow_radius[n] = spec.shadow_radius;
+    rush2::car_lights::set_mod_lamps(rush2::car_types::first_mod + n, spec.lamps);
+    rush2::car_flashers::set_mod_flashers(rush2::car_types::first_mod + n, spec.flashers);
     mod_no_wings[n] = spec.wings_hidden;
     mod_no_marks[n] = spec.marks_hidden;
     mod_no_dust[n] = spec.dust_hidden;
@@ -1734,6 +2207,8 @@ void rush2::car2049::clear_mod_car(uint8_t* rdram, int n) {
     mod_game[n] = int(ModGame::Custom);
     mod_no_wheels[n] = false;
     mod_shadow_radius[n] = 0.0f;
+    rush2::car_lights::set_mod_lamps(type, {});
+    rush2::car_flashers::set_mod_flashers(type, {});
     mod_no_wings[n] = false;
     mod_no_marks[n] = false;
     mod_no_dust[n] = false;
@@ -1802,6 +2277,7 @@ void rush2::car2049::set_stand_in_mod_car(uint8_t* rdram, int n, const ModCar& s
         mod_slots[n].spec = shown;
         mod_slots[n].prefix = prefix;
         mod_slots[n].loaded = true;
+        if (side_slots_loaded && reconcile_mod_blocks(rdram, n)) save_side_slots(rdram);
     }
     mod_schemes[n] = 1;
     mod_loaded[n] = true;
@@ -1820,6 +2296,7 @@ namespace {
         std::map<uint32_t, std::vector<uint8_t>> scuffed;
     };
     LentSlot lent_slots[rush2::car_types::count_mod];
+    bool mod_slot_lent(int n) { return lent_slots[n].lent; }
 
     // The car physics bytes a resync of an online race overwrote with the host's (physics_online_sync), as this machine
     // had them: put back by return_mod_slots, before the slots' own cars, so the machine's own races run on its own data.
@@ -2089,18 +2566,24 @@ static void find_brake_switches(const std::vector<uint8_t>& car, const std::stri
                     be32(car, pc + 12) == rush2::car2049::brake_marker(2)) {
                     p.brake_blocks.push_back({ pc, be32(car, pc + 8) & 0xFFFFFF });
                 }
+                if (w1 == rush2::car2049::siren_marker(1) && (w0 >> 24) == 0 && (be32(car, pc + 8) >> 24) == 0 &&
+                    be32(car, pc + 12) == rush2::car2049::siren_marker(2)) {
+                    p.siren_lists.push_back(be32(car, pc + 8) & 0xFFFFFF);
+                }
             }
         }
     }
 }
 
-// The vertices of the brake light lists p's switches call (after its body vertices and brake blocks are known), each
-// made to follow the body vertex nearest it when the body dents (Paint::followers).
+// The vertices of the brake light lists p's switches call (after its body vertices and brake blocks are known), and of
+// a livery's flipbook frames (Paint::siren_lists), each made to follow the body vertex nearest it when the body dents
+// (Paint::followers).
 static void collect_brake_vertices(const std::vector<uint8_t>& car, Paint& p) {
     p.followers.clear();
     if (p.vertices.empty()) return;
     std::set<uint32_t> lists, seen;
     for (const Paint::BrakeBlock& b : p.brake_blocks) lists.insert(b.list);
+    lists.insert(p.siren_lists.begin(), p.siren_lists.end());
     for (uint32_t list : lists) {
         for (uint32_t pc = list; pc + 8 <= car.size(); pc += 8) {
             uint32_t w0 = be32(car, pc), w1 = be32(car, pc + 4) & 0xFFFFFF;
@@ -2163,7 +2646,8 @@ static void find_scheme_blocks(const std::vector<uint8_t>& car, Paint& p) {
 }
 
 static void set_body(uint8_t* rdram, int type, std::vector<uint8_t> car, const std::string& prefix,
-                     const std::map<uint32_t, std::vector<uint8_t>>& scuffed, const std::vector<uint8_t>& palette) {
+                     const std::map<uint32_t, std::vector<uint8_t>>& scuffed, const std::vector<uint8_t>& palette,
+                     bool stripes, bool stripes_above_widest) {
     bool calspeed = rush2::car_types::is_calspeed(type);
     if (type < 0 || (type >= rush2_types && !calspeed && !rush2::car_types::is_mod(type)) || car.size() < 0x28) return;
     Paint& p = bodies[type];
@@ -2179,6 +2663,9 @@ static void set_body(uint8_t* rdram, int type, std::vector<uint8_t> car, const s
         memcpy(p.first_name, &car[p.texture_table], 16);
     }
     collect_body_vertices(car, prefix, p);
+    p.stripes = stripes;
+    p.stripes_above_widest = stripes_above_widest;
+    p.mod_palette = true;
     add_damage_textures(car, prefix + "FRAME1", type, p);
     find_scheme_blocks(car, p);
     p.lights = !p.brake_blocks.empty();
@@ -2245,6 +2732,11 @@ void rush2::car2049::init_assets(uint8_t* rdram) {
 // The top of the main loop, once per frame (rush2_cheats_frame). After the Games tab switches the Rush 2049 source,
 // the cars and their tuning are built again from the new one while the game is in the menus or the track select
 // (game state 0x8010C0D0 0-1): no car is loaded from the old assets then, and the car select loads them afresh.
+bool rush2::car2049::has_tertiary(int type) {
+    int k = type - first_type;
+    return !rush2::car_types::is_mod(type) && k >= 0 && k < car_count && paints[k].third_ramp;
+}
+
 int rush2::car2049::paint_jobs(int type) {
     int k = type - first_type;
     if (rush2::car_types::is_mod(type)) {
@@ -2252,6 +2744,13 @@ int rush2::car2049::paint_jobs(int type) {
         return schemes > 1 ? schemes : 0;
     }
     return k >= 0 && k < car_count ? (int)paints[k].job_rgb.size() : 0;
+}
+
+bool rush2::car2049::paint_job_color(int type, int main, uint32_t& rgb) {
+    int k = type - first_type;
+    if (rush2::car_types::is_mod(type) || k < 0 || k >= car_count || paints[k].job_rgb.empty() || main < 0) return false;
+    rgb = paints[k].job_rgb[size_t(main) % paints[k].job_rgb.size()];
+    return true;
 }
 
 std::map<uint32_t, uint32_t> rush2::car2049::scuffed_texels(int k) {
@@ -2422,6 +2921,13 @@ void rush2::car2049::swap_player_rows(uint8_t* rdram, int a, int b) {
     }
 }
 
+// race_scene_load_assets_8008A1FC at 0x8008A2D4, on the car select, after it stored the base of the cars' part
+// matrices (0x8011921C, 8 per preview id): their own room for every preview id (include/car_types.h preview_matrices).
+extern "C" void rush2_preview_matrix_base(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    MEM_W(0, (int32_t)0x8011921C) = (int32_t)rush2::car_types::preview_matrices;
+}
+
 // func_803B81F0 at 0x803B873C, after it listed a player's selectable Rush 2 cars: $a1 = player. The 2049 cars
 // follow them (Unlock All Cars, src/cheats.cpp, rebuilds the list afterwards and appends them again).
 extern "C" void rush2_car49_list(uint8_t* rdram, recomp_context* ctx) {
@@ -2512,11 +3018,10 @@ namespace {
     const std::string side_section = "cars";
 
     void load_side_slots(uint8_t* rdram) {
-        static bool loaded = false;
-        if (loaded) {
+        if (side_slots_loaded) {
             return;
         }
-        loaded = true;
+        side_slots_loaded = true;
         nlohmann::json j = nlohmann::json::parse(
             rush2::data_files::read(rush2::data_files::File::Saves, side_section), nullptr, false);
         if (!j.is_object() || !j.contains("records") || !j["records"].is_object()) {
@@ -2539,10 +3044,13 @@ namespace {
         // Before version 7 they ended at the 2049 types: California Speed's blocks start fresh (init_side_slot).
         // Version 7 gave every California Speed car TIRE SIZE 1.0 (byte 25), not its own wheel scale: a block still on
         // it takes the car's own. Before version 9 they ended at California Speed's types: the mod cars' blocks
-        // (57-72) start fresh, as any block past a slot's saved bytes does.
+        // (57-120) start fresh, as any block past a slot's saved bytes does (so do mod slots 17-64, types 73-120, past
+        // a save from before there were 64).
         bool old_calspeed_tires = version < 8;
-        // Version 9 started the mod cars' TIRE SIZE at 0.75 (bytes 0): they take the car's own (set_mod_tire_sizes).
-        bool old_mod_tires = version < 10;
+        // Version 9 started the mod cars' TIRE SIZE at 0.75 (bytes 0), and version 10 gave the blocks of slots not yet
+        // filled the Pickup's 1.25. Before version 11 nothing says which mod a block was made for ("?"): once its mod
+        // loads it takes the car's own TIRE SIZE and keeps its colors (reconcile_mod_blocks).
+        const nlohmann::json* owners = j.contains("mod_owners") && j["mod_owners"].is_object() ? &j["mod_owners"] : nullptr;
         for (auto& [key, value] : j["records"].items()) {
             uint32_t record = (uint32_t)std::strtoul(key.c_str(), nullptr, 16);
             if (!in_save_area(record) || !value.is_string() ||
@@ -2557,13 +3065,18 @@ namespace {
             for (int i = 0; i < (types - rush2_types) * block_size && i * 2 + 1 < (int)hex.size(); i++, bytes++) {
                 MEM_B(0, (int32_t)(base + i)) = (uint8_t)std::stoi(hex.substr(i * 2, 2), nullptr, 16);
             }
+            auto& owner = mod_block_owner[record];
+            owner.fill("?");
+            if (owners && owners->contains(key) && (*owners)[key].is_array()) {
+                const nlohmann::json& a = (*owners)[key];
+                for (size_t n = 0; n < owner.size() && n < a.size(); n++) {
+                    if (a[n].is_string()) owner[n] = a[n].get<std::string>();
+                }
+            }
             for (int t = end_type; t < types; t++) {
                 uint32_t block = base + (t - rush2_types) * block_size;
                 if (bytes < (t - rush2_types + 1) * block_size) {
                     init_block(rdram, block, record, t);
-                }
-                else if (old_mod_tires && rush2::car_types::is_mod(t)) {
-                    set_mod_tire_sizes(rdram, block, mod_slots[t - rush2::car_types::first_mod]);
                 }
                 else if (old_calspeed_tires && rush2::car_types::is_calspeed(t) && MEM_B(0, (int32_t)(block + 11)) == 25 &&
                          MEM_B(0, (int32_t)(block + 12)) == 25) {
@@ -2581,10 +3094,39 @@ namespace {
                 }
             }
         }
+        // The mods already in their slots (those filled later are reconciled by set_mod_car).
+        bool changed = false;
+        for (int n = 0; n < rush2::car_types::count_mod; n++) changed |= reconcile_mod_blocks(rdram, n);
+        if (changed) save_side_slots(rdram);
+    }
+
+    // Mod slot n's block in every player record's side slot, made again for the mod now in it when it was made for
+    // another (or before the mod loaded); a block of unknown origin ("?", a save from before version 11) takes only the
+    // mod's own TIRE SIZE. Returns whether a block changed (side_mutex held, side slots loaded).
+    bool reconcile_mod_blocks(uint8_t* rdram, int n) {
+        const ModSlot& m = mod_slots[n];
+        if (!m.loaded || mod_slot_lent(n)) return false;
+        std::string key = mod_block_key(m);
+        int t = rush2::car_types::first_mod + n;
+        bool changed = false;
+        for (auto& [record, slot] : side_slot_of) {
+            auto& owner = mod_block_owner[record];
+            if (owner[n] == key) continue;
+            uint32_t block = side_slots + slot * side_slot_size + (t - rush2_types) * block_size;
+            if (owner[n] == "?") {
+                set_mod_tire_sizes(rdram, block, m);
+                owner[n] = key;
+            }
+            else {
+                init_block(rdram, block, record, t);   // sets owner[n]
+            }
+            changed = true;
+        }
+        return changed;
     }
 
     void save_side_slots(uint8_t* rdram) {
-        nlohmann::json records = nlohmann::json::object();
+        nlohmann::json records = nlohmann::json::object(), mod_owners = nlohmann::json::object();
         for (auto& [record, slot] : side_slot_of) {
             std::string hex;
             char b[3];
@@ -2595,6 +3137,8 @@ namespace {
             char key[16];
             snprintf(key, sizeof(key), "%08X", record);
             records[key] = hex;
+            auto it = mod_block_owner.find(record);
+            if (it != mod_block_owner.end()) mod_owners[key] = it->second;
         }
         nlohmann::json selected = nlohmann::json::object();
         for (auto& [at, type] : selected_type_of) {
@@ -2603,7 +3147,8 @@ namespace {
             selected[key] = type;
         }
         rush2::data_files::write(rush2::data_files::File::Saves, side_section,
-            nlohmann::json{ { "version", 10 }, { "records", records }, { "selected", selected } }.dump());
+            nlohmann::json{ { "version", 11 }, { "records", records }, { "mod_owners", mod_owners },
+                            { "selected", selected } }.dump());
     }
 }
 
@@ -2630,7 +3175,8 @@ namespace {
             // The record's options on the mod car's base Rush 2 car (the Pickup's when no mod fills the slot yet), with
             // the mod's own colors.
             const ModSlot& m = mod_slots[t - rush2::car_types::first_mod];
-            int base = m.loaded ? m.spec.base : 0;
+            if (side_slot_of.count(record)) mod_block_owner[record][t - rush2::car_types::first_mod] = mod_block_key(m);
+            int base = m.loaded ? std::clamp(m.spec.base, 0, rush2_types - 1) : 0;
             for (int i = 0; i < block_size; i++) {
                 MEM_B(0, (int32_t)(block + i)) = MEM_B(0, (int32_t)(record + record_block + base * block_size + i));
             }
@@ -2705,6 +3251,11 @@ std::vector<uint8_t> rush2::car2049::side_block(uint8_t* rdram, uint32_t record)
     for (int i = 0; i < side_slot_size; i++) {
         out[i] = (uint8_t)MEM_BU(0, (int32_t)(base + i));
     }
+    // Then each 2049 car's TERTIARY COLOR (0xFF: none kept), which the record has no room for.
+    for (int t = first_type; t < end_type; t++) {
+        int c = tertiary_color(record, t);
+        out.push_back(c >= 0 && c < 0xFF ? uint8_t(c) : uint8_t(0xFF));
+    }
     return out;
 }
 
@@ -2717,7 +3268,17 @@ void rush2::car2049::set_guest_side_block(uint8_t* rdram, int guest, uint32_t re
     std::erase_if(guest_slot_of, [guest](const auto& e) { return e.second == guest; });
     guest_slot_of[record] = guest;
     uint32_t base = guest_side_slots + guest * side_slot_size;
-    if (block.size() == (size_t)side_slot_size) {
+    {
+        std::lock_guard tlock{ tertiary_mutex };
+        tertiary_guests.erase(record);
+        if (block.size() == (size_t)(side_slot_size + (end_type - first_type))) {
+            for (int t = first_type; t < end_type; t++) {
+                uint8_t c = block[side_slot_size + (t - first_type)];
+                if (c != 0xFF) tertiary_guests[record][t] = c;
+            }
+        }
+    }
+    if (block.size() >= (size_t)side_slot_size) {
         for (int i = 0; i < side_slot_size; i++) {
             MEM_B(0, (int32_t)(base + i)) = (int8_t)block[i];
         }
@@ -2731,6 +3292,8 @@ void rush2::car2049::set_guest_side_block(uint8_t* rdram, int guest, uint32_t re
 void rush2::car2049::clear_guest_side_blocks() {
     std::lock_guard lock{ side_mutex };
     guest_slot_of.clear();
+    std::lock_guard tlock{ tertiary_mutex };
+    tertiary_guests.clear();
 }
 
 // Start of func_8005F338 ($a0 = address, $a1 = length): marks player-record bytes for the Controller Pak save. Returns
@@ -2749,6 +3312,7 @@ void rush2::car2049::forget_record(uint8_t* rdram, uint32_t record) {
     std::lock_guard lock{ side_mutex };
     load_side_slots(rdram);
     bool changed = side_slot_of.erase(record) != 0;
+    mod_block_owner.erase(record);
     changed |= std::erase_if(selected_type_of, [record](const auto& e) {
         return e.first >= record && e.first < record + record_size;
     }) != 0;
@@ -3086,6 +3650,146 @@ namespace {
     }
 }
 
+// Rush 2's STRIPE on a car's copy at `base` (Paint::stripes): fills the stripe palettes from the car's palette as just
+// painted (at `palette`) and opens the block of STRIPE value `stripe` (0: none). A 2049 car's stripe is its third ramp:
+// MAIN and ACCENT shade k (32-63, 64-95) become shade k of 96-126. A car mod's is the STRIPE COLOR (`stripe_colour`,
+// RGBA5551) on Rush 2's MAIN and ACCENT ramps (1-31, 33-63), each entry as much darker than the ramp's first as it is
+// (rush2::derive reads the paint off entries 1 and 33, so the full-size image takes the stripe's color whole). A level
+// below 15 (SNGL FADE's steps) blends the paint towards the stripe by level / 15. Every other entry is see-through, so
+// glass, lights and trim show the body drawn under the pieces.
+static void stripe_paint(uint8_t* rdram, uint32_t base, const Paint& p, int stripe, uint32_t palette, uint16_t stripe_colour) {
+    uint16_t pal[256];
+    for (int i = 0; i < 256; i++) pal[i] = MEM_HU(0, (int32_t)(palette + i * 2));
+    auto channel = [](uint16_t c, int k) { return int((c >> (11 - k * 5)) & 0x1F); };
+    auto luma = [&](uint16_t c) { return 0.299f * channel(c, 0) + 0.587f * channel(c, 1) + 0.114f * channel(c, 2); };
+    for (int slot = 0; slot < rush2::car_stripes::level_count; slot++) {
+        int level = rush2::car_stripes::level_values[slot];
+        uint32_t tlut = base + p.stripe_tluts + uint32_t(slot) * 512;
+        for (int i = 0; i < 256; i++) {
+            uint16_t out = uint16_t(pal[i] & ~1u);
+            int first = -1;
+            if (p.mod_palette) first = i >= 1 && i <= 31 ? 1 : i >= 33 && i <= 63 ? 33 : -1;
+            else first = i >= 32 && i <= 95 ? (i & ~31) : -1;
+            // The ramp's near-black end stays the body's: 2049 draws window glass with it (the Super GT's
+            // windshields are index 62), black whatever the paint, and a stripe tinted it.
+            if (first >= 0 && (p.mod_palette ? luma(pal[i]) < 0.12f * luma(pal[first]) : i - first >= 28)) first = -1;
+            if (first >= 0) {
+                uint16_t target;
+                if (p.mod_palette) {
+                    float k = luma(pal[first]) > 0.0f ? luma(pal[i]) / luma(pal[first]) : 1.0f;
+                    target = 1;
+                    for (int c = 0; c < 3; c++) {
+                        int v = std::clamp(int(std::lround(channel(stripe_colour, c) * k)), 0, 31);
+                        target |= uint16_t(v << (11 - c * 5));
+                    }
+                }
+                else {
+                    // The STRIPE COLOR's ramp as the car's own are painted: the color, then steps towards black.
+                    int k = i - first;
+                    target = k == 0 ? stripe_colour : blend5551((k - 1) * 8, stripe_colour, 0x0001);
+                }
+                out = uint16_t((level >= 15 ? target : blend5551(level * 17, pal[i], target)) | 1);
+            }
+            MEM_H(0, (int32_t)(tlut + i * 2)) = (int16_t)out;
+        }
+    }
+    for (const Paint::StripeBlock& b : p.stripe_blocks) {
+        bool shown = b.value == stripe;
+        MEM_W(0, (int32_t)(base + b.gate)) = shown ? 0 : (int32_t)0xDE010000;
+        MEM_W(0, (int32_t)(base + b.gate + 4)) = shown ? 0 : (int32_t)((base + b.end) & 0xFFFFFF);
+        for (uint32_t t : b.body_tluts) MEM_W(0, (int32_t)(base + t + 4)) = (int32_t)(palette & 0xFFFFFF);
+    }
+}
+
+// Ramp `ramp` (COLOR 1-3) of a 2049 car's palette at `palette` in `colour` (func_800B10D4): the colour, then 31 (30 for
+// the third) steps from it towards black.
+static void paint_ramp_entries(uint8_t* rdram, uint32_t palette, int ramp, int colour_index) {
+    if (colour_index < 0 || colour_index >= rush2::paint_colors::max_colors) colour_index = 0;
+    uint16_t colour = rgba5551(rdram, colour_index);
+    int first = paint_ramps[ramp];
+    MEM_H(0, (int32_t)(palette + first * 2)) = colour;
+    for (int t = 0, i = first + 1; t < (ramp == 2 ? 0xF0 : 0xF8); t += 8, i++) {
+        MEM_H(0, (int32_t)(palette + i * 2)) = blend5551(t, colour, 0x0001);
+    }
+}
+
+// TERTIARY COLOR (include/car2049.h): {"<record>": {"<type>": color}} in the saves' "tertiary" section; players
+// without a profile (owner 1-4) and online guests (their profile copies, sent with their side blocks) only in memory.
+namespace {
+
+    void load_tertiary() {
+        if (tertiary_loaded) return;
+        tertiary_loaded = true;
+        nlohmann::json j = nlohmann::json::parse(
+            rush2::data_files::read(rush2::data_files::File::Saves, tertiary_section), nullptr, false);
+        if (!j.is_object()) return;
+        for (auto& [key, by_type] : j.items()) {
+            uint32_t record = (uint32_t)std::strtoul(key.c_str(), nullptr, 16);
+            if (!by_type.is_object()) continue;
+            for (auto& [t, v] : by_type.items()) {
+                if (v.is_number_integer()) tertiary_saved[record][std::atoi(t.c_str())] = v.get<int>();
+            }
+        }
+    }
+
+    void save_tertiary() {
+        nlohmann::json j = nlohmann::json::object();
+        for (const auto& [record, by_type] : tertiary_saved) {
+            char key[16];
+            snprintf(key, sizeof(key), "%08X", record);
+            for (const auto& [t, v] : by_type) j[key][std::to_string(t)] = v;
+        }
+        rush2::data_files::write(rush2::data_files::File::Saves, tertiary_section, j.dump());
+    }
+
+    int lookup(const std::map<uint32_t, std::map<int, int>>& m, uint32_t owner, int type) {
+        auto o = m.find(owner);
+        if (o == m.end()) return -1;
+        auto t = o->second.find(type);
+        return t == o->second.end() ? -1 : t->second;
+    }
+
+    // The TERTIARY COLOR car copy `id` is painted with (-1: its STRIPE COLOR).
+    int car_tertiary(uint8_t* rdram, int id) {
+        int type = -1, player = -1;
+        uint32_t profile = 0;
+        rush2::car_mods::car_identity(rdram, id, type, player, profile);
+        if (type < 0 || player < 0) return -1;
+        return rush2::car2049::tertiary_color(profile != 0 ? profile : uint32_t(player + 1), type);
+    }
+}
+
+int rush2::car2049::tertiary_color(uint32_t owner, int type) {
+    std::lock_guard lock{ tertiary_mutex };
+    if (owner >= 1 && owner <= 4) return lookup(tertiary_session, owner, type);
+    if (int g = lookup(tertiary_guests, owner, type); g >= 0) return g;
+    load_tertiary();
+    return lookup(tertiary_saved, owner, type);
+}
+
+void rush2::car2049::set_tertiary_color(uint32_t owner, int type, int color) {
+    std::lock_guard lock{ tertiary_mutex };
+    if (owner >= 1 && owner <= 4) {
+        tertiary_session[owner][type] = color;
+        return;
+    }
+    if (owner == 0) return;
+    load_tertiary();
+    tertiary_saved[owner][type] = color;
+    save_tertiary();
+}
+
+void rush2::car2049::repaint_tertiary(uint8_t* rdram, int id) {
+    if (id < 0 || id >= rush2::car_types::preview_ids) return;
+    uint32_t base = 0;
+    const Paint* p = car_instance(rdram, id, base);
+    if (p == nullptr || p->colours.empty() || !p->job_textures.empty() || p->body) return;
+    int tertiary = car_tertiary(rdram, id);
+    if (tertiary < 0) return;
+    uint32_t palette = (uint32_t)MEM_W(0, (int32_t)(car_palettes + id * 0x18));
+    paint_ramp_entries(rdram, palette, 2, tertiary);
+}
+
 extern "C" void rush2_car49_paint(uint8_t* rdram, recomp_context* ctx) {
     uint32_t sp = (uint32_t)ctx->r29;
     int id = (int16_t)MEM_H(0, (int32_t)(sp + 0xCA));
@@ -3154,6 +3858,25 @@ extern "C" void rush2_car49_paint(uint8_t* rdram, recomp_context* ctx) {
         for (int i = 223; i < 256; i++) put(i, blend5551(int((i - 223) * 7.72f), c2, 0xFFFF));
         return;
     }
+    // Rush 2's STRIPE value (sp + 0xDB, as the stripe loop reads it at 0x80085D58); 8, the SF RUSH decal, is Rush 2's
+    // cars' own.
+    int stripe = (int8_t)MEM_B(0, (int32_t)(sp + 0xDB));
+    if (stripe < 0 || stripe >= rush2::car_stripes::values) stripe = 0;
+    for (const Paint& p : bodies) {
+        if (!p.stripes || count != p.texture_count ||
+            (uint32_t)MEM_W(0, (int32_t)(records + 24)) != records - p.texture_table + p.first_texels) {
+            continue;
+        }
+        bool same = true;
+        for (int i = 0; i < 16 && same; i++) {
+            same = MEM_BU(0, (int32_t)(records + i)) == (uint8_t)p.first_name[i];
+            if (p.first_name[i] == 0) break;
+        }
+        if (!same) continue;
+        // A car mod painted through a mask (Rush 2's palette, painted by Rush 2 already).
+        stripe_paint(rdram, records - p.texture_table, p, stripe, palette, rgba5551(rdram, colours[2]));
+        return;
+    }
     for (const Paint& p : paints) {
         if (p.colours.empty() || count != p.texture_count ||
             (uint32_t)MEM_W(0, (int32_t)(records + 24)) != records - p.texture_table + p.first_texels) {
@@ -3187,14 +3910,13 @@ extern "C" void rush2_car49_paint(uint8_t* rdram, recomp_context* ctx) {
                 MEM_H(0, (int32_t)(palette + i * 2)) = uint16_t(((v << 8) & 0xF800) | ((v << 3) & 0x7C0) | ((v >> 2) & 0x3E) | 1);
             }
         }
+        // COLOR 3 is the car's TERTIARY COLOR (its own row), else STRIPE COLOR as it was before the row.
+        int tertiary = car_tertiary(rdram, id);
         for (int ramp = 0; ramp < 3; ramp++) {
-            uint16_t colour = rgba5551(rdram, colours[ramp]);
-            int first = paint_ramps[ramp];
-            MEM_H(0, (int32_t)(palette + first * 2)) = colour;
-            for (int t = 0, i = first + 1; t < (ramp == 2 ? 0xF0 : 0xF8); t += 8, i++) {
-                MEM_H(0, (int32_t)(palette + i * 2)) = blend5551(t, colour, 0x0001);
-            }
+            paint_ramp_entries(rdram, palette, ramp, ramp == 2 && tertiary >= 0 ? tertiary : colours[ramp]);
         }
+        // The STRIPE, in STRIPE COLOR.
+        if (p.stripes) stripe_paint(rdram, records - p.texture_table, p, stripe, palette, rgba5551(rdram, colours[2]));
         return;
     }
 }
@@ -3324,6 +4046,21 @@ namespace {
                 }
             }
         }
+        // The stripe edge layers' vertex copies moved as the body vertices they copy (weighted), from where they were
+        // made.
+        for (const Paint::StripeVertex& v : p->stripe_vertices) {
+            for (int c = 0; c < 3; c++) {
+                float moved = 0.0f;
+                for (int k = 0; k < 3; k++) {
+                    if (v.body[k] < p->vertices.size()) {
+                        int now = (int16_t)MEM_H(0, (int32_t)(base + p->vertices[v.body[k]] + c * 2));
+                        moved += v.w[k] * float(now - p->rest[v.body[k]][c]);
+                    }
+                }
+                MEM_H(0, (int32_t)(base + v.at + c * 2)) =
+                    (uint16_t)int16_t(std::clamp(v.rest[c] + int(std::lround(moved)), -32768, 32767));
+            }
+        }
         // The brake lights move as the body under them (read back from the vertex just written).
         for (const Paint::Follower& f : p->followers) {
             for (int c = 0; c < 3; c++) {
@@ -3345,6 +4082,11 @@ extern "C" bool rush2_calspeed_brake_lights(uint8_t* rdram, recomp_context* ctx)
     if (MEM_BU(0, (int32_t)0x800E7BB0) != 0) return false; // Rush 2 leaves the lights alone then
     int car = (int16_t)MEM_H(0, (int32_t)((uint32_t)ctx->r4 + 0xE));
     if (car < 0 || car >= 8) return false;
+    // Every car's lights' state, Rush 2's rule below, for Car Lights (src/car_lights.cpp).
+    {
+        uint32_t flags = (uint32_t)MEM_W(0, (int32_t)(0x80112584 + car * 0x354));
+        rush2::car_lights::set_braking(car, (int16_t)ctx->r5 != 0 && (flags & 0x1000) != 0 && (flags & 0x10) == 0);
+    }
     uint32_t base = 0;
     const Paint* p = car_instance(rdram, car, base);
     // A car mod livery with brake lights on the car (any car, Rush 2's too).
@@ -3428,6 +4170,33 @@ extern "C" void rush2_car49_dent(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+void rush2::car2049::brake_light_sources(uint8_t* rdram, int car, BrakeLightSources& out) {
+    out = BrakeLightSources{};
+    if (car < 0 || car >= 8) return;
+    uint32_t base = 0;
+    const Paint* p = car_instance(rdram, car, base);
+    if (p != nullptr) {
+        out.base = base;
+        out.palette = !p->calspeed;
+        for (const Paint::DamageLoad& d : p->damage_loads) {
+            if (d.lit != 0) out.lit_copies.push_back({ base + d.pristine, base + d.lit });
+            if (d.lit_damaged != 0 && d.damaged != 0) out.lit_copies.push_back({ base + d.damaged, base + d.lit_damaged });
+        }
+        for (const auto& [texels, lit] : p->tail_lit) out.lit_bytes.push_back({ base + texels, lit });
+        for (const Paint::BrakeBlock& b : p->brake_blocks) out.lists.push_back(base + b.list), out.switches.push_back(base + b.at);
+    }
+    uint32_t livery_base = 0;
+    if (int livery = rush2::car_mods::livery_body(rdram, car, livery_base); livery >= 0) {
+        std::lock_guard lock{ livery_mutex };
+        if (livery < (int)livery_bodies.size()) {
+            for (const Paint::BrakeBlock& b : livery_bodies[livery].brake_blocks) {
+                out.lists.push_back(livery_base + b.list);
+                out.switches.push_back(livery_base + b.at);
+            }
+        }
+    }
+}
+
 // The same test rush2_car49_dent makes before denting a car.
 bool rush2::car2049::generated_damage(uint8_t* rdram, int car) {
     if (car < 0 || car >= 8) return false;
@@ -3467,7 +4236,7 @@ extern "C" void rush2_car49_select_set(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void rush2_car49_select_cursor(uint8_t* rdram, recomp_context* ctx) {
     uint32_t at = (uint32_t)ctx->r4;
     int type = (int)(ctx->r2 & 0xFF);
-    // Test aid: RUSH2_TEST_CAR=<type> (Rush 2 0-21, 2049 23-35, California Speed 36-56, mod cars 57-72) opens the car
+    // Test aid: RUSH2_TEST_CAR=<type> (Rush 2 0-21, 2049 23-35, California Speed 36-56, mod cars 57-120) opens the car
     // select on that car, whatever the save chose.
     static const char* test_car = std::getenv("RUSH2_TEST_CAR");
     if (test_car != nullptr && std::atoi(test_car) >= 0 && std::atoi(test_car) < types && std::atoi(test_car) != 22) {
@@ -3865,6 +4634,12 @@ namespace {
     }
 }
 
+int rush2::car2049::model_car(uint32_t node) {
+    if (node < scene_node_table || car_of_node.empty()) return -1;
+    auto it = car_of_node.find(int((node - scene_node_table) / scene_node_size));
+    return it != car_of_node.end() ? it->second : -1;
+}
+
 void rush2::car2049::light_model(uint8_t* rdram, recomp_context* ctx, uint32_t dl) {
     // Rebuilt for each view, and at least every 50 ms for screens that draw models outside func_8007C624.
     static std::chrono::steady_clock::time_point built_at{};
@@ -4126,15 +4901,14 @@ void rush2::car2049::sheen_model(uint8_t* rdram, recomp_context* ctx) {
 // func_8007C624 entry: a new view.
 extern "C" void rush2_car49_flames_view_begin(uint8_t* rdram, recomp_context* ctx) {
     queued_flames.clear();
+    rush2::dc_translucent::view_begin();
     light_tables_built = false;
     sheen_tables_built = false;
 }
 
-// func_8007C624 at L_8007D980, after the world-space polygons: draws the queued flames. $s6 = display list cursor.
-extern "C" void rush2_car49_flames_draw(uint8_t* rdram, recomp_context* ctx) {
-    if (queued_flames.empty()) {
-        return;
-    }
+namespace {
+// Appends a G_DL to the queued flames at the display list cursor *cursor_ptr, and empties the queue.
+void emit_queued_flames(uint8_t* rdram, uint32_t cursor_ptr) {
     uint32_t count = 0, dl = flame_side_alloc(uint32_t(32 + queued_flames.size() * 16) * 8);
     auto cmd = [&](uint32_t w0, uint32_t w1) {
         MEM_W(0, (int32_t)(dl + count * 8)) = (int32_t)w0;
@@ -4190,11 +4964,60 @@ extern "C" void rush2_car49_flames_draw(uint8_t* rdram, recomp_context* ctx) {
     cmd(0xDF000000, 0);
     queued_flames.clear();
 
-    uint32_t cursor_ptr = (uint32_t)ctx->r22;
     uint32_t cursor = (uint32_t)MEM_W(0, (int32_t)cursor_ptr);
     MEM_W(0, (int32_t)cursor) = (int32_t)0xDE000000;
     MEM_W(4, (int32_t)cursor) = (int32_t)dl;
     MEM_W(0, (int32_t)cursor_ptr) = (int32_t)(cursor + 8);
+}
+}
+
+// func_8007C624 at L_8007D980, after the world-space polygons: draws the queued flames. $s6 = display list cursor.
+extern "C" void rush2_car49_flames_draw(uint8_t* rdram, recomp_context* ctx) {
+    // Dreamcast models' translucent strips first (src/rush2049dc/dc_translucent.cpp): both blend over what's drawn.
+    rush2::dc_translucent::emit(rdram, (uint32_t)ctx->r22);
+    if (!queued_flames.empty()) {
+        emit_queued_flames(rdram, (uint32_t)ctx->r22);
+    }
+}
+
+// func_8007C624 at 0x8007D024, as a world-space polygon ($fp) starts drawing. The race start countdown sign
+// (race_countdown_sign_8010C040, one per view, at 0x80240340) is a polygon placed in front of the camera, so the flames go before it
+// instead of after all the polygons, or they show through the digit. The polygon loop caches render state between
+// polygons, and the flames change it: its render mode (sp+0x168) and texture (0x80112470) caches are cleared so the
+// next polygon sets them again, and the flames' 2-cycle fog state is undone when the loop has 1-cycle without fog
+// (sp+0x164 = 0, set by flag 0x100 polygons).
+extern "C" void rush2_car49_flames_before_poly(uint8_t* rdram, recomp_context* ctx) {
+    if (queued_flames.empty() && !rush2::dc_translucent::pending()) {
+        return;
+    }
+    // race_countdown_sign_8010C040, moved here for four views (src/players4.cpp): a polygon pointer per view.
+    constexpr uint32_t countdown_signs = 0x80240340;
+    uint32_t poly = (uint32_t)ctx->r30;
+    bool sign = false;
+    for (int v = 0; v < 4; v++) {
+        sign |= poly != 0 && (uint32_t)MEM_W(0, (int32_t)(countdown_signs + v * 4)) == poly;
+    }
+    if (!sign) {
+        return;
+    }
+    uint32_t cursor_ptr = (uint32_t)ctx->r22;
+    rush2::dc_translucent::emit(rdram, cursor_ptr);
+    if (!queued_flames.empty()) {
+        emit_queued_flames(rdram, cursor_ptr);
+    }
+    uint32_t sp = (uint32_t)ctx->r29;
+    MEM_W(0x168, (int32_t)sp) = -1;
+    MEM_W(0, (int32_t)0x80112470) = 0;
+    if (MEM_W(0x164, (int32_t)sp) == 0) {
+        uint32_t cursor = (uint32_t)MEM_W(0, (int32_t)cursor_ptr);
+        MEM_W(0, (int32_t)cursor) = (int32_t)0xD9FEFFFF;      // clear G_FOG
+        MEM_W(4, (int32_t)cursor) = 0;
+        MEM_W(8, (int32_t)cursor) = (int32_t)0xE7000000;      // G_RDPPIPESYNC
+        MEM_W(12, (int32_t)cursor) = 0;
+        MEM_W(16, (int32_t)cursor) = (int32_t)0xE3000A01;     // CYCLETYPE = 1CYCLE
+        MEM_W(20, (int32_t)cursor) = 0;
+        MEM_W(0, (int32_t)cursor_ptr) = (int32_t)(cursor + 24);
+    }
 }
 
 void rush2::car2049::animate(uint8_t* rdram) {
@@ -4529,6 +5352,12 @@ extern "C" void rush2_car49_engine_value(uint8_t* rdram, recomp_context* ctx) {
     int type = (int)(int8_t)ctx->r7;
     int before = engine_before;
     engine_before = -1;
+    // The Fancy UFO's row steps through its WARP CORE too (src/sfrush_ps1/fancy_ufo.cpp).
+    if (int ufo = rush2::fancy_ufo::engine_step(rdram, ctx, before); ufo >= 0) {
+        MEM_B(0, (int32_t)((uint32_t)ctx->r3 + row_offset)) = (int8_t)ufo;
+        ctx->r2 = (uint64_t)ufo;
+        return;
+    }
     if (!is_2049(type) || before < 0) {
         return;
     }
@@ -4566,12 +5395,17 @@ int rush2::car2049::engine_sound(uint8_t* rdram, int type, int value) {
 // $s2, the players' current types at $s6). A 2049 car's ENGINE row reads 2049's engine names; SLICKS and PRO SLICKS
 // read so on every car (Rush 2's table, 0x800C4A40, ends at FULL OFFRD).
 namespace {
-    enum class TextRow { Other, Engine, Tires };
+    enum class TextRow { Other, Engine, Tires, Horn };
     TextRow text_row = TextRow::Other;
 }
 
 extern "C" void rush2_car49_engine_text(uint8_t* rdram, recomp_context* ctx) {
     text_row = TextRow::Engine;
+}
+
+// 0x803BC49C starts the HORN row's value text (for the Fancy UFO's own horn, src/sfrush_ps1/fancy_ufo.cpp).
+extern "C" void rush2_car49_horn_text(uint8_t* rdram, recomp_context* ctx) {
+    text_row = TextRow::Horn;
 }
 
 extern "C" void rush2_car49_tires_text(uint8_t* rdram, recomp_context* ctx) {
@@ -4590,6 +5424,18 @@ extern "C" void rush2_car49_option_text(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     auto text = [&](uint32_t label) { ctx->r16 = (uint64_t)(int64_t)(int32_t)label; };
+    // The Fancy UFO's WARP CORE and HAILING, past Rush 2's names.
+    if (row == TextRow::Horn || row == TextRow::Engine) {
+        bool horn = row == TextRow::Horn;
+        uint32_t ufo = rush2::fancy_ufo::label(rdram, type, horn, row_byte(rdram, horn ? types_::table(types_::horn) : t_engine, player + 1, type));
+        if (ufo != 0) {
+            text(ufo);
+            return;
+        }
+        if (horn) {
+            return;
+        }
+    }
     if (row == TextRow::Tires) {
         int value = row_byte(rdram, t_tires, player + 1, type);
         if (value >= slicks) {
