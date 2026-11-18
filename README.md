@@ -10,8 +10,8 @@
 
 **Play it in the browser: https://n64hub.com/rush-2/**, with your own Rush 2 ROM (US), picked
 in the launcher and kept in the browser. It needs WebGPU (Chrome or Edge 113 and up). The page is built from this
-branch and published with N64Recomp-browser's `tools/publish_page.sh`, so it can be a commit or two behind. Online
-play is the desktop game's only: a browser gives a page no connections to race over.
+branch, so it can be a commit or two behind. Online play is the desktop game's only: a browser gives a page no
+connections to race over.
 
 <p align="center">
   <img src="icons/logo.png" alt="Rush 2 Recompiled" width="320">

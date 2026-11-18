@@ -193,10 +193,6 @@ with the race layout's keys.
 `web/play_plan_extended.json`, for when a longer play is needed, goes on to Alcatraz in the same load, in at most 5
 minutes; their headers say how.
 
-How the page plays, in each browser and on which GPU, is recorded in N64Recomp-browser's
-[plays.jsonl](https://github.com/n64hub/N64Recomp-browser/blob/main/plays.jsonl) and its
-[games table](https://github.com/n64hub/N64Recomp-browser#games).
-
 ## Releases
 
 Pushing master builds the pushed commit and publishes it as a GitHub release (`tools/hooks/pre-push` runs
