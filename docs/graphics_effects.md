@@ -324,15 +324,18 @@ car's body is still the one it looked at), again when the car's type, parts or d
   with a plain wrap, the far side's lamps landed next to the middle.
 - **Tail lamps:** what the game lights when the car brakes, each texel put back on its triangle by the triangle's
   texture coordinates (barycentric): Rush 2's palette lighting's CI8 entries 161-175 (Rush 2's cars, Rush 2049's on
-  the N64 ROM); for a California Speed or Dreamcast car the texels its lit copies change
+  the N64 ROM; not on a body with brake light lists, whose stand-ins take those reds for any red or orange paint: the
+  arcade Truck's orange cab roof became two lamps, issue 88); for a California Speed or Dreamcast car the texels its lit copies change
   (`rush2::car2049::brake_light_sources`); a mod car's or livery's brake light lists (docs/car_mods.md#brake-lights),
   only those whose switch (`BrakeLightSources::switches`, `rush2::car2049::brake_switch`) is in the lists the body
   draws: a car's copy holds every paint scheme's brake lists and a livery adds its own, and taking them all put lamps
   between and beside the real ones (the first pass on the arcade Mustang's liveries). Their texels at least half as
   bright as the car's brightest brake texel count (the textures are soft glows, a red core in near black; the N64
   copy's alpha bit isn't kept reliably, the transparency comes from the full-size replacements), since those lists
-  are often textured quads spanning both lamps (the arcade Truck's covers the whole tailgate); an untextured one's
-  triangles by their area. A lit switch's call isn't walked as body. Only triangles in the back half of the body facing backward (outward normal z at most
+  are often textured quads spanning both lamps (the arcade Truck's covers the whole tailgate). A textured brake
+  triangle with none of those texels is no lamp (taken by its area, the Truck's tailgate quad made one lamp in the
+  middle, issue 88); only when no brake texel is bright enough (an all-dark brake texture) and for an untextured
+  one are the triangles taken by their area. A lit switch's call isn't walked as body. Only triangles in the back half of the body facing backward (outward normal z at most
   -0.25) count: lit texels on a side face are markers or spill, not the lamp. The texels are grouped (two are one lamp
   when nearer than 1.5 texels of the coarser triangle, never over 0.25 ft, so round lamps side by side stay apart; a
   an untextured brake light triangle's corners are always one lamp), and the groups at least 6% of all become lamps, the
@@ -353,7 +356,8 @@ car's body is still the one it looked at), again when the car's type, parts or d
   (docs/car_mods.md, `rush2::car_lights::set_mod_lamps`) replace what is found, kind by kind. A hand placed lamp's
   lens is the texels within its radius on triangles facing its way, those at least 60% as bright as the brightest
   there (so a gray lens on dark paint glows and the paint doesn't); `"lens": false` for hidden lamps (rush2:2's
-  closed pop-ups) or none at all (open-wheel racers). Gray headlamps (most of Rush 2049's, several of Rush 2's)
+  closed pop-ups, four like the real car's; rush2:11's on the front fender corners where SF Rush's Concept has its
+  lamp decals; rush2:17's beside the grille as on the arcade Deuce, mod:DEUCE, issue 92) or none at all (open-wheel racers). Gray headlamps (most of Rush 2049's, several of Rush 2's)
   are below the finder's 175 and come from the table.
 - **What is still missing** (no headlamp pair, no lit texels: the SF Rush PlayStation UFO, the one PS1 car without
   brake lights, docs/car_mods.md#brake-lights) gets a pair from the body's shape: 34% of its width either side of its
@@ -418,7 +422,9 @@ ambient occlusion):
      pixel (a Gaussian core the lens's size and a faint short bloom, 8% out to 6
      radii: a wide one tinted the car's paint round its brake lights), scaled by how
      squarely the lamp faces the camera (a headlamp glares straight on) and kept only where the depth buffer at and
-     round the lamp shows nothing nearer than it.
+     round the lamp shows nothing nearer than it. Seen from behind its lens it doesn't glow (faded out by 0.2 behind
+     square-on, and no pass at all past that): the hood and bumper cameras sit behind the car's own headlamps and the
+     look-back view in front of its tail lamps (issue 90).
 2. The scene is copied (`copyTexture`, same format and samples) and `CarLightCompositePS` writes scene + albedo x
    light + glow over the lamps' area, per sample with multisampling, leaving pixels no lamp reached alone. The light
    is upsampled from the half resolution pixels round each pixel (the one at half its position, and on an odd row or
