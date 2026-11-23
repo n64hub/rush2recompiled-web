@@ -26,7 +26,9 @@
 #      held particles and car lights draw through too, in rt64_raster_params.h Rush 2's particleLight after the web's
 #      three padding words (48 bytes), in rt64_car_light.h, which only Rush 2 has, its car light
 #      composite's last two padding words as two floats, not an array (a page's push constants are a WGSL uniform
-#      buffer, where Firefox takes an array only with a 16-byte stride), in rt64_rsp.cpp its Two-Sided Walls copy of a culled wall
+#      buffer, where Firefox takes an array only with a 16-byte stride), in rt64_shared_queue_resources.h Rush 2's count
+#      of a frame set's frames that reached the display (its Variable frame rate's wait) named displayed, since the
+#      web's shown there says a present has shown the set's last frame, in rt64_rsp.cpp its Two-Sided Walls copy of a culled wall
 #      made before the web's test for triangles behind the camera, whose facing test leaves the copy unculled, its sampleTexture LOD arguments and coverage output beside the web's per-draw tiles and
 #      decal depth, the coverage output left out of a page's shaders, as RasterPS.hlsl says, and in CMakeLists.txt Rush 2's
 #      shaders without it for blended draws (NO_COVERAGE) built only where the build isn't WGSL's); in TextureSampler.hlsli the web's texel loads keep Rush 2's rule that a generated mipmap level
